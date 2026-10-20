@@ -97,6 +97,16 @@ callsRouter.get('/api/retries/pending', async (_req: Request, res: Response, nex
   }
 });
 
+// GET /api/customers - List all leads/customers
+callsRouter.get('/api/customers', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const customers = await callService.listCustomers(100);
+    return res.json({ success: true, count: customers.length, customers });
+  } catch (err) {
+    return next(err);
+  }
+});
+
 // GET /calls/:id - Get specific call outcome and details
 callsRouter.get(
   '/calls/:id',
