@@ -28,8 +28,8 @@ class AgentTools:
 
         if is_wrong_person or (not is_correct and not call_later):
             self.state.identity_confirmed = False
-            self.state.final_disposition = "WRONG_NUMBER"
-            self.state.customer_note = "Callee confirmed wrong number / wrong person"
+            self.state.final_disposition = "WRONG_NUMBER_OR_IDENTITY_NOT_CONFIRMED"
+            self.state.customer_note = "Callee confirmed wrong number / identity not confirmed"
             self.state.transition_to(Step.WRONG_PERSON)
             post_outcome_to_backend(self.state)
             return "माफ़ कीजिए, गलत नंबर डायल हो गया था। आपका दिन शुभ हो।"
@@ -45,8 +45,8 @@ class AgentTools:
         self.state.identity_confirmed = True
         self.state.transition_to(Step.PICKUP_DECISION)
         return (
-            "हम आपके बंद हुए एयरटेल वाई-फाई कनेक्शन के राउटर पिकअप के लिए कॉल कर रहे हैं। "
-            "क्या आप राउटर पिकअप के लिए तैयार हैं?"
+            "आपके एयरटेल वाई-फाई राउटर का अकाउंट लंबे समय से रिचार्ज न होने के कारण सस्पेंड कर दिया गया है। "
+            "क्या मैं कल आपके वाई-फाई राउटर का पिकअप शेड्यूल कर सकती हूँ?"
         )
 
     @function_tool
@@ -154,12 +154,17 @@ class AgentTools:
         if alternate_phone:
             self.state.alternate_phone = alternate_phone.strip()
 
-        self.state.final_disposition = "CONFIRMED_FOR_PICKUP"
+        # Check if customer requested an alternate date within 30 days
+        if self.state.date_retry_count > 0 or (self.state.pickup_date_spoken and "कल" not in self.state.pickup_date_spoken):
+            self.state.final_disposition = "PICKUP_CONFIRMED_NEW_DATE"
+        else:
+            self.state.final_disposition = "PICKUP_CONFIRMED"
+
         self.state.transition_to(Step.CLOSE)
         post_outcome_to_backend(self.state)
 
         pickup_when = self.state.pickup_date_spoken or self.state.confirmed_date or "तय तारीख"
-        return f"धन्यवाद {self.state.customer_name} जी! आपका राउटर पिकअप {pickup_when} के लिए कन्फर्म हो गया है। आपका दिन शुभ हो!"
+        return f"पुष्टि के लिए धन्यवाद। किसी अन्य जानकारी के लिए कृपया एयरटेल 121 पर संपर्क करें। आपका दिन शुभ हो!"
 
     @function_tool
     def record_refusal(self, reason: str, objection_type: str = "general_refusal") -> str:
@@ -170,15 +175,18 @@ class AgentTools:
         logger.info(f"[Tool] record_refusal: reason='{reason}', type='{objection_type}'")
         self.state.pickup_accepted = False
 
-        if "refund" in objection_type.lower() or "refund" in reason.lower():
-            self.state.final_disposition = "REFUND_REQUEST"
+        if "refund" in objection_type.lower() or "ownership" in objection_type.lower() or "refund" in reason.lower() or "ownership" in reason.lower() or "free" in reason.lower():
+            self.state.final_disposition = "REFUND_OR_OWNERSHIP_QUERY"
+            self.state.customer_note = f"Refund / ownership query: {reason}"
+            self.state.transition_to(Step.CLOSE)
+            post_outcome_to_backend(self.state)
+            return "राउटर एयरटेल की प्रॉपर्टी है और सब्सक्रिप्शन चार्ज इसके मालिकाना हक के लिए नहीं होते। अधिक जानकारी के लिए कृपया एयरटेल 121 पर संपर्क करें। धन्यवाद।"
         else:
-            self.state.final_disposition = "REFUSED_TO_RETURN"
-
-        self.state.customer_note = f"{objection_type}: {reason}"
-        self.state.transition_to(Step.CLOSE)
-        post_outcome_to_backend(self.state)
-        return "आपकी बात नोट कर ली गई है। एयरटेल पॉलिसी के अनुसार आगे की जानकारी के लिए आप 121 पर संपर्क कर सकते हैं। धन्यवाद।"
+            self.state.final_disposition = "PICKUP_DECLINED"
+            self.state.customer_note = f"Customer refused pickup: {reason}"
+            self.state.transition_to(Step.CLOSE)
+            post_outcome_to_backend(self.state)
+            return "मैं समझ सकती हूँ, मैंने आपकी प्रतिक्रिया दर्ज कर ली है। अधिक स्पष्टीकरण के लिए कृपया एयरटेल 121 पर संपर्क करें। धन्यवाद।"
 
     @function_tool
     def record_device_issue(self, issue_type: str) -> str:
@@ -279,15 +287,16 @@ class AgentTools:
     @function_tool
     def escalate_to_121(self, reason: str) -> str:
         """
-        Escalates unresolvable complaints or requests to Airtel customer care 121.
+        Escalates disputes, complaints or questions outside approved FAQ to Airtel 121.
+        Matches Build Brief: NEEDS_AIRTEL_SUPPORT.
         """
         logger.info(f"[Tool] escalate_to_121: reason='{reason}'")
-        self.state.final_disposition = "COMPLAINT_ESCALATION"
-        self.state.customer_note = f"Customer raised complaint/inquiry: {reason}"
+        self.state.final_disposition = "NEEDS_AIRTEL_SUPPORT"
+        self.state.customer_note = f"Dispute / query outside approved FAQ: {reason}"
         self.state.escalation_required = True
         self.state.transition_to(Step.ESCALATED)
         post_outcome_to_backend(self.state)
-        return "इस संबंध में अधिक सहायता के लिए कृपया एयरटेल 121 पर कॉल करें या एयरटेल थैंक्स ऐप का उपयोग करें। धन्यवाद।"
+        return "माफ़ कीजिए, मैं आपको गलत जानकारी नहीं देना चाहती। कृपया स्पष्टीकरण के लिए एयरटेल 121 पर संपर्क करें। धन्यवाद।"
 
     @function_tool
     def record_temporarily_unavailable(
