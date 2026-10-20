@@ -45,10 +45,21 @@ async def silence_watchdog(
 
     while not state.is_completed and not state.is_terminal():
         await asyncio.sleep(1.0)
+
+        # Check if session or room is still active
+        if getattr(session, "_activity", None) is None:
+            break
+        if not getattr(ctx.room, "is_connected", lambda: True)():
+            break
+
         now = time.time()
         elapsed = now - timing_tracker.get("last_activity_time", now)
 
         if elapsed >= SILENCE_THRESHOLD_SECONDS and not state.is_completed:
+            # Check again before attempting to speak
+            if getattr(session, "_activity", None) is None:
+                break
+
             if state.silence_count == 0:
                 state.silence_count += 1
                 timing_tracker["last_activity_time"] = time.time()
@@ -56,7 +67,11 @@ async def silence_watchdog(
 
                 logger.warning(f"⚠️ Silence detected (5s). Re-prompting: {reprompt}")
                 state.add_transcript("assistant", reprompt)
-                await session.say(reprompt, allow_interruptions=True)
+                try:
+                    await session.say(reprompt, allow_interruptions=True)
+                except Exception as e:
+                    logger.debug(f"Watchdog session.say stopped (session closed): {e}")
+                    break
                 timing_tracker["last_activity_time"] = time.time()
 
             elif state.silence_count == 1:
@@ -66,7 +81,11 @@ async def silence_watchdog(
 
                 logger.warning(f"⚠️ Second silence detected (10s total). Final re-prompt: {reprompt}")
                 state.add_transcript("assistant", reprompt)
-                await session.say(reprompt, allow_interruptions=True)
+                try:
+                    await session.say(reprompt, allow_interruptions=True)
+                except Exception as e:
+                    logger.debug(f"Watchdog session.say stopped (session closed): {e}")
+                    break
                 timing_tracker["last_activity_time"] = time.time()
 
             else:
@@ -79,6 +98,10 @@ async def silence_watchdog(
 
                 closing_line = "शायद आपकी आवाज़ नहीं आ पा रही है। हम आपसे बाद में संपर्क करेंगे। धन्यवाद।"
                 state.add_transcript("assistant", closing_line)
-                await session.say(closing_line, allow_interruptions=False)
+                try:
+                    await session.say(closing_line, allow_interruptions=False)
+                except Exception as e:
+                    logger.debug(f"Session closed before closing line: {e}")
                 await clean_hangup(ctx, session, state)
                 break
+
