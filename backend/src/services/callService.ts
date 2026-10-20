@@ -634,6 +634,17 @@ export class CallService {
   }
 
   /**
+   * Lists all customers / leads with retry and status info.
+   */
+  async listCustomers(limit = 100) {
+    const res = await query(
+      `SELECT * FROM customers ORDER BY created_at DESC LIMIT $1`,
+      [limit]
+    );
+    return res.rows;
+  }
+
+  /**
    * Lists latest 20 calls.
    */
   async listRecentCalls(limit = 20) {
