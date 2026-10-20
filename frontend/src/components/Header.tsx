@@ -1,6 +1,6 @@
 import React from 'react';
 import { PhoneCall, Cpu, Activity, Database, RefreshCw, PlusCircle, UploadCloud } from 'lucide-react';
-import type { SystemHealth } from '../../types';
+import type { SystemHealth } from '../types';
 
 interface HeaderProps {
   health: SystemHealth | null;
@@ -79,7 +79,7 @@ export const Header: React.FC<HeaderProps> = ({
             fontSize: '0.78rem',
           }}>
             <Cpu size={14} color="var(--accent-cyan)" />
-            <span style={{ color: 'var(--text-secondary)' }}>Groq 8B + Sarvam</span>
+            <span style={{ color: 'var(--text-secondary)' }}>Groq Qwen + Sarvam</span>
             <span style={{ color: 'var(--accent-green)', fontWeight: 600 }}>~₹2.4/min</span>
           </div>
 

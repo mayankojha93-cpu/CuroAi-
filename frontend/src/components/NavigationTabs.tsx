@@ -1,6 +1,6 @@
 import React from 'react';
 import { BarChart3, Users, PhoneCall, RotateCcw, BookOpen } from 'lucide-react';
-import type { TabKey } from '../../types';
+import type { TabKey } from '../types';
 
 interface NavigationTabsProps {
   activeTab: TabKey;
