@@ -11,15 +11,19 @@ logger = logging.getLogger("agent-watchdog")
 
 async def clean_hangup(ctx: agents.JobContext, session: AgentSession, state: ConversationState):
     """Waits for final audio delivery, ensures outcome is saved, then cleanly disconnects."""
-    if not state.outcome:
-        state.outcome = "no_response"
-    
+    # Ensure disposition is set
+    if not state.final_disposition or state.final_disposition == "DISCONNECTED":
+        if state.step == Step.CLOSE and state.confirmed_date:
+            state.final_disposition = "CONFIRMED_FOR_PICKUP"
+        elif not state.is_terminal():
+            state.final_disposition = "DISCONNECTED"
+
     # Save outcome and transcript to backend
     post_outcome_to_backend(state)
 
-    # Give TTS audio 3.5 seconds to complete speech playout
-    await asyncio.sleep(3.5)
-    logger.info(f"Cleanly disconnecting room {ctx.room.name} (Final outcome: {state.outcome})...")
+    # Give TTS audio 3.0 seconds to complete playout
+    await asyncio.sleep(3.0)
+    logger.info(f"Cleanly disconnecting room {ctx.room.name} (Final disposition: {state.final_disposition})...")
     try:
         await ctx.room.disconnect()
     except Exception as e:
@@ -32,11 +36,12 @@ async def silence_watchdog(
     timing_tracker: dict
 ):
     """
-    Monitors customer silence. If silence exceeds 9 seconds:
-    - 1st silence: Re-prompts once in Hindi.
-    - 2nd silence: Apologizes, logs 'no_response', and disconnects cleanly.
+    Monitors customer silence based on Airtel Campaign rules (Image 4):
+    - Waits 5 seconds: Asks "नमस्ते, क्या आप मुझे सुन पा रहे हैं?"
+    - Waits 5 more seconds: repeats once more.
+    - If still silent: ends politely, marks 'NO_RESPONSE', sent back to retry queue.
     """
-    SILENCE_THRESHOLD_SECONDS = 9.0
+    SILENCE_THRESHOLD_SECONDS = 5.0
 
     while not state.is_completed and not state.is_terminal():
         await asyncio.sleep(1.0)
@@ -47,31 +52,32 @@ async def silence_watchdog(
             if state.silence_count == 0:
                 state.silence_count += 1
                 timing_tracker["last_activity_time"] = time.time()
+                reprompt = "नमस्ते, क्या आप मुझे सुन पा रहे हैं?"
 
-                if state.step == Step.IDENTITY:
-                    reprompt = f"माफ़ कीजिए, क्या आप मुझे सुन पा रहे हैं? क्या मैं {state.customer_name} जी से बात कर रहा हूँ?"
-                elif state.step in [Step.DISCLOSURE_REASON, Step.PICKUP_DECISION]:
-                    reprompt = "माफ़ कीजिए, क्या आप मुझे सुन पा रहे हैं? क्या आप वाई-फाई राउटर पिकअप के लिए उपलब्ध हैं?"
-                elif state.step == Step.DATE_RESOLUTION:
-                    reprompt = "राउटर पिकअप के लिए आप किस दिन उपलब्ध होंगे? जैसे कल या परसों?"
-                elif state.step == Step.ADDRESS_CONFIRMATION:
-                    reprompt = f"क्या हमारे पास दर्ज पता '{state.address}' सही है?"
-                else:
-                    reprompt = "माफ़ कीजिए, क्या आप मुझे सुन पा रहे हैं?"
+                logger.warning(f"⚠️ Silence detected (5s). Re-prompting: {reprompt}")
+                state.add_transcript("assistant", reprompt)
+                await session.say(reprompt, allow_interruptions=True)
+                timing_tracker["last_activity_time"] = time.time()
 
-                logger.warning(f"⚠️ Silence detected (Prompt 1). Re-prompting customer: {reprompt}")
+            elif state.silence_count == 1:
+                state.silence_count += 1
+                timing_tracker["last_activity_time"] = time.time()
+                reprompt = f"नमस्ते {state.customer_name} जी, क्या मेरी आवाज़ आप तक पहुँच रही है?"
+
+                logger.warning(f"⚠️ Second silence detected (10s total). Final re-prompt: {reprompt}")
                 state.add_transcript("assistant", reprompt)
                 await session.say(reprompt, allow_interruptions=True)
                 timing_tracker["last_activity_time"] = time.time()
 
             else:
-                # Second silence -> terminate with 'no_response'
-                logger.warning("⚠️ Persistent silence detected (Prompt 2). Concluding call as 'no_response'.")
+                # Persistent silence -> conclude as NO_RESPONSE and retry
+                logger.warning("⚠️ Persistent silence. Concluding call as NO_RESPONSE (back to retry queue).")
                 state.is_completed = True
-                state.outcome = "no_response"
+                state.final_disposition = "NO_RESPONSE"
+                state.customer_note = "Call ended due to persistent customer silence (NO_RESPONSE)"
                 state.transition_to(Step.TERMINATED)
 
-                closing_line = "माफ़ कीजिए, आपकी आवाज़ नहीं आ पा रही है। हम आपसे बाद में संपर्क करेंगे। धन्यवाद।"
+                closing_line = "शायद आपकी आवाज़ नहीं आ पा रही है। हम आपसे बाद में संपर्क करेंगे। धन्यवाद।"
                 state.add_transcript("assistant", closing_line)
                 await session.say(closing_line, allow_interruptions=False)
                 await clean_hangup(ctx, session, state)
