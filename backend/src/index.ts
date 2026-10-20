@@ -1,4 +1,5 @@
 import express, { Request, Response } from 'express';
+import cors from 'cors';
 import { pinoHttp } from 'pino-http';
 import { env } from './config/env.js';
 import { logger } from './config/logger.js';
@@ -11,6 +12,9 @@ import { webhooksRouter } from './routes/webhooks.js';
 import { callService } from './services/callService.js';
 
 export const app = express();
+
+// Enable CORS for frontend Vite dev server and production
+app.use(cors());
 
 // Capture raw body for webhook verification while parsing JSON for all endpoints
 app.use(
