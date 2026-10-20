@@ -71,7 +71,11 @@ class ConversationState:
         self.date_retry_count: int = 0
         self.is_completed: bool = False
 
-    def add_transcript(self, role: str, message: str):
+    def add_transcript(self, role: str, message: Any):
+        if isinstance(message, list):
+            message = " ".join(str(m) for m in message if m)
+        elif not isinstance(message, str):
+            message = str(message) if message is not None else ""
         if message and message.strip():
             self.transcript.append({
                 "role": role,

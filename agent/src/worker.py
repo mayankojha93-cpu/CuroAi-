@@ -4,6 +4,10 @@ import asyncio
 from livekit import agents
 from livekit.agents import AgentSession, Agent, AgentServer
 from livekit.plugins import sarvam, groq, silero
+try:
+    import numpy.fft  # Preload to prevent event loop blocking during audio STFT
+except ImportError:
+    pass
 
 from src.config import (
     logger,
@@ -140,8 +144,34 @@ async def entrypoint(ctx: agents.JobContext):
         item = getattr(ev, "item", None)
         if item:
             role = getattr(item, "role", "unknown")
-            content = getattr(item, "content", "")
-            if role == "assistant" and content.strip():
+            raw_content = getattr(item, "content", "")
+
+            # Extract clean dialogue text (content can be str, list[str], or list[dict/chunk])
+            content_str = ""
+            if isinstance(raw_content, list):
+                text_parts = []
+                for part in raw_content:
+                    if isinstance(part, str):
+                        part_s = part.strip()
+                        # Avoid logging serialized tool call dict representations
+                        if not part_s.startswith(("{'tool_name'", '{"tool_name"', "[{'tool_name'")):
+                            text_parts.append(part_s)
+                    elif isinstance(part, dict):
+                        if "text" in part and isinstance(part["text"], str):
+                            text_parts.append(part["text"].strip())
+                    elif hasattr(part, "text") and isinstance(part.text, str):
+                        text_parts.append(part.text.strip())
+                content_str = " ".join([p for p in text_parts if p]).strip()
+            elif isinstance(raw_content, str):
+                part_s = raw_content.strip()
+                if not part_s.startswith(("{'tool_name'", '{"tool_name"', "[{'tool_name'")):
+                    content_str = part_s
+            elif raw_content:
+                part_s = str(raw_content).strip()
+                if not part_s.startswith(("{'tool_name'", '{"tool_name"', "[{'tool_name'")):
+                    content_str = part_s
+
+            if role == "assistant" and content_str:
                 timing_tracker["last_activity_time"] = time.time()
                 stt_time = timing_tracker.get("stt_final", 0)
                 if stt_time > 0:
@@ -151,8 +181,8 @@ async def entrypoint(ctx: agents.JobContext):
                 else:
                     latency_str = ""
 
-                logger.info(f"🤖 [Agent]: \"{content}\" {latency_str}")
-                state.add_transcript("assistant", content)
+                logger.info(f"🤖 [Agent]: \"{content_str}\" {latency_str}")
+                state.add_transcript("assistant", content_str)
 
                 # Check if conversation reached a terminal state
                 if state.is_terminal() and not state.is_completed:
