@@ -100,7 +100,7 @@ async def entrypoint(ctx: agents.JobContext):
     tts = sarvam.TTS(
         target_language_code="hi-IN",
         model="bulbul:v3",
-        speaker="shubh",
+        speaker="aditi",
         api_key=SARVAM_API_KEY,
     )
 
@@ -175,10 +175,9 @@ async def entrypoint(ctx: agents.JobContext):
     await session.start(room=ctx.room, agent=agent)
     logger.info("Agent session active in room.")
 
-    # 6. Opening Line: Greeting + Airtel Identity + Virtual Assistant transparency
+    # 6. Opening Line: Greeting + Priya persona speaking on behalf of Airtel (Build Brief Section 2)
     opening_line = (
-        f"नमस्ते {customer_name} जी! मैं एयरटेल कस्टमर सर्विस की तरफ से बात कर रहा एक वर्चुअल असिस्टेंट हूँ। "
-        f"यह कॉल सेवा और गुणवत्ता के लिए रिकॉर्ड की जा सकती है। क्या मैं {customer_name} जी से बात कर रहा हूँ?"
+        f"नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं {customer_name} जी से बात कर रही हूँ?"
     )
 
     logger.info(f"Speaking opening line: {opening_line}")
