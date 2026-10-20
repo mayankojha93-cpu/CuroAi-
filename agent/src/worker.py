@@ -16,6 +16,7 @@ from src.state import Step, ConversationState
 from src.prompts import get_step_instructions
 from src.tools import AgentTools
 from src.utils import silence_watchdog, clean_hangup
+from src.tools.api import post_outcome_to_backend
 
 server = AgentServer()
 
@@ -38,35 +39,51 @@ async def entrypoint(ctx: agents.JobContext):
     address = metadata.get("address", "Flat 402, Sunshine Heights, Koramangala 4th Block, Bengaluru")
     phone = metadata.get("phone", "")
     language = metadata.get("preferredLanguage", "hi")
+    account_no = metadata.get("accountNo", "")
+    subs_del_no = metadata.get("subsDelNo", "")
+    service_end_date = metadata.get("serviceEndDate", "")
+    attempt_number = int(metadata.get("attemptNumber", 1))
 
-    # 2. Initialize Conversation State
+    # 2. Initialize Conversation State with Airtel Campaign lead info
     state = ConversationState(
         call_id=call_id,
         customer_name=customer_name,
         phone=phone,
         address=address,
-        language=language
+        language=language,
+        account_no=account_no,
+        subs_del_no=subs_del_no,
+        service_end_date=service_end_date,
+        attempt_number=attempt_number,
     )
 
-    # 3. Initialize Agent Tools
+    # 3. Initialize Agent Tools for all 17 Airtel campaign scenarios
     tools_instance = AgentTools(state)
     tools = [
         tools_instance.confirm_identity,
         tools_instance.set_pickup,
+        tools_instance.record_willing_no_date,
         tools_instance.set_pickup_date,
         tools_instance.confirm_address,
-        tools_instance.escalate,
-        tools_instance.save_outcome,
+        tools_instance.record_refusal,
+        tools_instance.record_device_issue,
+        tools_instance.record_recharge,
+        tools_instance.record_already_returned,
+        tools_instance.record_shifted,
+        tools_instance.record_language_barrier,
+        tools_instance.record_do_not_call,
+        tools_instance.escalate_to_121,
+        tools_instance.record_temporarily_unavailable,
+        tools_instance.record_still_using_device,
     ]
 
-    # 4. Speech and Audio Pipeline Setup (Narrowband & Telephony friendly)
+    # 4. Speech and Audio Pipeline Setup
     stt = sarvam.STT(
         language="hi-IN",
         model="saaras:v4",
         api_key=SARVAM_API_KEY,
     )
 
-    # Silero VAD configured for sensitive telephony barge-in detection
     vad = silero.VAD.load(
         sample_rate=16000,
         min_speech_duration=0.05,
@@ -121,15 +138,35 @@ async def entrypoint(ctx: agents.JobContext):
             if role == "assistant" and content.strip():
                 timing_tracker["last_activity_time"] = time.time()
                 stt_time = timing_tracker.get("stt_final", 0)
-                latency_str = f"({(time.time() - stt_time)*1000:.0f} ms)" if stt_time > 0 else ""
+                if stt_time > 0:
+                    latency_ms = (time.time() - stt_time) * 1000
+                    state.add_latency(latency_ms)
+                    latency_str = f"({latency_ms:.0f} ms)"
+                else:
+                    latency_str = ""
+
                 logger.info(f"🤖 [Agent]: \"{content}\" {latency_str}")
                 state.add_transcript("assistant", content)
 
                 # Check if conversation reached a terminal state
                 if state.is_terminal() and not state.is_completed:
                     state.is_completed = True
-                    logger.info(f"Conversation reached terminal state ({state.step.value}, outcome={state.outcome}). Preparing clean disconnect...")
+                    logger.info(
+                        f"Conversation reached terminal state ({state.step.value}, "
+                        f"disposition={state.final_disposition}). Preparing clean disconnect..."
+                    )
                     asyncio.create_task(clean_hangup(ctx, session, state))
+
+    # Room disconnect handler: ensure outcome is recorded even on abrupt customer drop
+    @ctx.room.on("disconnected")
+    def on_room_disconnected():
+        if not state.is_completed:
+            state.is_completed = True
+            if not state.is_terminal():
+                state.final_disposition = "DISCONNECTED"
+                state.customer_note = "Call abruptly dropped / hung up mid-conversation"
+            logger.info(f"Room disconnected abruptly. Saving {state.final_disposition} for retry queue.")
+            post_outcome_to_backend(state)
 
     # 5. Build dynamic instructions and start agent
     instructions = get_step_instructions(state)
@@ -138,9 +175,9 @@ async def entrypoint(ctx: agents.JobContext):
     await session.start(room=ctx.room, agent=agent)
     logger.info("Agent session active in room.")
 
-    # 6. Opening Line: Greeting + AI Disclosure + Identity Confirmation
+    # 6. Opening Line: Greeting + Airtel Identity + Virtual Assistant transparency
     opening_line = (
-        f"नमस्ते {customer_name} जी! मैं टेलीकॉम कस्टमर सर्विस से बात कर रहा एक AI असिस्टेंट हूँ। "
+        f"नमस्ते {customer_name} जी! मैं एयरटेल कस्टमर सर्विस की तरफ से बात कर रहा एक वर्चुअल असिस्टेंट हूँ। "
         f"यह कॉल सेवा और गुणवत्ता के लिए रिकॉर्ड की जा सकती है। क्या मैं {customer_name} जी से बात कर रहा हूँ?"
     )
 
@@ -149,5 +186,5 @@ async def entrypoint(ctx: agents.JobContext):
     await session.say(opening_line, allow_interruptions=True)
     timing_tracker["last_activity_time"] = time.time()
 
-    # 7. Start silence watchdog task
+    # 7. Start 5-second silence watchdog task
     asyncio.create_task(silence_watchdog(ctx, session, state, timing_tracker))
