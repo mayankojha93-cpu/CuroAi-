@@ -100,7 +100,7 @@ async def entrypoint(ctx: agents.JobContext):
     tts = sarvam.TTS(
         target_language_code="hi-IN",
         model="bulbul:v3",
-        speaker="aditi",
+        speaker="priya",
         api_key=SARVAM_API_KEY,
     )
 
