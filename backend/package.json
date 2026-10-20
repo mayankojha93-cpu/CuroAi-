@@ -13,9 +13,10 @@
     "trunk:dial": "tsx scripts/test-dial.ts"
   },
   "dependencies": {
+    "@livekit/protocol": "^1.51.0",
+    "cors": "^2.8.6",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
-    "@livekit/protocol": "^1.51.0",
     "livekit-server-sdk": "^2.9.8",
     "pg": "^8.13.1",
     "pino": "^9.6.0",
@@ -23,6 +24,7 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.0",
     "@types/node": "^22.13.4",
     "@types/pg": "^8.11.11",
