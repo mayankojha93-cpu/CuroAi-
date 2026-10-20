@@ -119,14 +119,20 @@ async def entrypoint(ctx: agents.JobContext):
         "is_agent_speaking": False,
     }
 
+    watchdog_task = None
+
     # Transcripts & Metrics Hooks
     @session.on("user_input_transcribed")
     def on_user_transcribed(ev):
         timing_tracker["last_activity_time"] = time.time()
-        if ev.is_final and ev.text.strip():
+        # In livekit-agents 1.8+, the transcript is in 'transcript', with fallback to 'text'
+        raw_text = getattr(ev, "transcript", None) or getattr(ev, "text", "")
+        is_final = getattr(ev, "is_final", True)
+        if is_final and raw_text and raw_text.strip():
+            clean_text = raw_text.strip()
             timing_tracker["stt_final"] = time.time()
-            logger.info(f"🗣️ [Customer]: \"{ev.text}\"")
-            state.add_transcript("customer", ev.text)
+            logger.info(f"🗣️ [Customer]: \"{clean_text}\"")
+            state.add_transcript("customer", clean_text)
             state.silence_count = 0
 
     @session.on("conversation_item_added")
@@ -151,6 +157,8 @@ async def entrypoint(ctx: agents.JobContext):
                 # Check if conversation reached a terminal state
                 if state.is_terminal() and not state.is_completed:
                     state.is_completed = True
+                    if watchdog_task and not watchdog_task.done():
+                        watchdog_task.cancel()
                     logger.info(
                         f"Conversation reached terminal state ({state.step.value}, "
                         f"disposition={state.final_disposition}). Preparing clean disconnect..."
@@ -160,6 +168,8 @@ async def entrypoint(ctx: agents.JobContext):
     # Room disconnect handler: ensure outcome is recorded even on abrupt customer drop
     @ctx.room.on("disconnected")
     def on_room_disconnected():
+        if watchdog_task and not watchdog_task.done():
+            watchdog_task.cancel()
         if not state.is_completed:
             state.is_completed = True
             if not state.is_terminal():
@@ -186,4 +196,4 @@ async def entrypoint(ctx: agents.JobContext):
     timing_tracker["last_activity_time"] = time.time()
 
     # 7. Start 5-second silence watchdog task
-    asyncio.create_task(silence_watchdog(ctx, session, state, timing_tracker))
+    watchdog_task = asyncio.create_task(silence_watchdog(ctx, session, state, timing_tracker))
