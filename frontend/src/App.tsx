@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { useDashboardData } from './hooks';
-import { Header, NavigationTabs } from './components/layout';
-import { Toast } from './components/common';
+import { Header, NavigationTabs, Toast } from './components';
 import { 
   CampaignOverview, 
   LeadDirectory, 
