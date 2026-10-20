@@ -15,22 +15,76 @@ import { AppError } from '../middleware/errorHandler.js';
 export interface CallRecord {
   id: string;
   customer_id: string;
-  status: 'initiated' | 'dialing' | 'answered' | 'completed' | 'no_answer' | 'busy' | 'failed';
+  status: string;
   room_name: string;
   sip_call_id: string | null;
   failure_reason: string | null;
+  attempt_number?: number;
+  duration_seconds?: number;
+  call_status?: string;
+  recording_url?: string | null;
+  median_latency_ms?: number | null;
+  cost_estimate_inr?: number | null;
   created_at: string;
   answered_at: string | null;
   ended_at: string | null;
 }
 
 export interface SaveOutcomeInput {
-  outcome: 'pickup_scheduled' | 'pickup_declined' | 'wrong_person' | 'callback_requested' | 'escalated' | 'no_response';
+  outcome?: string;
+  final_disposition: string;
+  identity_confirmed?: boolean | null;
+  pickup_accepted?: boolean | null;
+  proposed_date?: string | null;
+  confirmed_date?: string | null;
   pickup_date?: string | null;
+  registered_address_confirmed?: boolean | null;
   address_confirmed?: boolean | null;
+  new_address?: string | null;
   corrected_address?: string | null;
+  alternate_phone?: string | null;
+  customer_note?: string | null;
+  escalation_required?: boolean | null;
+  transcript_reference?: string | null;
   transcript?: any;
+  duration_seconds?: number | null;
+  median_latency_ms?: number | null;
+  cost_estimate_inr?: number | null;
+  recording_url?: string | null;
 }
+
+export interface LeadInput {
+  name: string;
+  phone: string;
+  address: string;
+  language?: string;
+  account_no?: string;
+  subs_del_no?: string;
+  service_end_date?: string;
+  r_date?: string;
+}
+
+// Terminal dispositions that close the case and do not trigger retries
+const TERMINAL_DISPOSITIONS = new Set([
+  'CONFIRMED_FOR_PICKUP',
+  'PICKUP_CONFIRMED',
+  'PICKUP_CONFIRMED_NEW_DATE',
+  'REFUSED_TO_RETURN',
+  'PICKUP_DECLINED',
+  'ALREADY_RETURNED',
+  'ALREADY_PICKED_UP',
+  'REFUND_REQUEST',
+  'REFUND_OR_OWNERSHIP_QUERY',
+  'RECHARGED_DEVICE',
+  'ALREADY_RECHARGED',
+  'DAMAGED_DEVICE',
+  'LOST_DEVICE',
+  'WRONG_NUMBER',
+  'WRONG_NUMBER_OR_IDENTITY_NOT_CONFIRMED',
+  'DO_NOT_CALL',
+  'COMPLAINT_ESCALATION',
+  'NEEDS_AIRTEL_SUPPORT',
+]);
 
 export class CallService {
   private sipClient: SipClient;
@@ -51,7 +105,9 @@ export class CallService {
   async initiateCall(customerId: string): Promise<CallRecord> {
     // 1. Load customer
     const custRes = await query(
-      'SELECT id, name, phone, address, language FROM customers WHERE id = $1',
+      `SELECT id, name, phone, address, language, account_no, subs_del_no, 
+              service_end_date, r_date, total_attempts, max_attempts, is_closed 
+       FROM customers WHERE id = $1`,
       [customerId]
     );
 
@@ -60,22 +116,37 @@ export class CallService {
     }
     const customer = custRes.rows[0];
 
-    // 2. Insert call record with 'initiated'
+    if (customer.is_closed) {
+      logger.warn({ customerId, disposition: customer.current_disposition }, 'Customer is already closed/dispositioned');
+    }
+
+    const currentAttempt = (customer.total_attempts || 0) + 1;
+
+    // 2. Insert call record with 'initiated' and attempt_number
     const callId = randomUUID();
     const roomName = `call-${callId}`;
 
-    logger.info({ customerId, callId, roomName, phone: customer.phone }, 'Initiating outbound call');
+    logger.info(
+      { customerId, callId, roomName, phone: customer.phone, attempt: currentAttempt },
+      'Initiating outbound call'
+    );
+
+    // Increment customer attempts
+    await query(
+      'UPDATE customers SET total_attempts = total_attempts + 1 WHERE id = $1',
+      [customerId]
+    );
 
     const insertRes = await query<CallRecord>(
-      `INSERT INTO calls (id, customer_id, status, room_name)
-       VALUES ($1, $2, 'initiated', $3)
+      `INSERT INTO calls (id, customer_id, status, call_status, attempt_number, room_name)
+       VALUES ($1, $2, 'initiated', 'initiated', $3, $4)
        RETURNING *`,
-      [callId, customerId, roomName]
+      [callId, customerId, currentAttempt, roomName]
     );
     const call = insertRes.rows[0];
 
-    // Perform dial asynchronously so the API responds quickly, while updating states
-    this.executeOutboundCallWorkflow(callId, customer, roomName).catch((err) => {
+    // Perform dial asynchronously
+    this.executeOutboundCallWorkflow(callId, customer, roomName, currentAttempt).catch((err) => {
       logger.error({ err, callId }, 'Unhandled error in outbound call workflow');
     });
 
@@ -83,9 +154,14 @@ export class CallService {
   }
 
   /**
-   * Internal workflow: Creates room, dispatches agent, dials SIP participant, and handles dial results.
+   * Internal workflow: Creates room, dispatches agent with account metadata, dials SIP participant.
    */
-  private async executeOutboundCallWorkflow(callId: string, customer: any, roomName: string) {
+  private async executeOutboundCallWorkflow(
+    callId: string,
+    customer: any,
+    roomName: string,
+    attemptNumber: number
+  ) {
     try {
       // 1. Ensure room exists
       await this.roomService.createRoom({
@@ -93,20 +169,25 @@ export class CallService {
         emptyTimeout: 300,
       });
 
-      // 2. Create explicit agent dispatch
+      // 2. Create explicit agent dispatch with full Airtel account metadata
       logger.info({ roomName, agentName: env.AGENT_NAME }, 'Creating agent dispatch');
       await this.dispatchClient.createDispatch(roomName, env.AGENT_NAME, {
         metadata: JSON.stringify({
           callId,
+          customerId: customer.id,
           customerName: customer.name,
           address: customer.address,
           phone: customer.phone,
-          preferredLanguage: customer.language,
+          preferredLanguage: customer.language || 'hi',
+          accountNo: customer.account_no || '',
+          subsDelNo: customer.subs_del_no || '',
+          serviceEndDate: customer.service_end_date ? customer.service_end_date.toString() : '',
+          attemptNumber,
         }),
       });
 
       // 3. Update call status to 'dialing'
-      await query("UPDATE calls SET status = 'dialing' WHERE id = $1", [callId]);
+      await query("UPDATE calls SET status = 'dialing', call_status = 'dialing' WHERE id = $1", [callId]);
       logger.info({ callId, phone: customer.phone }, 'Updated call status to dialing. Calling SIP trunk...');
 
       // 4. Dial SIP participant
@@ -128,6 +209,7 @@ export class CallService {
       await query(
         `UPDATE calls 
          SET status = 'answered', 
+             call_status = 'answered',
              sip_call_id = $1, 
              answered_at = NOW() 
          WHERE id = $2`,
@@ -135,20 +217,20 @@ export class CallService {
       );
 
     } catch (err: any) {
-      let mappedStatus: 'no_answer' | 'busy' | 'failed' = 'failed';
+      let mappedStatus: 'NO_ANSWER' | 'BUSY' | 'FAILED' = 'FAILED';
       let failureReason = err.message || 'Call placement failed';
 
       if (err instanceof SipCallError) {
         failureReason = `SIP ${err.sipStatusCode} (${err.sipStatus || 'Error'}): ${err.message}`;
         if (err.sipStatusCode === 486 || err.sipStatusCode === 600) {
-          mappedStatus = 'busy';
+          mappedStatus = 'BUSY';
         } else if (err.sipStatusCode === 408 || err.sipStatusCode === 480 || err.sipStatusCode === 487) {
-          mappedStatus = 'no_answer';
+          mappedStatus = 'NO_ANSWER';
         } else {
-          mappedStatus = 'failed';
+          mappedStatus = 'FAILED';
         }
       } else if (err.message && err.message.toLowerCase().includes('timeout')) {
-        mappedStatus = 'no_answer';
+        mappedStatus = 'NO_ANSWER';
       }
 
       logger.warn({ callId, mappedStatus, failureReason }, 'Outbound dial failed or rejected');
@@ -156,13 +238,16 @@ export class CallService {
       await query(
         `UPDATE calls 
          SET status = $1, 
+             call_status = $1,
              failure_reason = $2, 
              ended_at = NOW() 
          WHERE id = $3`,
         [mappedStatus, failureReason, callId]
       );
 
-      // Clean up empty room on failed dial
+      // Trigger retry evaluation on telephony failure
+      await this.evaluateRetry(customer.id, mappedStatus, null);
+
       try {
         await this.roomService.deleteRoom(roomName);
       } catch (_) {}
@@ -170,92 +255,289 @@ export class CallService {
   }
 
   /**
-   * Idempotent save outcome handler.
+   * Evaluates the retry schedule based on Airtel retry rules.
+   */
+  private async evaluateRetry(customerId: string, disposition: string, _date: string | null) {
+    const custRes = await query(
+      'SELECT id, total_attempts, max_attempts FROM customers WHERE id = $1',
+      [customerId]
+    );
+    if (custRes.rows.length === 0) return;
+    const cust = custRes.rows[0];
+
+    const isTerminal = TERMINAL_DISPOSITIONS.has(disposition);
+
+    if (isTerminal) {
+      await query(
+        `UPDATE customers 
+         SET current_disposition = $1, is_closed = TRUE, next_attempt_time = NULL 
+         WHERE id = $2`,
+        [disposition, customerId]
+      );
+      logger.info({ customerId, disposition }, 'Customer closed with terminal disposition');
+      return;
+    }
+
+    // Customer is not terminal (retryable outcome)
+    if (cust.total_attempts >= cust.max_attempts) {
+      // Reached maximum attempts (3) -> Close as NOT_REACHED
+      await query(
+        `UPDATE customers 
+         SET current_disposition = 'NOT_REACHED', is_closed = TRUE, next_attempt_time = NULL 
+         WHERE id = $1`,
+        [customerId]
+      );
+      logger.info({ customerId, attempts: cust.total_attempts }, 'Max attempts reached. Closed customer as NOT_REACHED');
+      return;
+    }
+
+    // Schedule next attempt
+    let nextAttemptSql: string;
+    if (cust.total_attempts === 1) {
+      // Attempt 2: at least 3 hours after previous one
+      nextAttemptSql = "NOW() + INTERVAL '3 hours'";
+    } else {
+      // Attempt 3: next calling day (tomorrow at 10:30 AM)
+      nextAttemptSql = "(DATE_TRUNC('day', NOW() + INTERVAL '1 day') + INTERVAL '10 hours 30 minutes')";
+    }
+
+    await query(
+      `UPDATE customers 
+       SET current_disposition = $1, 
+           next_attempt_time = ${nextAttemptSql} 
+       WHERE id = $2`,
+      [disposition, customerId]
+    );
+
+    logger.info(
+      { customerId, disposition, attempt: cust.total_attempts },
+      'Scheduled next retry attempt for customer'
+    );
+  }
+
+  /**
+   * Idempotent save outcome handler with Airtel disposition & retry logic.
    */
   async saveOutcome(callId: string, data: SaveOutcomeInput) {
-    logger.info({ callId, outcome: data.outcome }, 'Saving call outcome (idempotent)');
+    const finalDisp = data.final_disposition || data.outcome || 'DISCONNECTED';
+    logger.info({ callId, finalDisposition: finalDisp }, 'Saving call outcome (idempotent)');
 
     // Ensure call exists
-    const callRes = await query('SELECT id, status FROM calls WHERE id = $1', [callId]);
+    const callRes = await query('SELECT id, customer_id, status FROM calls WHERE id = $1', [callId]);
     if (callRes.rows.length === 0) {
       throw new AppError(`Call not found: ${callId}`, 404);
     }
+    const call = callRes.rows[0];
 
     const transcriptJson = data.transcript ? JSON.stringify(data.transcript) : null;
+    const baseOutcome = data.outcome || finalDisp.toLowerCase();
 
     // Idempotent upsert into call_outcomes
     const outcomeRes = await query(
-      `INSERT INTO call_outcomes (call_id, outcome, pickup_date, address_confirmed, corrected_address, transcript)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO call_outcomes (
+         call_id, outcome, pickup_date, address_confirmed, corrected_address, transcript,
+         identity_confirmed, pickup_accepted, proposed_date, confirmed_date,
+         registered_address_confirmed, new_address, alternate_phone,
+         final_disposition, customer_note, escalation_required, transcript_reference
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
        ON CONFLICT (call_id)
        DO UPDATE SET 
          outcome = EXCLUDED.outcome,
          pickup_date = EXCLUDED.pickup_date,
          address_confirmed = EXCLUDED.address_confirmed,
          corrected_address = EXCLUDED.corrected_address,
-         transcript = EXCLUDED.transcript
+         transcript = EXCLUDED.transcript,
+         identity_confirmed = EXCLUDED.identity_confirmed,
+         pickup_accepted = EXCLUDED.pickup_accepted,
+         proposed_date = EXCLUDED.proposed_date,
+         confirmed_date = EXCLUDED.confirmed_date,
+         registered_address_confirmed = EXCLUDED.registered_address_confirmed,
+         new_address = EXCLUDED.new_address,
+         alternate_phone = EXCLUDED.alternate_phone,
+         final_disposition = EXCLUDED.final_disposition,
+         customer_note = EXCLUDED.customer_note,
+         escalation_required = EXCLUDED.escalation_required,
+         transcript_reference = EXCLUDED.transcript_reference
        RETURNING *`,
       [
         callId,
-        data.outcome,
-        data.pickup_date || null,
-        data.address_confirmed ?? null,
-        data.corrected_address || null,
+        baseOutcome,
+        data.confirmed_date || data.proposed_date || data.pickup_date || null,
+        data.registered_address_confirmed ?? data.address_confirmed ?? null,
+        data.new_address || data.corrected_address || null,
         transcriptJson,
+        data.identity_confirmed ?? null,
+        data.pickup_accepted ?? null,
+        data.proposed_date || null,
+        data.confirmed_date || null,
+        data.registered_address_confirmed ?? null,
+        data.new_address || null,
+        data.alternate_phone || null,
+        finalDisp,
+        data.customer_note || null,
+        data.escalation_required ?? false,
+        data.transcript_reference || null,
       ]
     );
 
-    // Update call status to completed and set ended_at if not already ended
+    // Update call status and metrics
+    const duration = data.duration_seconds || 0;
+    const medianLatency = data.median_latency_ms || null;
+    const costEstimate = data.cost_estimate_inr || (duration > 0 ? (duration / 60) * 2.4 : 0.04);
+
     await query(
       `UPDATE calls 
-       SET status = CASE WHEN status IN ('answered', 'dialing', 'initiated') THEN 'completed' ELSE status END,
+       SET status = 'COMPLETED',
+           call_status = $1,
+           duration_seconds = $2,
+           median_latency_ms = $3,
+           cost_estimate_inr = $4,
+           recording_url = COALESCE($5, recording_url),
            ended_at = COALESCE(ended_at, NOW())
-       WHERE id = $1`,
-      [callId]
+       WHERE id = $6`,
+      [finalDisp, duration, medianLatency, costEstimate, data.recording_url || null, callId]
     );
+
+    // Evaluate retry rules for customer
+    await this.evaluateRetry(call.customer_id, finalDisp, data.confirmed_date || null);
 
     return outcomeRes.rows[0];
   }
 
   /**
-   * Fetches a call with customer details and outcome.
+   * Fetches pending customers for retries.
    */
-  async getCall(callId: string) {
+  async getPendingRetries(limit = 50) {
     const res = await query(
-      `SELECT c.*, 
-              cust.name as customer_name, cust.phone as customer_phone, cust.address as customer_address,
-              co.outcome, co.pickup_date, co.address_confirmed, co.corrected_address, co.transcript
-       FROM calls c
-       JOIN customers cust ON c.customer_id = cust.id
-       LEFT JOIN call_outcomes co ON c.id = co.call_id
-       WHERE c.id = $1`,
-      [callId]
-    );
-
-    if (res.rows.length === 0) {
-      throw new AppError(`Call not found: ${callId}`, 404);
-    }
-
-    return res.rows[0];
-  }
-
-  /**
-   * Lists latest 20 calls.
-   */
-  async listRecentCalls(limit = 20) {
-    const res = await query(
-      `SELECT c.*, 
-              cust.name as customer_name, cust.phone as customer_phone,
-              co.outcome, co.pickup_date
-       FROM calls c
-       JOIN customers cust ON c.customer_id = cust.id
-       LEFT JOIN call_outcomes co ON c.id = co.call_id
-       ORDER BY c.created_at DESC
+      `SELECT * FROM customers 
+       WHERE is_closed = FALSE 
+         AND total_attempts < max_attempts 
+         AND (next_attempt_time IS NULL OR next_attempt_time <= NOW())
+       ORDER BY next_attempt_time ASC NULLS FIRST
        LIMIT $1`,
       [limit]
     );
-
     return res.rows;
+  }
+
+  /**
+   * Bulk import leads matching Excel sheet columns.
+   */
+  async importLeads(leads: LeadInput[]) {
+    const inserted = [];
+    for (const lead of leads) {
+      const res = await query(
+        `INSERT INTO customers (
+           name, phone, address, language, account_no, subs_del_no, service_end_date, r_date,
+           total_attempts, max_attempts, next_attempt_time
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 3, NOW())
+         ON CONFLICT (phone)
+         DO UPDATE SET 
+           name = EXCLUDED.name,
+           address = EXCLUDED.address,
+           account_no = COALESCE(EXCLUDED.account_no, customers.account_no),
+           subs_del_no = COALESCE(EXCLUDED.subs_del_no, customers.subs_del_no),
+           service_end_date = COALESCE(EXCLUDED.service_end_date, customers.service_end_date),
+           r_date = COALESCE(EXCLUDED.r_date, customers.r_date)
+         RETURNING *`,
+        [
+          lead.name || 'Customer',
+          lead.phone,
+          lead.address,
+          lead.language || 'hi',
+          lead.account_no || null,
+          lead.subs_del_no || null,
+          lead.service_end_date || null,
+          lead.r_date || null,
+        ]
+      );
+      inserted.push(res.rows[0]);
+    }
+    return inserted;
+  }
+
+  /**
+   * Generates the campaign summary matching Image 1: "Airtel IP TV Urgent Campaign Summary"
+   */
+  async getCampaignSummary() {
+    const totalCustomersRes = await query('SELECT COUNT(*) as count, COUNT(DISTINCT phone) as unique_contacts FROM customers');
+    const totalCallsRes = await query('SELECT COUNT(*) as attempts, COUNT(*) FILTER (WHERE status IN (\'answered\', \'completed\', \'COMPLETED\')) as connected FROM calls');
+    const dispositionedRes = await query('SELECT COUNT(*) as count FROM customers WHERE is_closed = TRUE OR current_disposition != \'PENDING\'');
+
+    const dispositionsQuery = await query(`
+      SELECT current_disposition, COUNT(*) as count
+      FROM customers
+      WHERE current_disposition IS NOT NULL AND current_disposition != 'PENDING'
+      GROUP BY current_disposition
+    `);
+
+    const dispMap: Record<string, number> = {};
+    for (const r of dispositionsQuery.rows) {
+      dispMap[r.current_disposition] = parseInt(r.count, 10);
+    }
+
+    const sourceRows = parseInt(totalCustomersRes.rows[0]?.count || '0', 10);
+    const uniqueContacts = parseInt(totalCustomersRes.rows[0]?.unique_contacts || '0', 10);
+    const connectedCalls = parseInt(totalCallsRes.rows[0]?.connected || '0', 10);
+    const totalAttempts = parseInt(totalCallsRes.rows[0]?.attempts || '0', 10);
+    const dispositionedContacts = parseInt(dispositionedRes.rows[0]?.count || '0', 10);
+
+    return {
+      overview: {
+        sourceRows,
+        uniqueContacts,
+        connectedCalls,
+        totalAttempts,
+        dispositionedContacts,
+      },
+      categories: [
+        {
+          category: 'Ready For Pickup',
+          dispositions: [
+            { name: 'Confirmed For Pickup', count: dispMap['CONFIRMED_FOR_PICKUP'] || 0 },
+            { name: 'Willing To Pickup', count: dispMap['WILLING_TO_PICKUP'] || 0 },
+          ],
+        },
+        {
+          category: 'Scheduled Callback',
+          dispositions: [
+            { name: 'Schedule Callback', count: dispMap['SCHEDULE_CALLBACK'] || 0 },
+          ],
+        },
+        {
+          category: 'Will Not Return',
+          dispositions: [
+            { name: 'Already Returned Device', count: (dispMap['ALREADY_RETURNED'] || 0) + (dispMap['ALREADY_PICKED_UP'] || 0) },
+            { name: 'Refused To Return', count: dispMap['REFUSED_TO_RETURN'] || 0 },
+            { name: 'Willing To Recharge', count: dispMap['WILLING_TO_RECHARGE'] || 0 },
+            { name: 'Already Recharged', count: dispMap['RECHARGED_DEVICE'] || 0 },
+            { name: 'Damaged Device', count: dispMap['DAMAGED_DEVICE'] || 0 },
+            { name: 'Lost Device', count: dispMap['LOST_DEVICE'] || 0 },
+            { name: 'Refund Request', count: dispMap['REFUND_REQUEST'] || 0 },
+          ],
+        },
+        {
+          category: 'Other Customer Outcomes',
+          dispositions: [
+            { name: 'Wrong Number', count: dispMap['WRONG_NUMBER'] || 0 },
+            { name: 'Language Barrier', count: dispMap['LANGUAGE_BARRIER'] || 0 },
+            { name: 'Do Not Call', count: dispMap['DO_NOT_CALL'] || 0 },
+            { name: 'Abruptly Disconnected Call', count: dispMap['DISCONNECTED'] || 0 },
+          ],
+        },
+        {
+          category: "Customer couldn't be connected after multiple attempts",
+          dispositions: [
+            { name: 'Voicemail or IVR Detected', count: dispMap['VOICEMAIL'] || 0 },
+            { name: 'Not Connected (No Answer)', count: dispMap['NO_ANSWER'] || 0 },
+            { name: 'Not Connected (Failed)', count: dispMap['FAILED'] || 0 },
+            { name: 'Not Reached (Max attempts)', count: dispMap['NOT_REACHED'] || 0 },
+          ],
+        },
+      ],
+    };
   }
 
   /**
@@ -284,6 +566,7 @@ export class CallService {
         await query(
           `UPDATE calls 
            SET status = 'answered', 
+               call_status = 'answered',
                answered_at = COALESCE(answered_at, NOW()) 
            WHERE id = $1 AND status IN ('initiated', 'dialing')`,
           [callId]
@@ -309,17 +592,64 @@ export class CallService {
   async sweepStuckCalls() {
     const res = await query(
       `UPDATE calls 
-       SET status = 'no_answer', 
+       SET status = 'NO_ANSWER', 
+           call_status = 'NO_ANSWER',
            failure_reason = 'Dialing timeout: callee did not answer within timeout period',
            ended_at = NOW() 
        WHERE status IN ('initiated', 'dialing') 
          AND created_at < NOW() - INTERVAL '3 minutes'
-       RETURNING id, room_name, created_at`
+       RETURNING id, customer_id, room_name, created_at`
     );
 
     if (res.rows.length > 0) {
-      logger.warn({ sweptCount: res.rows.length, sweptCalls: res.rows }, 'Sweeper resolved stuck calls to no_answer');
+      logger.warn({ sweptCount: res.rows.length, sweptCalls: res.rows }, 'Sweeper resolved stuck calls to NO_ANSWER');
+      for (const row of res.rows) {
+        await this.evaluateRetry(row.customer_id, 'NO_ANSWER', null);
+      }
     }
+  }
+
+  /**
+   * Fetches a call with customer details and outcome.
+   */
+  async getCall(callId: string) {
+    const res = await query(
+      `SELECT c.*, 
+              cust.name as customer_name, cust.phone as customer_phone, cust.address as customer_address,
+              cust.account_no, cust.subs_del_no, cust.service_end_date, cust.total_attempts,
+              co.outcome, co.final_disposition, co.pickup_date, co.confirmed_date,
+              co.address_confirmed, co.new_address, co.transcript, co.customer_note
+       FROM calls c
+       JOIN customers cust ON c.customer_id = cust.id
+       LEFT JOIN call_outcomes co ON c.id = co.call_id
+       WHERE c.id = $1`,
+      [callId]
+    );
+
+    if (res.rows.length === 0) {
+      throw new AppError(`Call not found: ${callId}`, 404);
+    }
+
+    return res.rows[0];
+  }
+
+  /**
+   * Lists latest 20 calls.
+   */
+  async listRecentCalls(limit = 20) {
+    const res = await query(
+      `SELECT c.*, 
+              cust.name as customer_name, cust.phone as customer_phone,
+              co.final_disposition, co.confirmed_date, co.pickup_date
+       FROM calls c
+       JOIN customers cust ON c.customer_id = cust.id
+       LEFT JOIN call_outcomes co ON c.id = co.call_id
+       ORDER BY c.created_at DESC
+       LIMIT $1`,
+      [limit]
+    );
+
+    return res.rows;
   }
 }
 
