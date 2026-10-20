@@ -58,7 +58,7 @@ if (process.env.NODE_ENV !== 'test') {
 
     // Start stuck calls sweeper every 30 seconds
     sweeperInterval = setInterval(() => {
-      callService.sweepStuckCalls().catch((err) => {
+      callService.sweepStuckCalls().catch((err: any) => {
         logger.error({ err }, 'Error running stuck calls sweeper');
       });
     }, 30000);
