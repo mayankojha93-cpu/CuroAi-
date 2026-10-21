@@ -1,14 +1,20 @@
 import React, { useState } from 'react';
-import { Search, Phone, User, Calendar } from 'lucide-react';
+import { Search, Phone, User, Calendar, UploadCloud } from 'lucide-react';
 import type { Customer } from '../../types';
 
 interface LeadDirectoryProps {
   customers: Customer[];
   onDial: (customerId: string, name?: string) => void;
   dialingId: string | null;
+  onImportModalOpen?: () => void;
 }
 
-export const LeadDirectory: React.FC<LeadDirectoryProps> = ({ customers, onDial, dialingId }) => {
+export const LeadDirectory: React.FC<LeadDirectoryProps> = ({ 
+  customers, 
+  onDial, 
+  dialingId,
+  onImportModalOpen 
+}) => {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'ALL' | 'PENDING' | 'CONFIRMED' | 'DECLINED' | 'RETRYING'>('ALL');
 
@@ -90,25 +96,50 @@ export const LeadDirectory: React.FC<LeadDirectoryProps> = ({ customers, onDial,
           />
         </div>
 
-        {/* Filter Pills */}
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {(['ALL', 'PENDING', 'CONFIRMED', 'DECLINED', 'RETRYING'] as const).map((tab) => (
+        {/* Filter Pills and Action */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {(['ALL', 'PENDING', 'CONFIRMED', 'DECLINED', 'RETRYING'] as const).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setFilter(tab)}
+                style={{
+                  padding: '6px 14px',
+                  borderRadius: 20,
+                  fontSize: '0.78rem',
+                  fontWeight: 600,
+                  background: filter === tab ? 'var(--airtel-red)' : 'rgba(255, 255, 255, 0.05)',
+                  color: filter === tab ? '#fff' : 'var(--text-secondary)',
+                  border: filter === tab ? '1px solid var(--airtel-red)' : '1px solid var(--border-subtle)',
+                }}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+
+          {onImportModalOpen && (
             <button
-              key={tab}
-              onClick={() => setFilter(tab)}
+              onClick={onImportModalOpen}
               style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                background: 'rgba(56, 189, 248, 0.12)',
+                border: '1px solid rgba(56, 189, 248, 0.3)',
+                color: 'var(--accent-cyan)',
                 padding: '6px 14px',
                 borderRadius: 20,
                 fontSize: '0.78rem',
-                fontWeight: 600,
-                background: filter === tab ? 'var(--airtel-red)' : 'rgba(255, 255, 255, 0.05)',
-                color: filter === tab ? '#fff' : 'var(--text-secondary)',
-                border: filter === tab ? '1px solid var(--airtel-red)' : '1px solid var(--border-subtle)',
+                fontWeight: 700,
+                cursor: 'pointer',
               }}
+              title="Upload leads CSV file"
             >
-              {tab}
+              <UploadCloud size={14} />
+              Upload CSV
             </button>
-          ))}
+          )}
         </div>
       </div>
 

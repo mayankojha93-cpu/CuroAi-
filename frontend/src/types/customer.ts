@@ -17,12 +17,13 @@ export interface Customer {
 }
 
 export interface CustomerCreateInput {
-  name: string;
-  phone: string;
+  name?: string;
+  phone?: string;
   address?: string;
   language?: string;
   account_no?: string;
   subs_del_no?: string;
   service_end_date?: string;
   r_date?: string;
+  check?: string;
 }
