@@ -10,7 +10,8 @@
     "migrate": "tsx src/db/migrate.ts",
     "seed": "tsx src/db/seed.ts",
     "trunk:create": "tsx scripts/create-outbound-trunk.ts",
-    "trunk:dial": "tsx scripts/test-dial.ts"
+    "trunk:dial": "tsx scripts/test-dial.ts",
+    "call:test": "tsx scripts/test-agent-call.ts"
   },
   "dependencies": {
     "@livekit/protocol": "^1.51.0",

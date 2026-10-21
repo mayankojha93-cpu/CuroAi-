@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { callService } from '../services/callService.js';
 import { validateRequest } from '../middleware/validate.js';
+import { parseCsvToLeads } from '../utils/csvParser.js';
 
 export const callsRouter = Router();
 
@@ -17,20 +18,27 @@ const getCallSchema = {
   }),
 };
 
+const importLeadItemSchema = z.object({
+  name: z.string().optional().default('Airtel Subscriber'),
+  phone: z.string().optional(),
+  address: z.string().optional().default('Address On Record'),
+  language: z.string().optional().default('hi'),
+  account_no: z.string().optional(),
+  subs_del_no: z.string().optional(),
+  service_end_date: z.string().optional(),
+  r_date: z.string().optional(),
+  check: z.string().optional(),
+}).refine((data) => (data.phone && data.phone.trim().length > 0) || (data.subs_del_no && data.subs_del_no.trim().length > 0), {
+  message: 'Either phone or subs_del_no must be provided to determine the dialable number',
+  path: ['phone'],
+});
+
 const importLeadsSchema = {
   body: z.object({
-    leads: z.array(
-      z.object({
-        name: z.string().default('Customer'),
-        phone: z.string().min(10, { message: 'Phone must be valid' }),
-        address: z.string().min(3, { message: 'Address is required' }),
-        language: z.string().optional().default('hi'),
-        account_no: z.string().optional(),
-        subs_del_no: z.string().optional(),
-        service_end_date: z.string().optional(),
-        r_date: z.string().optional(),
-      })
-    ).min(1, { message: 'Leads array cannot be empty' }),
+    leads: z.array(importLeadItemSchema).optional(),
+    csv: z.string().optional(),
+  }).refine((data) => (data.leads && data.leads.length > 0) || (data.csv && data.csv.trim().length > 0), {
+    message: 'Either leads array or csv string must be provided',
   }),
 };
 
@@ -58,18 +66,108 @@ callsRouter.post(
   }
 );
 
-// POST /api/leads/import - Bulk import leads from CSV/Excel
+const testCallSchema = {
+  body: z.object({
+    phone: z.string().min(5, { message: 'Phone or dialable number is required' }),
+    name: z.string().optional().default('Test Subscriber'),
+    address: z.string().optional().default('Delhi, 110011, burari, sant nagar'),
+    account_no: z.string().optional().default('20022941256'),
+    subs_del_no: z.string().optional().default('01121344121_wifi'),
+    service_end_date: z.string().optional().default('2026-08-27'),
+    r_date: z.string().optional().default('2026-08-29'),
+    language: z.string().optional().default('hi'),
+  }),
+};
+
+// POST /api/calls/test - Place developer test call with sample presets
 callsRouter.post(
-  '/api/leads/import',
-  validateRequest(importLeadsSchema),
+  '/api/calls/test',
+  validateRequest(testCallSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { leads } = req.body;
+      const { call, customer } = await callService.initiateTestCall(req.body);
+      return res.status(201).json({
+        success: true,
+        message: `Test call placed successfully to ${customer.phone}`,
+        call: {
+          id: call.id,
+          customerId: customer.id,
+          status: call.status,
+          roomName: call.room_name,
+          phone: customer.phone,
+          customerName: customer.name,
+          accountNo: customer.account_no,
+          subsDelNo: customer.subs_del_no,
+          serviceEndDate: customer.service_end_date,
+          createdAt: call.created_at,
+        },
+      });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
+// POST /api/leads/import - Bulk import leads from CSV/Excel JSON
+callsRouter.post(
+  '/api/leads/import',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      let leadsToImport: any[] = [];
+
+      // If raw text or string CSV was sent
+      if (typeof req.body === 'string' && req.body.trim()) {
+        leadsToImport = parseCsvToLeads(req.body);
+      } else if (req.body?.csv && typeof req.body.csv === 'string') {
+        leadsToImport = parseCsvToLeads(req.body.csv);
+      } else if (Array.isArray(req.body?.leads)) {
+        leadsToImport = req.body.leads;
+      } else if (Array.isArray(req.body)) {
+        leadsToImport = req.body;
+      }
+
+      if (leadsToImport.length === 0) {
+        return res.status(400).json({
+          error: 'No valid leads found in request payload. Provide a CSV file or leads array.',
+        });
+      }
+
+      const imported = await callService.importLeads(leadsToImport);
+      return res.status(201).json({
+        success: true,
+        message: `Successfully imported ${imported.length} leads into campaign`,
+        count: imported.length,
+        leads: imported,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
+// POST /api/leads/upload-csv - Dedicated CSV text/file import endpoint
+callsRouter.post(
+  '/api/leads/upload-csv',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const csvContent = typeof req.body === 'string' ? req.body : req.body?.csv;
+      if (!csvContent || typeof csvContent !== 'string' || !csvContent.trim()) {
+        return res.status(400).json({ error: 'Missing CSV content in request body' });
+      }
+
+      const leads = parseCsvToLeads(csvContent);
+      if (leads.length === 0) {
+        return res.status(400).json({
+          error: 'Could not parse any lead records from the provided CSV content. Ensure columns like SUBS_DEL_NO, ACCOUNT_NO, Address are present.',
+        });
+      }
+
       const imported = await callService.importLeads(leads);
       return res.status(201).json({
         success: true,
-        message: `Successfully imported ${imported.length} leads`,
+        message: `Successfully processed CSV and imported ${imported.length} leads`,
         count: imported.length,
+        leads: imported,
       });
     } catch (err) {
       return next(err);

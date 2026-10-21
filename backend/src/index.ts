@@ -25,6 +25,7 @@ app.use(
   })
 );
 app.use(express.urlencoded({ extended: true }));
+app.use(express.text({ type: ['text/csv', 'text/plain'], limit: '10mb' }));
 
 // Structured request logging with Pino
 app.use(

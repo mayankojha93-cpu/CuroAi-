@@ -11,6 +11,7 @@ import { pool, query } from '../db/index.js';
 import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { AppError } from '../middleware/errorHandler.js';
+import { normalizeDate, normalizePhone } from '../utils/csvParser.js';
 
 export interface CallRecord {
   id: string;
@@ -54,14 +55,15 @@ export interface SaveOutcomeInput {
 }
 
 export interface LeadInput {
-  name: string;
-  phone: string;
-  address: string;
+  name?: string;
+  phone?: string;
+  address?: string;
   language?: string;
   account_no?: string;
   subs_del_no?: string;
   service_end_date?: string;
   r_date?: string;
+  check?: string;
 }
 
 // Terminal dispositions that close the case and do not trigger retries
@@ -154,6 +156,56 @@ export class CallService {
   }
 
   /**
+   * Places a developer test call with customizable lead attributes (name, phone, account, wifi id, etc.)
+   */
+  async initiateTestCall(data: {
+    phone: string;
+    name?: string;
+    address?: string;
+    account_no?: string;
+    subs_del_no?: string;
+    service_end_date?: string;
+    r_date?: string;
+    language?: string;
+  }) {
+    const normalizedPhone = normalizePhone(data.phone, data.subs_del_no);
+    const normalizedServiceEnd = normalizeDate(data.service_end_date);
+    const normalizedRDate = normalizeDate(data.r_date);
+
+    // Upsert customer for test call
+    const custRes = await query(
+      `INSERT INTO customers (
+         name, phone, address, language, account_no, subs_del_no, service_end_date, r_date,
+         total_attempts, max_attempts, next_attempt_time
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 3, NOW())
+       ON CONFLICT (phone)
+       DO UPDATE SET
+         name = EXCLUDED.name,
+         address = EXCLUDED.address,
+         account_no = COALESCE(EXCLUDED.account_no, customers.account_no),
+         subs_del_no = COALESCE(EXCLUDED.subs_del_no, customers.subs_del_no),
+         service_end_date = COALESCE(EXCLUDED.service_end_date, customers.service_end_date),
+         r_date = COALESCE(EXCLUDED.r_date, customers.r_date)
+       RETURNING *`,
+      [
+        data.name || 'Test Subscriber',
+        normalizedPhone,
+        data.address || 'Delhi, 110011, burari, sant nagar',
+        data.language || 'hi',
+        data.account_no || '20022941256',
+        data.subs_del_no || '01121344121_wifi',
+        normalizedServiceEnd || '2026-08-27',
+        normalizedRDate || '2026-08-29',
+      ]
+    );
+
+    const customer = custRes.rows[0];
+    const call = await this.initiateCall(customer.id);
+    return { call, customer };
+  }
+
+  /**
    * Internal workflow: Creates room, dispatches agent with account metadata, dials SIP participant.
    */
   private async executeOutboundCallWorkflow(
@@ -182,6 +234,7 @@ export class CallService {
           accountNo: customer.account_no || '',
           subsDelNo: customer.subs_del_no || '',
           serviceEndDate: customer.service_end_date ? customer.service_end_date.toString() : '',
+          rDate: customer.r_date ? customer.r_date.toString() : '',
           attemptNumber,
         }),
       });
@@ -427,6 +480,12 @@ export class CallService {
   async importLeads(leads: LeadInput[]) {
     const inserted = [];
     for (const lead of leads) {
+      const normalizedPhone = normalizePhone(lead.phone, lead.subs_del_no);
+      const normalizedServiceEnd = normalizeDate(lead.service_end_date);
+      const normalizedRDate = normalizeDate(lead.r_date);
+      const name = (lead.name && lead.name.trim()) || 'Airtel Subscriber';
+      const address = (lead.address && lead.address.trim()) || 'Address On Record';
+
       const res = await query(
         `INSERT INTO customers (
            name, phone, address, language, account_no, subs_del_no, service_end_date, r_date,
@@ -443,14 +502,14 @@ export class CallService {
            r_date = COALESCE(EXCLUDED.r_date, customers.r_date)
          RETURNING *`,
         [
-          lead.name || 'Customer',
-          lead.phone,
-          lead.address,
+          name,
+          normalizedPhone,
+          address,
           lead.language || 'hi',
           lead.account_no || null,
           lead.subs_del_no || null,
-          lead.service_end_date || null,
-          lead.r_date || null,
+          normalizedServiceEnd,
+          normalizedRDate,
         ]
       );
       inserted.push(res.rows[0]);
