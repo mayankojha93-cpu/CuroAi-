@@ -8,6 +8,7 @@ interface HeaderProps {
   onRefresh: () => void;
   onSeedLead: () => void;
   onImportModalOpen?: () => void;
+  onTestCallOpen?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({ 
@@ -15,7 +16,8 @@ export const Header: React.FC<HeaderProps> = ({
   loading, 
   onRefresh, 
   onSeedLead,
-  onImportModalOpen
+  onImportModalOpen,
+  onTestCallOpen
 }) => {
   return (
     <header style={{
@@ -134,6 +136,30 @@ export const Header: React.FC<HeaderProps> = ({
             >
               <UploadCloud size={15} color="var(--accent-blue)" />
               Import Leads
+            </button>
+          )}
+
+          {onTestCallOpen && (
+            <button
+              onClick={onTestCallOpen}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                background: 'rgba(228, 0, 0, 0.12)',
+                border: '1px solid rgba(228, 0, 0, 0.45)',
+                color: '#ff4d4d',
+                padding: '8px 14px',
+                borderRadius: 'var(--radius-md)',
+                fontSize: '0.82rem',
+                fontWeight: 700,
+                boxShadow: '0 0 12px rgba(228, 0, 0, 0.25)',
+                cursor: 'pointer',
+              }}
+              title="Open Developer Test Call Console"
+            >
+              <PhoneCall size={14} />
+              Test AI Call
             </button>
           )}
 

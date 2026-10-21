@@ -93,3 +93,45 @@ export async function importLeads(leads: Partial<CustomerCreateInput>[]): Promis
   }
   return res.json();
 }
+
+export interface TestCallInput {
+  phone: string;
+  name?: string;
+  address?: string;
+  account_no?: string;
+  subs_del_no?: string;
+  service_end_date?: string;
+  r_date?: string;
+  language?: string;
+}
+
+/**
+ * Initiates customized developer test call with Priya AI agent dispatch
+ */
+export async function initiateTestCall(payload: TestCallInput): Promise<{
+  success: boolean;
+  message: string;
+  call: {
+    id: string;
+    customerId: string;
+    status: string;
+    roomName: string;
+    phone: string;
+    customerName: string;
+    accountNo: string;
+    subsDelNo: string;
+    serviceEndDate?: string;
+    createdAt: string;
+  };
+}> {
+  const res = await fetch(`${API_BASE}/api/calls/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to initiate test call: ${res.statusText}`);
+  }
+  return res.json();
+}

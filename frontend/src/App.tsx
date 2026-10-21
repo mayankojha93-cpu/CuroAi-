@@ -7,6 +7,7 @@ import {
   LeadImportModal,
   RecentCalls, 
   CallDetailModal, 
+  TestCallModal,
   RetryQueue, 
   SopReference 
 } from './features';
@@ -34,6 +35,7 @@ export const App: React.FC = () => {
   } = useDashboardData();
 
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isTestCallModalOpen, setIsTestCallModalOpen] = useState(false);
 
   // Quick Seed Lead handler for demo testing
   const handleSeedLead = async () => {
@@ -64,6 +66,7 @@ export const App: React.FC = () => {
         onRefresh={loadAllData}
         onSeedLead={handleSeedLead}
         onImportModalOpen={() => setIsImportModalOpen(true)}
+        onTestCallOpen={() => setIsTestCallModalOpen(true)}
       />
 
       {/* Main Dashboard Body */}
@@ -91,6 +94,7 @@ export const App: React.FC = () => {
               customers={customers}
               onDial={handleDialCustomer}
               dialingId={dialingId}
+              onImportModalOpen={() => setIsImportModalOpen(true)}
             />
           )}
 
@@ -126,6 +130,13 @@ export const App: React.FC = () => {
         isOpen={isImportModalOpen}
         onClose={() => setIsImportModalOpen(false)}
         onImport={handleImportLeads}
+      />
+
+      {/* Developer Test Call Console Modal */}
+      <TestCallModal
+        isOpen={isTestCallModalOpen}
+        onClose={() => setIsTestCallModalOpen(false)}
+        onCallInitiated={loadAllData}
       />
 
       {/* Toast Notification Banner */}
