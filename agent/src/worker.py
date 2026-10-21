@@ -46,6 +46,7 @@ async def entrypoint(ctx: agents.JobContext):
     account_no = metadata.get("accountNo", "")
     subs_del_no = metadata.get("subsDelNo", "")
     service_end_date = metadata.get("serviceEndDate", "")
+    r_date = metadata.get("rDate") or metadata.get("r_date", "")
     attempt_number = int(metadata.get("attemptNumber", 1))
 
     # 2. Initialize Conversation State with Airtel Campaign lead info
@@ -58,6 +59,7 @@ async def entrypoint(ctx: agents.JobContext):
         account_no=account_no,
         subs_del_no=subs_del_no,
         service_end_date=service_end_date,
+        r_date=r_date,
         attempt_number=attempt_number,
     )
 

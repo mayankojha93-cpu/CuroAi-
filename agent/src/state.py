@@ -29,6 +29,7 @@ class ConversationState:
         account_no: str = "",
         subs_del_no: str = "",
         service_end_date: str = "",
+        r_date: str = "",
         attempt_number: int = 1,
     ):
         self.call_id = call_id
@@ -39,6 +40,7 @@ class ConversationState:
         self.account_no = account_no
         self.subs_del_no = subs_del_no
         self.service_end_date = service_end_date
+        self.r_date = r_date
         self.attempt_number = attempt_number
 
         # Timing and latency measurement

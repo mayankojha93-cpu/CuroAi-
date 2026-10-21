@@ -13,22 +13,35 @@ SYSTEM_BASE_PROMPT = """आप प्रिया (Priya) हैं, एयर�
 
 def get_step_instructions(state: ConversationState) -> str:
     """Returns focused step-specific instructions to maintain low token usage."""
+    # Check if customer name is a real human name or generic telecom placeholder
+    name_lower = (state.customer_name or "").lower().strip()
+    is_generic_name = not name_lower or any(
+        term in name_lower for term in ["customer", "subscriber", "user", "airtel", "client"]
+    )
+    subscriber_ref = state.subs_del_no or state.account_no or "Registered"
+
     base = SYSTEM_BASE_PROMPT.format(
-        customer_name=state.customer_name,
+        customer_name=state.customer_name if not is_generic_name else f"एयरटेल सब्सक्राइबर ({subscriber_ref})",
         account_no=state.account_no or state.subs_del_no or "Registered"
     )
 
     if state.step == Step.IDENTITY:
+        if is_generic_name:
+            target_phrase = f"एयरटेल वाई-फाई कनेक्शन {subscriber_ref} के उपभोक्ता"
+        else:
+            target_phrase = f"{state.customer_name} जी"
+
         step_guide = f"""चरण: ग्राहक पहचान (IDENTITY)
-- पुष्टि करें कि क्या आप {state.customer_name} जी से बात कर रही हैं।
+- पुष्टि करें कि क्या आप {target_phrase} से बात कर रही हैं।
 - हाँ: 'confirm_identity(is_correct=True)' कॉल करें।
 - गलत नंबर/व्यक्ति: 'confirm_identity(is_correct=False, is_wrong_person=True)' कॉल करें।
 - व्यस्त/बाद में कॉल: 'confirm_identity(is_correct=True, call_later=True)' कॉल करें।
 - भाषा समस्या (हिंदी नहीं समझते): 'record_language_barrier()' कॉल करें।"""
 
     elif state.step == Step.PICKUP_DECISION:
-        step_guide = """चरण: पिकअप निर्णय (PICKUP DECISION)
-- बोलें: "आपके एयरटेल वाई-फाई का अकाउंट सस्पेंड हो चुका है। क्या मैं कल आपके राउटर का पिकअप शेड्यूल कर सकती हूँ?"
+        service_end_text = f" (Service End Date: {state.service_end_date})" if state.service_end_date else ""
+        step_guide = f"""चरण: पिकअप निर्णय (PICKUP DECISION)
+- बोलें: "आपके एयरटेल वाई-फाई का अकाउंट सस्पेंड हो चुका है{service_end_text}। क्या मैं कल आपके राउटर का पिकअप शेड्यूल कर सकती हूँ?"
 - सहमत: 'set_pickup(decision="yes")' कॉल करें।
 - दूसरी तारीख (30 दिनों में): 'set_pickup(decision="yes", date_text=...)' कॉल करें।
 - तैयार हैं पर तारीख नहीं पता: 'record_willing_no_date()' कॉल करें।
@@ -55,8 +68,9 @@ def get_step_instructions(state: ConversationState) -> str:
 - पता बदल गया है: नया पूरा पता लेकर उसे दोहराएं और 'confirm_address(confirmed=False, new_address=...)' कॉल करें।"""
 
     elif state.step == Step.CLOSE:
+        close_greeting = f" {state.customer_name} जी" if not is_generic_name else ""
         step_guide = f"""चरण: समापन (CLOSE)
-- बोलें: "पुष्टि के लिए धन्यवाद {state.customer_name} जी। किसी अन्य सहायता के लिए एयरटेल 121 पर कॉल करें। आपका दिन शुभ हो!" """
+- बोलें: "पुष्टि के लिए धन्यवाद{close_greeting}। किसी अन्य सहायता के लिए एयरटेल 121 पर कॉल करें। आपका दिन शुभ हो!" """
 
     elif state.step == Step.WRONG_PERSON:
         step_guide = """चरण: गलत नंबर समापन
