@@ -175,7 +175,18 @@ async def entrypoint(ctx: agents.JobContext):
                     state.customer_note = "STT failed after 2 retries. Routed to Airtel 121."
                     state.transition_to(Step.TERMINATED)
                     logger.error("❌ STT failed after 2 retries. Closing call, routing to 121.")
-                    asyncio.create_task(clean_hangup(ctx, session, state))
+
+                    async def _stt_giveup():
+                        try:
+                            await session.say(
+                                "माफ़ कीजिए, आपकी आवाज़ साफ़ नहीं आ रही है। कृपया एयरटेल 121 पर संपर्क करें। धन्यवाद।",
+                                allow_interruptions=False,
+                            )
+                        except Exception:
+                            pass
+                        await clean_hangup(ctx, session, state)
+
+                    asyncio.create_task(_stt_giveup())
                 return
 
             clean_text = raw_text.strip()
@@ -188,43 +199,45 @@ async def entrypoint(ctx: agents.JobContext):
             # Provider timeout: start a 3-second filler timer (spec: LLM/TTS/STT > ~3s → "One moment please")
             if not timing_tracker["provider_filler_pending"] and not state.is_completed:
                 timing_tracker["provider_filler_pending"] = True
-                timing_tracker["_provider_filler_retry"] = getattr(timing_tracker, "_provider_filler_retry", 0)
+                timing_tracker["_provider_filler_retry"] = timing_tracker.get("_provider_filler_retry", 0)
 
                 async def _provider_timeout_filler():
-                    await asyncio.sleep(3.2)
-                    if not timing_tracker.get("provider_filler_pending") or state.is_completed:
-                        return
-                    agent_st = getattr(session, "agent_state", "idle")
-                    if agent_st in ("speaking", "thinking") or state.is_terminal():
-                        timing_tracker["provider_filler_pending"] = False
-                        return
+                    while timing_tracker.get("provider_filler_pending") and not state.is_completed:
+                        await asyncio.sleep(3.2)
+                        if not timing_tracker.get("provider_filler_pending") or state.is_completed:
+                            return
+                        agent_st = getattr(session, "agent_state", "idle")
+                        if agent_st in ("speaking", "thinking") or state.is_terminal():
+                            timing_tracker["provider_filler_pending"] = False
+                            return
 
-                    retry = timing_tracker.get("_provider_filler_retry", 0) + 1
-                    timing_tracker["_provider_filler_retry"] = retry
-                    if retry == 1:
-                        filler = "एक पल रुकिए।"
-                        logger.warning("⚠️ Provider timeout >3s. Playing 'One moment please' filler.")
-                        timing_tracker["last_activity_time"] = time.time()
-                        try:
-                            await session.say(filler, allow_interruptions=False)
+                        retry = timing_tracker.get("_provider_filler_retry", 0) + 1
+                        timing_tracker["_provider_filler_retry"] = retry
+                        if retry == 1:
+                            filler = "एक पल रुकिए।"
+                            logger.warning("⚠️ Provider timeout >3s. Playing 'One moment please' filler.")
                             timing_tracker["last_activity_time"] = time.time()
-                        except Exception:
-                            pass
-                    else:
-                        # Second timeout → apologise and route to 121 per spec
-                        logger.error("❌ Provider timeout after filler retry. Routing to 121.")
-                        state.is_completed = True
-                        state.final_disposition = "FAILED"
-                        state.customer_note = "Provider (LLM/TTS/STT) timed out twice. Routed to Airtel 121."
-                        state.transition_to(Step.TERMINATED)
-                        try:
-                            await session.say(
-                                "माफ़ करें, तकनीकी समस्या आ गई है। कृपया एयरटेल 121 पर संपर्क करें। धन्यवाद।",
-                                allow_interruptions=False
-                            )
-                        except Exception:
-                            pass
-                        await clean_hangup(ctx, session, state)
+                            try:
+                                await session.say(filler, allow_interruptions=False)
+                                timing_tracker["last_activity_time"] = time.time()
+                            except Exception:
+                                pass
+                        else:
+                            # Second timeout → apologise and route to 121 per spec
+                            logger.error("❌ Provider timeout after filler retry. Routing to 121.")
+                            state.is_completed = True
+                            state.final_disposition = "FAILED"
+                            state.customer_note = "Provider (LLM/TTS/STT) timed out twice. Routed to Airtel 121."
+                            state.transition_to(Step.TERMINATED)
+                            try:
+                                await session.say(
+                                    "माफ़ करें, तकनीकी समस्या आ गई है। कृपया एयरटेल 121 पर संपर्क करें। धन्यवाद।",
+                                    allow_interruptions=False
+                                )
+                            except Exception:
+                                pass
+                            await clean_hangup(ctx, session, state)
+                            break
 
                 filler_task = asyncio.create_task(_provider_timeout_filler())
                 timing_tracker["provider_filler_task"] = filler_task
@@ -236,6 +249,18 @@ async def entrypoint(ctx: agents.JobContext):
         if s.startswith(('{"name":', '{"function":', '{"parameters":', "{'name':", "{'tool_name'")):
             return True
         return False
+
+    # Real response latency = customer's final transcript -> agent starts SPEAKING
+    # (conversation_item_added fires only after playout ends, so it includes the whole sentence)
+    @session.on("agent_state_changed")
+    def on_agent_state_changed(ev):
+        if getattr(ev, "new_state", None) == "speaking":
+            stt_time = timing_tracker.get("stt_final", 0)
+            if stt_time > 0:
+                latency_ms = (time.time() - stt_time) * 1000
+                state.add_latency(latency_ms)
+                timing_tracker["stt_final"] = 0.0
+                logger.info(f"⏱️ Response latency: {latency_ms:.0f} ms")
 
     @session.on("conversation_item_added")
     def on_conversation_item(ev):
@@ -275,16 +300,9 @@ async def entrypoint(ctx: agents.JobContext):
                 if task and not task.done():
                     task.cancel()
 
-                latency_str = ""
                 if content_str and not is_raw_tool_json(content_str):
                     timing_tracker["last_activity_time"] = time.time()
-                    stt_time = timing_tracker.get("stt_final", 0)
-                    if stt_time > 0:
-                        latency_ms = (time.time() - stt_time) * 1000
-                        state.add_latency(latency_ms)
-                        latency_str = f"({latency_ms:.0f} ms)"
-                        timing_tracker["stt_final"] = 0.0
-                    logger.info(f"🤖 [Agent]: \"{content_str}\" {latency_str}")
+                    logger.info(f"🤖 [Agent]: \"{content_str}\"")
                     state.add_transcript("assistant", content_str)
 
                 # Check if conversation reached a terminal state
@@ -309,7 +327,8 @@ async def entrypoint(ctx: agents.JobContext):
                 state.final_disposition = "DISCONNECTED"
                 state.customer_note = "Call abruptly dropped / hung up mid-conversation"
             logger.info(f"Room disconnected abruptly. Saving {state.final_disposition} for retry queue.")
-            post_outcome_to_backend(state)
+            if not state.outcome_posted:
+                state.outcome_posted = bool(post_outcome_to_backend(state))
 
     # 5. Start agent session
     await session.start(room=ctx.room, agent=agent)
@@ -328,8 +347,13 @@ async def entrypoint(ctx: agents.JobContext):
                 "नमस्ते, एयरटेल में आपका स्वागत है। मैं प्रिया बोल रही हूँ। मैं आपकी क्या मदद कर सकती हूँ?"
             )
     else:
+        _n = (customer_name or "").lower().strip()
+        if not _n or any(t in _n for t in ["customer", "subscriber", "user", "airtel", "client"]):
+            who = "एयरटेल वाई-फाई कनेक्शन के रजिस्टर्ड ग्राहक"
+        else:
+            who = f"{customer_name} जी"
         opening_line = (
-            f"नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं {customer_name} जी से बात कर रही हूँ?"
+            f"नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं {who} से बात कर रही हूँ?"
         )
 
     logger.info(f"Speaking opening line ({direction}): {opening_line}")
@@ -339,3 +363,4 @@ async def entrypoint(ctx: agents.JobContext):
 
     # 7. Start 5-second silence watchdog task
     watchdog_task = asyncio.create_task(silence_watchdog(ctx, session, state, timing_tracker))
+    
