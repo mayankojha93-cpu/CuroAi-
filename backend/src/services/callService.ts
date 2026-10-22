@@ -19,6 +19,7 @@ export interface CallRecord {
   status: string;
   room_name: string;
   sip_call_id: string | null;
+  direction?: 'inbound' | 'outbound';
   failure_reason: string | null;
   attempt_number?: number;
   duration_seconds?: number;
@@ -206,6 +207,70 @@ export class CallService {
   }
 
   /**
+   * Looks up a customer in the database by phone number.
+   */
+  async lookupCustomerByPhone(phone: string) {
+    if (!phone || !phone.trim()) return null;
+    const normalized = normalizePhone(phone);
+    const digits = phone.replace(/\D/g, '');
+    const last10 = digits.slice(-10);
+
+    const res = await query(
+      `SELECT * FROM customers 
+       WHERE phone = $1 
+          OR phone = $2 
+          OR phone LIKE $3 
+       ORDER BY created_at DESC 
+       LIMIT 1`,
+      [normalized, digits, `%${last10}`]
+    );
+
+    return res.rows[0] || null;
+  }
+
+  /**
+   * Registers an inbound call session received through Exotel SIP Inbound Trunk.
+   */
+  async registerInboundCall(data: { roomName: string; phone?: string; sipCallId?: string }) {
+    const rawPhone = data.phone || '';
+    const customer = rawPhone ? await this.lookupCustomerByPhone(rawPhone) : null;
+    let customerId = customer?.id;
+
+    if (!customerId && rawPhone) {
+      const normalizedPhone = normalizePhone(rawPhone);
+      const digits = rawPhone.replace(/\D/g, '');
+      const defaultName = `Inbound Caller (${digits.slice(-4) || 'Caller'})`;
+
+      try {
+        const insertCust = await query(
+          `INSERT INTO customers (name, phone, address, language)
+           VALUES ($1, $2, 'Pending address verification', 'hi')
+           ON CONFLICT (phone) DO UPDATE SET name = customers.name
+           RETURNING *`,
+          [defaultName, normalizedPhone]
+        );
+        customerId = insertCust.rows[0]?.id;
+      } catch (e) {
+        logger.warn({ e, phone: rawPhone }, 'Could not auto-insert inbound customer record');
+      }
+    }
+
+    const callId = randomUUID();
+    const insertCall = await query<CallRecord>(
+      `INSERT INTO calls (
+         id, customer_id, status, call_status, room_name, direction, sip_call_id, answered_at
+       )
+       VALUES ($1, $2, 'answered', 'answered', $3, 'inbound', $4, NOW())
+       RETURNING *`,
+      [callId, customerId || null, data.roomName, data.sipCallId || null]
+    );
+
+    const call = insertCall.rows[0];
+    logger.info({ callId, roomName: data.roomName, phone: rawPhone, customerId }, 'Registered inbound call session');
+    return { call, customer: customer || null };
+  }
+
+  /**
    * Internal workflow: Creates room, dispatches agent with account metadata, dials SIP participant.
    */
   private async executeOutboundCallWorkflow(
@@ -239,32 +304,37 @@ export class CallService {
         }),
       });
 
+      if (!env.SIP_OUTBOUND_TRUNK_ID) {
+        throw new Error('Missing SIP_OUTBOUND_TRUNK_ID in environment. Please configure your Exotel Outbound SIP trunk in .env');
+      }
+
+      const dialablePhone = normalizePhone(customer.phone, customer.subs_del_no);
+      const callerId = env.SIP_CALLER_ID || undefined;
+
       // 3. Update call status to 'dialing'
       await query("UPDATE calls SET status = 'dialing', call_status = 'dialing' WHERE id = $1", [callId]);
-      logger.info({ callId, phone: customer.phone }, 'Updated call status to dialing. Calling SIP trunk...');
-
-      // 4. Dial SIP participant
-      const participant = await this.sipClient.createSipParticipant(
-        env.SIP_OUTBOUND_TRUNK_ID,
-        customer.phone,
-        roomName,
-        {
-          participantIdentity: `phone-${customer.phone.replace(/[^0-9]/g, '')}`,
-          displayName: customer.name,
-          fromNumber: env.SIP_CALLER_ID || undefined,
-          waitUntilAnswered: true,
-          ringingTimeout: 30,
-        }
+      logger.info(
+        { callId, phone: dialablePhone, trunkId: env.SIP_OUTBOUND_TRUNK_ID, callerId },
+        'Updated call status to dialing. Dispatching Exotel SIP call...'
       );
 
-      // 5. If answered successfully
-      logger.info({ callId, sipCallId: participant.sipCallId }, 'SIP call answered by customer!');
+      // 4. Dial SIP participant through Exotel Outbound Trunk
+      const participant = await this.sipClient.createSipParticipant(
+        env.SIP_OUTBOUND_TRUNK_ID,
+        dialablePhone,
+        roomName,
+        {
+          participantIdentity: `phone-${dialablePhone.replace(/[^0-9]/g, '')}`,
+          displayName: customer.name,
+          fromNumber: callerId,
+          waitUntilAnswered: false,
+        }
+      );
+      // 5. SIP call dispatched to carrier; Webhook participant_joined marks it answered
+      logger.info({ callId, sipCallId: participant.sipCallId }, 'Exotel SIP call dispatched to carrier!');
       await query(
         `UPDATE calls 
-         SET status = 'answered', 
-             call_status = 'answered',
-             sip_call_id = $1, 
-             answered_at = NOW() 
+         SET sip_call_id = $1 
          WHERE id = $2`,
         [participant.sipCallId || null, callId]
       );
@@ -279,6 +349,9 @@ export class CallService {
           mappedStatus = 'BUSY';
         } else if (err.sipStatusCode === 408 || err.sipStatusCode === 480 || err.sipStatusCode === 487) {
           mappedStatus = 'NO_ANSWER';
+        } else if (err.sipStatusCode === 403) {
+          failureReason = `SIP 403 Forbidden: Exotel rejected call authentication or caller ID. Check SIP credentials or ExoPhone caller ID (${env.SIP_CALLER_ID || 'Trunk Default'}).`;
+          mappedStatus = 'FAILED';
         } else {
           mappedStatus = 'FAILED';
         }
@@ -328,6 +401,25 @@ export class CallService {
         [disposition, customerId]
       );
       logger.info({ customerId, disposition }, 'Customer closed with terminal disposition');
+      return;
+    }
+
+    // Special case per spec section 5 "Willing, no date":
+    // WILLING_TO_PICKUP → allow exactly ONE more follow-up call to confirm the date.
+    if (disposition === 'WILLING_TO_PICKUP') {
+      const newMax = cust.total_attempts + 1;
+      await query(
+        `UPDATE customers 
+         SET current_disposition = $1,
+             max_attempts = $2,
+             next_attempt_time = NOW() + INTERVAL '3 hours'
+         WHERE id = $3`,
+        [disposition, newMax, customerId]
+      );
+      logger.info(
+        { customerId, disposition, newMax },
+        'WILLING_TO_PICKUP: scheduled one follow-up call (max_attempts capped at current+1)'
+      );
       return;
     }
 
@@ -452,8 +544,10 @@ export class CallService {
       [finalDisp, duration, medianLatency, costEstimate, data.recording_url || null, callId]
     );
 
-    // Evaluate retry rules for customer
-    await this.evaluateRetry(call.customer_id, finalDisp, data.confirmed_date || null);
+    // Evaluate retry rules for customer if present
+    if (call.customer_id) {
+      await this.evaluateRetry(call.customer_id, finalDisp, data.confirmed_date || null);
+    }
 
     return outcomeRes.rows[0];
   }
@@ -612,11 +706,31 @@ export class CallService {
     logger.info({ event: event.event, room: event.room?.name }, 'Received verified LiveKit webhook');
 
     const roomName = event.room?.name;
-    if (!roomName || !roomName.startsWith('call-')) {
+    if (!roomName) {
       return { handled: false, reason: 'unrelated_room' };
     }
 
-    const callId = roomName.replace('call-', '');
+    let callId: string | null = null;
+    const isInbound = roomName.startsWith('inbound-');
+
+    if (isInbound) {
+      const existingCallRes = await query('SELECT id FROM calls WHERE room_name = $1', [roomName]);
+      if (existingCallRes.rows.length > 0) {
+        callId = existingCallRes.rows[0].id;
+      } else {
+        const callerPhone = event.participant?.identity?.replace(/^phone-/, '') || '';
+        const inbound = await this.registerInboundCall({
+          roomName,
+          phone: callerPhone,
+          sipCallId: event.participant?.sid,
+        });
+        callId = inbound.call.id;
+      }
+    } else if (roomName.startsWith('call-')) {
+      callId = roomName.replace('call-', '');
+    } else {
+      return { handled: false, reason: 'unrelated_room' };
+    }
 
     if (event.event === 'participant_joined') {
       const p = event.participant;
@@ -679,7 +793,7 @@ export class CallService {
               co.outcome, co.final_disposition, co.pickup_date, co.confirmed_date,
               co.address_confirmed, co.new_address, co.transcript, co.customer_note
        FROM calls c
-       JOIN customers cust ON c.customer_id = cust.id
+       LEFT JOIN customers cust ON c.customer_id = cust.id
        LEFT JOIN call_outcomes co ON c.id = co.call_id
        WHERE c.id = $1`,
       [callId]
@@ -712,7 +826,7 @@ export class CallService {
               cust.name as customer_name, cust.phone as customer_phone,
               co.final_disposition, co.confirmed_date, co.pickup_date
        FROM calls c
-       JOIN customers cust ON c.customer_id = cust.id
+       LEFT JOIN customers cust ON c.customer_id = cust.id
        LEFT JOIN call_outcomes co ON c.id = co.call_id
        ORDER BY c.created_at DESC
        LIMIT $1`,
