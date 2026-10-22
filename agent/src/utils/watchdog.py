@@ -130,7 +130,17 @@ async def _silence_loop(ctx, session, state, timing_tracker, SILENCE_THRESHOLD_S
             or timing_tracker.get("is_agent_speaking", False)
             or timing_tracker.get("provider_filler_pending", False)
         )
-        if is_busy:
+        # The CUSTOMER talking is not silence either. (Previously the watchdog only looked at the agent's
+        # state, so it re-prompted "can you hear me?" on top of a customer mid-sentence.)
+        # Capped at 30s so line noise that VAD mistakes for speech can never keep the call alive forever.
+        user_speaking = getattr(session, "user_state", "listening") == "speaking"
+        if user_speaking:
+            since = timing_tracker.setdefault("_user_speaking_since", now)
+            user_speaking = (now - since) < 30.0
+        else:
+            timing_tracker.pop("_user_speaking_since", None)
+
+        if is_busy or user_speaking:
             timing_tracker["last_activity_time"] = now
             continue
 
