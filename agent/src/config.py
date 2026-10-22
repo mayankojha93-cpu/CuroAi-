@@ -28,9 +28,9 @@ logger = logging.getLogger("telecom-voice-agent")
 # Agent Config
 AGENT_NAME = os.getenv("AGENT_NAME", "telecom-router-pickup-agent")
 
-# LLM — OpenRouter only (meta-llama/llama-3.1-8b-instruct)
+# LLM — OpenRouter (meta-llama/llama-3.3-70b-instruct)
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-LLM_MODEL = os.getenv("LLM_MODEL", "meta-llama/llama-3.1-8b-instruct")
+LLM_MODEL = os.getenv("LLM_MODEL", "meta-llama/llama-3.3-70b-instruct")
 
 # Speech — Sarvam AI (STT + TTS)
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
