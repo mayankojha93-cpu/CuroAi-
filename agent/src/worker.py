@@ -94,8 +94,17 @@ async def entrypoint(ctx: agents.JobContext):
         direction=direction,
     )
 
+    # Timing metrics and silence watchdog tracking
+    timing_tracker = {
+        "stt_final": 0.0,
+        "last_activity_time": time.time(),
+        "is_agent_speaking": False,
+        "provider_filler_pending": False,  # True while waiting to inject "One moment please"
+        "provider_filler_task": None,      # Asyncio task for the filler timeout
+    }
+
     # 3. Register all 17 FAQ scenario tools
-    tools_instance = AgentTools(state)
+    tools_instance = AgentTools(state, timing_tracker)
     tools = [
         # Core call flow
         tools_instance.confirm_identity,
@@ -133,13 +142,13 @@ async def entrypoint(ctx: agents.JobContext):
         activation_threshold=0.45,
     )
 
-    # LLM — OpenRouter, meta-llama/llama-3.1-8b-instruct
+    # LLM — OpenRouter
     llm = openai.LLM(
         model=LLM_MODEL,
         base_url="https://openrouter.ai/api/v1",
         api_key=OPENROUTER_API_KEY,
         temperature=0.15,
-        max_completion_tokens=80,
+        max_completion_tokens=100,
     )
 
     tts = sarvam.TTS(
@@ -156,15 +165,6 @@ async def entrypoint(ctx: agents.JobContext):
         tts=tts,
         allow_interruptions=True,
     )
-
-    # Timing metrics and silence watchdog tracking
-    timing_tracker = {
-        "stt_final": 0.0,
-        "last_activity_time": time.time(),
-        "is_agent_speaking": False,
-        "provider_filler_pending": False,  # True while waiting to inject "One moment please"
-        "provider_filler_task": None,      # Asyncio task for the filler timeout
-    }
 
     watchdog_task = None
 
@@ -209,35 +209,51 @@ async def entrypoint(ctx: agents.JobContext):
                 timing_tracker["_provider_filler_retry"] = getattr(timing_tracker, "_provider_filler_retry", 0)
 
                 async def _provider_timeout_filler():
-                    await asyncio.sleep(3.0)
-                    if timing_tracker.get("provider_filler_pending") and not state.is_completed:
-                        retry = timing_tracker.get("_provider_filler_retry", 0) + 1
-                        timing_tracker["_provider_filler_retry"] = retry
-                        if retry == 1:
-                            filler = "एक पल रुकिए।"
-                            logger.warning("⚠️ Provider timeout >3s. Playing 'One moment please' filler.")
-                            try:
-                                await session.say(filler, allow_interruptions=False)
-                            except Exception:
-                                pass
-                        else:
-                            # Second timeout → apologise and route to 121 per spec
-                            logger.error("❌ Provider timeout after filler retry. Routing to 121.")
-                            state.is_completed = True
-                            state.final_disposition = "FAILED"
-                            state.customer_note = "Provider (LLM/TTS/STT) timed out twice. Routed to Airtel 121."
-                            state.transition_to(Step.TERMINATED)
-                            try:
-                                await session.say(
-                                    "माफ़ करें, तकनीकी समस्या आ गई है। कृपया एयरटेल 121 पर संपर्क करें। धन्यवाद।",
-                                    allow_interruptions=False
-                                )
-                            except Exception:
-                                pass
-                            await clean_hangup(ctx, session, state)
+                    await asyncio.sleep(3.2)
+                    if not timing_tracker.get("provider_filler_pending") or state.is_completed:
+                        return
+                    agent_st = getattr(session, "agent_state", "idle")
+                    if agent_st in ("speaking", "thinking") or state.is_terminal():
+                        timing_tracker["provider_filler_pending"] = False
+                        return
+
+                    retry = timing_tracker.get("_provider_filler_retry", 0) + 1
+                    timing_tracker["_provider_filler_retry"] = retry
+                    if retry == 1:
+                        filler = "एक पल रुकिए।"
+                        logger.warning("⚠️ Provider timeout >3s. Playing 'One moment please' filler.")
+                        timing_tracker["last_activity_time"] = time.time()
+                        try:
+                            await session.say(filler, allow_interruptions=False)
+                            timing_tracker["last_activity_time"] = time.time()
+                        except Exception:
+                            pass
+                    else:
+                        # Second timeout → apologise and route to 121 per spec
+                        logger.error("❌ Provider timeout after filler retry. Routing to 121.")
+                        state.is_completed = True
+                        state.final_disposition = "FAILED"
+                        state.customer_note = "Provider (LLM/TTS/STT) timed out twice. Routed to Airtel 121."
+                        state.transition_to(Step.TERMINATED)
+                        try:
+                            await session.say(
+                                "माफ़ करें, तकनीकी समस्या आ गई है। कृपया एयरटेल 121 पर संपर्क करें। धन्यवाद।",
+                                allow_interruptions=False
+                            )
+                        except Exception:
+                            pass
+                        await clean_hangup(ctx, session, state)
 
                 filler_task = asyncio.create_task(_provider_timeout_filler())
                 timing_tracker["provider_filler_task"] = filler_task
+
+    def is_raw_tool_json(text: str) -> bool:
+        s = text.strip()
+        if s.startswith("{") and any(k in s for k in ['"name"', '"function"', '"parameters"', '"arguments"', "'tool_name'"]):
+            return True
+        if s.startswith(('{"name":', '{"function":', '{"parameters":', "{'name':", "{'tool_name'")):
+            return True
+        return False
 
     @session.on("conversation_item_added")
     def on_conversation_item(ev):
@@ -253,35 +269,39 @@ async def entrypoint(ctx: agents.JobContext):
                 for part in raw_content:
                     if isinstance(part, str):
                         part_s = part.strip()
-                        # Avoid logging serialized tool call dict representations
-                        if not part_s.startswith(("{'tool_name'", '{"tool_name"', "[{'tool_name'")):
+                        if not is_raw_tool_json(part_s):
                             text_parts.append(part_s)
                     elif isinstance(part, dict):
-                        if "text" in part and isinstance(part["text"], str):
+                        if "text" in part and isinstance(part["text"], str) and not is_raw_tool_json(part["text"]):
                             text_parts.append(part["text"].strip())
-                    elif hasattr(part, "text") and isinstance(part.text, str):
+                    elif hasattr(part, "text") and isinstance(part.text, str) and not is_raw_tool_json(part.text):
                         text_parts.append(part.text.strip())
                 content_str = " ".join([p for p in text_parts if p]).strip()
             elif isinstance(raw_content, str):
                 part_s = raw_content.strip()
-                if not part_s.startswith(("{'tool_name'", '{"tool_name"', "[{'tool_name'")):
+                if not is_raw_tool_json(part_s):
                     content_str = part_s
             elif raw_content:
                 part_s = str(raw_content).strip()
-                if not part_s.startswith(("{'tool_name'", '{"tool_name"', "[{'tool_name'")):
+                if not is_raw_tool_json(part_s):
                     content_str = part_s
 
-            if role == "assistant" and content_str:
-                timing_tracker["last_activity_time"] = time.time()
-                stt_time = timing_tracker.get("stt_final", 0)
-                if stt_time > 0:
-                    latency_ms = (time.time() - stt_time) * 1000
-                    state.add_latency(latency_ms)
-                    latency_str = f"({latency_ms:.0f} ms)"
-                    # Provider timeout: if agent took > 3 seconds to respond, cancel the filler task
-                    timing_tracker["provider_filler_pending"] = False
-                else:
-                    latency_str = ""
+            if role == "assistant":
+                # Cancel provider filler as soon as assistant begins or adds an item
+                timing_tracker["provider_filler_pending"] = False
+                task = timing_tracker.get("provider_filler_task")
+                if task and not task.done():
+                    task.cancel()
+
+                if content_str and not is_raw_tool_json(content_str):
+                    timing_tracker["last_activity_time"] = time.time()
+                    stt_time = timing_tracker.get("stt_final", 0)
+                    if stt_time > 0:
+                        latency_ms = (time.time() - stt_time) * 1000
+                        state.add_latency(latency_ms)
+                        latency_str = f"({latency_ms:.0f} ms)"
+                    else:
+                        latency_str = ""
 
                 logger.info(f"🤖 [Agent]: \"{content_str}\" {latency_str}")
                 state.add_transcript("assistant", content_str)
