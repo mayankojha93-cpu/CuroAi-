@@ -95,13 +95,13 @@ LIVEKIT_API_KEY=your_key
 LIVEKIT_API_SECRET=your_secret
 AGENT_NAME=telecom-router-pickup-agent
 
-# SIP Outbound Trunk (Twilio, Telnyx, or Exotel)
-SIP_PROVIDER=twilio
+# Exotel SIP Outbound Trunk
+SIP_PROVIDER=exotel
 SIP_OUTBOUND_TRUNK_ID=ST_xxxxxxxxxxxx
-SIP_DOMAIN=your-subdomain.pstn.twilio.com
-SIP_CALLER_ID=+1XXXXXXXXXX
-SIP_USERNAME=your_username
-SIP_PASSWORD=your_password
+SIP_DOMAIN=curoai1.pstn.exotel.com:5070
+SIP_CALLER_ID=+9109513886363
+SIP_USERNAME=your_exotel_sip_username
+SIP_PASSWORD=your_exotel_sip_password
 
 # AI Providers
 SARVAM_API_KEY=your_sarvam_api_key
@@ -125,12 +125,16 @@ npm run migrate
 npm run seed
 ```
 
-### Step 2: Provision LiveKit Outbound Trunk
+### Step 2: Provision LiveKit Outbound & Inbound SIP Trunks
 ```bash
 cd backend
+# Provision Outbound Trunk
 npm run trunk:create
+
+# Provision Inbound Trunk & SIP Dispatch Rule
+npm run trunk:inbound:create
 ```
-*(Copy the generated `SIP_OUTBOUND_TRUNK_ID` into `.env`)*
+*(Trunk IDs `SIP_OUTBOUND_TRUNK_ID`, `SIP_INBOUND_TRUNK_ID`, and `SIP_DISPATCH_RULE_ID` are saved in `.env`)*
 
 ### Step 3: Start the Backend Express Server
 ```bash
