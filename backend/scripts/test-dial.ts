@@ -1,19 +1,22 @@
 import { SipClient, RoomServiceClient, SipCallError } from 'livekit-server-sdk';
 import { env } from '../src/config/env.js';
+import { normalizePhone } from '../src/utils/csvParser.js';
 
 async function main() {
   console.log('\n=========================================');
-  console.log('   LiveKit Telephony Test Dial Script    ');
+  console.log('   LiveKit Exotel SIP Test Dial Tool     ');
   console.log('=========================================\n');
 
   // Parse phone from CLI args or env
   const args = process.argv.slice(2);
-  let phone = env.TEST_PHONE;
+  let rawPhone = env.TEST_PHONE;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--phone' && args[i + 1]) {
-      phone = args[i + 1];
+      rawPhone = args[i + 1];
     }
   }
+
+  const phone = normalizePhone(rawPhone);
 
   if (!env.LIVEKIT_URL || !env.LIVEKIT_API_KEY || !env.LIVEKIT_API_SECRET) {
     console.error('❌ Missing LiveKit credentials in .env');
@@ -22,7 +25,7 @@ async function main() {
 
   if (!env.SIP_OUTBOUND_TRUNK_ID) {
     console.error('❌ Missing SIP_OUTBOUND_TRUNK_ID in .env');
-    console.error('Run: npm run trunk:create first to provision an outbound trunk!');
+    console.error('Run: npm run trunk:create first to provision an Exotel outbound trunk!');
     process.exit(1);
   }
 
@@ -36,11 +39,11 @@ async function main() {
   const sipClient = new SipClient(env.LIVEKIT_URL, env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET);
 
   const roomName = `test-dial-${Date.now()}`;
-  console.log(`📞 Target Phone:       ${phone}`);
+  console.log(`📞 Target Callee:      ${phone}`);
   console.log(`🚪 LiveKit Room:       ${roomName}`);
-  console.log(`📡 Outbound Trunk:     ${env.SIP_OUTBOUND_TRUNK_ID}`);
-  console.log(`🆔 Caller ID / From:   ${env.SIP_CALLER_ID || 'Trunk Default'}`);
-  console.log('\nInitiating call... waiting for callee to answer (30s timeout)...\n');
+  console.log(`📡 Exotel Trunk:       ${env.SIP_OUTBOUND_TRUNK_ID}`);
+  console.log(`🆔 Exotel Caller ID:   ${env.SIP_CALLER_ID || 'Trunk Default'}`);
+  console.log('\nInitiating call via Exotel... waiting for callee to answer (30s timeout)...\n');
 
   try {
     // 1. Ensure room exists
@@ -49,7 +52,8 @@ async function main() {
       emptyTimeout: 60,
     });
 
-    // 2. Dial the SIP participant
+    // 2. Dial the SIP participant (dispatch asynchronously to avoid Twirp HTTP timeout)
+    console.log('Sending SIP dispatch request to LiveKit...');
     const participant = await sipClient.createSipParticipant(
       env.SIP_OUTBOUND_TRUNK_ID,
       phone,
@@ -58,24 +62,45 @@ async function main() {
         participantIdentity: `phone-${phone.replace(/[^0-9]/g, '')}`,
         displayName: 'Test Customer',
         fromNumber: env.SIP_CALLER_ID || undefined,
-        waitUntilAnswered: true,
-        ringingTimeout: 30,
+        waitUntilAnswered: false,
       }
     );
 
-    console.log('🎉 CALL ANSWERED! Phone is connected to LiveKit room.');
-    console.log('Participant Details:');
+    console.log('✅ SIP Participant dispatched successfully!');
     console.log(`  - Participant ID:   ${participant.participantId}`);
     console.log(`  - Identity:         ${participant.participantIdentity}`);
     console.log(`  - SIP Call ID:      ${participant.sipCallId}`);
-    console.log('\nCall is active. Keeping room open for 15 seconds so you can hear silence/connection...');
+    console.log('\nWaiting for callee to answer the phone (polling room for up to 30s)...\n');
 
-    await new Promise((resolve) => setTimeout(resolve, 15000));
+    let answered = false;
+    for (let i = 0; i < 30; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      const participants = await roomService.listParticipants(roomName);
+      const sipP = participants.find((p) => p.identity === participant.participantIdentity);
 
-    console.log('\nEnding test call and cleaning up room...');
+      if (sipP) {
+        console.log(`[Second ${i + 1}] Participant state in room: ${sipP.state} (kind: ${sipP.kind})`);
+        if (sipP.state === 1 /* ACTIVE / JOINED */) {
+          console.log('\n🎉 CALL ANSWERED! Phone is active in LiveKit room.');
+          answered = true;
+          break;
+        }
+      } else {
+        console.log(`[Second ${i + 1}] Waiting for SIP signaling connection...`);
+      }
+    }
+
+    if (answered) {
+      console.log('Keeping room open for 10 seconds...');
+      await new Promise((resolve) => setTimeout(resolve, 10000));
+    } else {
+      console.log('\n⚠️ Call ringing timed out or was rejected by network/callee.');
+    }
+
+    console.log('\nCleaning up room...');
     await roomService.deleteRoom(roomName);
-    console.log('✅ Room deleted. Telephony test completed successfully!\n');
-    process.exit(0);
+    console.log('✅ Room deleted. Telephony test completed.\n');
+    process.exit(answered ? 0 : 1);
 
   } catch (err: any) {
     console.error('\n❌ Call failed or was not answered:\n');
