@@ -31,6 +31,7 @@ class ConversationState:
         service_end_date: str = "",
         r_date: str = "",
         attempt_number: int = 1,
+        direction: str = "outbound",
     ):
         self.call_id = call_id
         self.customer_name = customer_name
@@ -42,6 +43,7 @@ class ConversationState:
         self.service_end_date = service_end_date
         self.r_date = r_date
         self.attempt_number = attempt_number
+        self.direction = direction
 
         # Timing and latency measurement
         self.start_time: float = time.time()
@@ -71,6 +73,7 @@ class ConversationState:
         # Error / retry counters
         self.silence_count: int = 0
         self.date_retry_count: int = 0
+        self.stt_retry_count: int = 0      # Tracks STT failures (max 2 retries per spec)
         self.is_completed: bool = False
 
     def add_transcript(self, role: str, message: Any):
