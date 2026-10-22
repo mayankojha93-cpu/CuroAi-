@@ -25,11 +25,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger("telecom-voice-agent")
 
-# Agent and Model Configs
+# Agent Config
 AGENT_NAME = os.getenv("AGENT_NAME", "telecom-router-pickup-agent")
-LLM_MODEL = os.getenv("LLM_MODEL", "qwen/qwen3.8-27b")
+
+# LLM — OpenRouter only (meta-llama/llama-3.1-8b-instruct)
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+LLM_MODEL = os.getenv("LLM_MODEL", "meta-llama/llama-3.1-8b-instruct")
+
+# Speech — Sarvam AI (STT + TTS)
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # Backend & Integration Configs
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:3000")
