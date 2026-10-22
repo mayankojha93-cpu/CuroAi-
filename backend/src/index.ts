@@ -10,6 +10,7 @@ import { callsRouter } from './routes/calls.js';
 import { internalRouter } from './routes/internal.js';
 import { webhooksRouter } from './routes/webhooks.js';
 import { callService } from './services/callService.js';
+import { downloadPendingRecordings } from './services/recordingDownloader.js';
 
 export const app = express();
 
@@ -67,6 +68,16 @@ if (process.env.NODE_ENV !== 'test') {
         logger.error({ err }, 'Error running stuck calls sweeper');
       });
     }, 30000);
+
+    // Start recording downloader every 5 minutes
+    // Per spec: Exotel recording appears 1–15 min after call, valid for 24 h
+    setInterval(() => {
+      downloadPendingRecordings().catch((err: any) => {
+        logger.error({ err }, 'Error running recording downloader');
+      });
+    }, 5 * 60 * 1000);
+    // Run once on startup to catch any recordings missed during downtime
+    downloadPendingRecordings().catch(() => {});
   });
 
   const gracefulShutdown = (signal: string) => {
