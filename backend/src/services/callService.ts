@@ -1,12 +1,12 @@
 import { randomUUID } from 'crypto';
 import {
-  LiveKitAPI,
   SipClient,
   AgentDispatchClient,
   RoomServiceClient,
   SipCallError,
   WebhookReceiver,
 } from 'livekit-server-sdk';
+import { ParticipantInfo_Kind } from '@livekit/protocol';
 import { pool, query } from '../db/index.js';
 import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
@@ -87,16 +87,59 @@ const TERMINAL_DISPOSITIONS = new Set([
   'DO_NOT_CALL',
   'COMPLAINT_ESCALATION',
   'NEEDS_AIRTEL_SUPPORT',
-  // Shifted customers: pickup (or ops follow-up with relative/occupant) is arranged by this call.
-  // Re-dialling the customer would be wrong, so close them.
   'SHIFTED_DEVICE_WITH_CUSTOMER',
   'SHIFTED_DEVICE_WITH_RELATIVE',
   'SHIFTED_DEVICE_LEFT_PREVIOUS',
-  // Spec: "Already Using Device" -> update disposition and close.
   'ALREADY_USING_DEVICE',
-  // Regional-language executive takes over; an AI retry would hit the same barrier.
   'LANGUAGE_BARRIER',
 ]);
+
+// ───────────────────────── helpers ─────────────────────────
+
+/**
+ * pg returns DATE columns as JS Date objects (local midnight). Calling .toString() or JSON-serialising
+ * them gives "Thu Aug 27 2026 ..." or a UTC ISO string that is one day off in IST.
+ * Always send plain YYYY-MM-DD to the agent / API consumers.
+ */
+function ymd(v: unknown): string {
+  if (!v) return '';
+  if (v instanceof Date) {
+    if (isNaN(v.getTime())) return '';
+    const y = v.getFullYear();
+    const m = String(v.getMonth() + 1).padStart(2, '0');
+    const d = String(v.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  const s = String(v);
+  const m = s.match(/^\d{4}-\d{2}-\d{2}/);
+  return m ? m[0] : s;
+}
+
+function serializeCustomer<T extends Record<string, any> | null | undefined>(row: T): T {
+  if (!row) return row;
+  return {
+    ...row,
+    service_end_date: ymd(row.service_end_date) || null,
+    r_date: ymd(row.r_date) || null,
+  } as T;
+}
+
+/**
+ * LiveKit SIP participants are named `sip_<number>` for inbound calls (outbound ones are `phone-<number>`
+ * because we set the identity ourselves). The real caller number is in the `sip.phoneNumber` attribute.
+ */
+function extractPhone(value?: string | null): string {
+  if (!value) return '';
+  return value.replace(/^(phone-|sip_|sip:)/i, '').trim();
+}
+
+function isSipParticipant(p: any): boolean {
+  if (!p) return false;
+  return (
+    p.kind === ParticipantInfo_Kind.SIP ||
+    (typeof p.identity === 'string' && (p.identity.startsWith('phone-') || p.identity.startsWith('sip_')))
+  );
+}
 
 export class CallService {
   private sipClient: SipClient;
@@ -115,10 +158,9 @@ export class CallService {
    * Initiates an outbound phone call to the customer.
    */
   async initiateCall(customerId: string): Promise<CallRecord> {
-    // 1. Load customer
     const custRes = await query(
-      `SELECT id, name, phone, address, language, account_no, subs_del_no, 
-              service_end_date, r_date, total_attempts, max_attempts, is_closed 
+      `SELECT id, name, phone, address, language, account_no, subs_del_no,
+              service_end_date, r_date, total_attempts, max_attempts, is_closed, current_disposition
        FROM customers WHERE id = $1`,
       [customerId]
     );
@@ -134,7 +176,6 @@ export class CallService {
 
     const currentAttempt = (customer.total_attempts || 0) + 1;
 
-    // 2. Insert call record with 'initiated' and attempt_number
     const callId = randomUUID();
     const roomName = `call-${callId}`;
 
@@ -143,21 +184,16 @@ export class CallService {
       'Initiating outbound call'
     );
 
-    // Increment customer attempts
-    await query(
-      'UPDATE customers SET total_attempts = total_attempts + 1 WHERE id = $1',
-      [customerId]
-    );
+    await query('UPDATE customers SET total_attempts = total_attempts + 1 WHERE id = $1', [customerId]);
 
     const insertRes = await query<CallRecord>(
-      `INSERT INTO calls (id, customer_id, status, call_status, attempt_number, room_name)
-       VALUES ($1, $2, 'initiated', 'initiated', $3, $4)
+      `INSERT INTO calls (id, customer_id, status, call_status, attempt_number, room_name, direction)
+       VALUES ($1, $2, 'initiated', 'initiated', $3, $4, 'outbound')
        RETURNING *`,
       [callId, customerId, currentAttempt, roomName]
     );
     const call = insertRes.rows[0];
 
-    // Perform dial asynchronously
     this.executeOutboundCallWorkflow(callId, customer, roomName, currentAttempt).catch((err) => {
       logger.error({ err, callId }, 'Unhandled error in outbound call workflow');
     });
@@ -166,7 +202,7 @@ export class CallService {
   }
 
   /**
-   * Places a developer test call with customizable lead attributes (name, phone, account, wifi id, etc.)
+   * Places a developer test call with customizable lead attributes.
    */
   async initiateTestCall(data: {
     phone: string;
@@ -182,7 +218,6 @@ export class CallService {
     const normalizedServiceEnd = normalizeDate(data.service_end_date);
     const normalizedRDate = normalizeDate(data.r_date);
 
-    // Upsert customer for test call
     const custRes = await query(
       `INSERT INTO customers (
          name, phone, address, language, account_no, subs_del_no, service_end_date, r_date,
@@ -212,71 +247,115 @@ export class CallService {
 
     const customer = custRes.rows[0];
     const call = await this.initiateCall(customer.id);
-    return { call, customer };
+    return { call, customer: serializeCustomer(customer) };
   }
 
   /**
-   * Looks up a customer in the database by phone number.
+   * Looks up a customer by phone number.
+   * Safe against withheld / short numbers: never falls back to LIKE '%' (which would match ANY customer
+   * and leak another subscriber's account details to an anonymous caller).
    */
   async lookupCustomerByPhone(phone: string) {
-    if (!phone || !phone.trim()) return null;
-    const normalized = normalizePhone(phone);
-    const digits = phone.replace(/\D/g, '');
+    const cleaned = extractPhone(phone);
+    if (!cleaned) return null;
+    const digits = cleaned.replace(/\D/g, '');
+    if (digits.length < 10) return null;
+
+    const normalized = normalizePhone(cleaned);
     const last10 = digits.slice(-10);
 
     const res = await query(
-      `SELECT * FROM customers 
-       WHERE phone = $1 
-          OR phone = $2 
-          OR phone LIKE $3 
-       ORDER BY created_at DESC 
+      `SELECT * FROM customers
+       WHERE phone = $1
+          OR phone = $2
+          OR phone LIKE $3
+       ORDER BY created_at DESC
        LIMIT 1`,
       [normalized, digits, `%${last10}`]
     );
 
-    return res.rows[0] || null;
+    return serializeCustomer(res.rows[0]) || null;
   }
 
   /**
-   * Registers an inbound call session received through Exotel SIP Inbound Trunk.
+   * Registers an inbound call session. IDEMPOTENT per room_name.
+   * Both the LiveKit webhook and the voice agent call this for the same room; previously each one
+   * inserted its own `calls` row, so every inbound call was stored twice and the outcome ended up
+   * on a different row than the one the webhook updated.
    */
   async registerInboundCall(data: { roomName: string; phone?: string; sipCallId?: string }) {
-    const rawPhone = data.phone || '';
-    const customer = rawPhone ? await this.lookupCustomerByPhone(rawPhone) : null;
-    let customerId = customer?.id;
+    const rawPhone = extractPhone(data.phone);
+    const digits = rawPhone.replace(/\D/g, '');
 
-    if (!customerId && rawPhone) {
-      const normalizedPhone = normalizePhone(rawPhone);
-      const digits = rawPhone.replace(/\D/g, '');
-      const defaultName = `Inbound Caller (${digits.slice(-4) || 'Caller'})`;
+    let customer: any = rawPhone ? await this.lookupCustomerByPhone(rawPhone) : null;
 
+    // Unknown caller with a real number: keep a record, but CLOSED so the outbound retry queue
+    // (getPendingRetries) never dials a random inbound caller.
+    if (!customer && digits.length >= 10) {
       try {
-        const insertCust = await query(
-          `INSERT INTO customers (name, phone, address, language)
-           VALUES ($1, $2, 'Pending address verification', 'hi')
+        const normalizedPhone = normalizePhone(rawPhone);
+        const defaultName = `Inbound Caller (${digits.slice(-4)})`;
+        const ins = await query(
+          `INSERT INTO customers (name, phone, address, language, total_attempts, max_attempts, is_closed, next_attempt_time)
+           VALUES ($1, $2, 'Pending address verification', 'hi', 0, 3, TRUE, NULL)
            ON CONFLICT (phone) DO UPDATE SET name = customers.name
            RETURNING *`,
           [defaultName, normalizedPhone]
         );
-        customerId = insertCust.rows[0]?.id;
+        customer = serializeCustomer(ins.rows[0]);
       } catch (e) {
         logger.warn({ e, phone: rawPhone }, 'Could not auto-insert inbound customer record');
       }
     }
 
-    const callId = randomUUID();
-    const insertCall = await query<CallRecord>(
-      `INSERT INTO calls (
-         id, customer_id, status, call_status, room_name, direction, sip_call_id, answered_at
-       )
-       VALUES ($1, $2, 'answered', 'answered', $3, 'inbound', $4, NOW())
-       RETURNING *`,
-      [callId, customerId || null, data.roomName, data.sipCallId || null]
-    );
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      // Serialise webhook vs agent registrations for the same room
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [data.roomName]);
 
-    const call = insertCall.rows[0];
-    logger.info({ callId, roomName: data.roomName, phone: rawPhone, customerId }, 'Registered inbound call session');
-    return { call, customer: customer || null };
+      const existing = await client.query('SELECT * FROM calls WHERE room_name = $1 LIMIT 1', [data.roomName]);
+      let call: CallRecord;
+
+      if (existing.rows.length > 0) {
+        const upd = await client.query(
+          `UPDATE calls
+           SET customer_id = COALESCE(customer_id, $2),
+               sip_call_id = COALESCE(sip_call_id, $3),
+               direction = COALESCE(direction, 'inbound')
+           WHERE id = $1
+           RETURNING *`,
+          [existing.rows[0].id, customer?.id || null, data.sipCallId || null]
+        );
+        call = upd.rows[0];
+      } else {
+        const ins = await client.query(
+          `INSERT INTO calls (id, customer_id, status, call_status, room_name, direction, sip_call_id, answered_at)
+           VALUES ($1, $2, 'answered', 'answered', $3, 'inbound', $4, NOW())
+           RETURNING *`,
+          [randomUUID(), customer?.id || null, data.roomName, data.sipCallId || null]
+        );
+        call = ins.rows[0];
+      }
+      await client.query('COMMIT');
+
+      // The row may already be linked to a customer that this caller's number did not resolve to
+      if (!customer && call.customer_id) {
+        const c = await query('SELECT * FROM customers WHERE id = $1', [call.customer_id]);
+        customer = serializeCustomer(c.rows[0]) || null;
+      }
+
+      logger.info(
+        { callId: call.id, roomName: data.roomName, phone: rawPhone, customerId: call.customer_id },
+        'Registered inbound call session'
+      );
+      return { call, customer: customer || null };
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
   }
 
   /**
@@ -289,13 +368,8 @@ export class CallService {
     attemptNumber: number
   ) {
     try {
-      // 1. Ensure room exists
-      await this.roomService.createRoom({
-        name: roomName,
-        emptyTimeout: 300,
-      });
+      await this.roomService.createRoom({ name: roomName, emptyTimeout: 300 });
 
-      // 2. Create explicit agent dispatch with full Airtel account metadata
       logger.info({ roomName, agentName: env.AGENT_NAME }, 'Creating agent dispatch');
       await this.dispatchClient.createDispatch(roomName, env.AGENT_NAME, {
         metadata: JSON.stringify({
@@ -307,9 +381,10 @@ export class CallService {
           preferredLanguage: customer.language || 'hi',
           accountNo: customer.account_no || '',
           subsDelNo: customer.subs_del_no || '',
-          serviceEndDate: customer.service_end_date ? customer.service_end_date.toString() : '',
-          rDate: customer.r_date ? customer.r_date.toString() : '',
+          serviceEndDate: ymd(customer.service_end_date),
+          rDate: ymd(customer.r_date),
           attemptNumber,
+          direction: 'outbound',
         }),
       });
 
@@ -320,34 +395,25 @@ export class CallService {
       const dialablePhone = normalizePhone(customer.phone, customer.subs_del_no);
       const callerId = env.SIP_CALLER_ID || undefined;
 
-      // 3. Update call status to 'dialing'
       await query("UPDATE calls SET status = 'dialing', call_status = 'dialing' WHERE id = $1", [callId]);
       logger.info(
         { callId, phone: dialablePhone, trunkId: env.SIP_OUTBOUND_TRUNK_ID, callerId },
         'Updated call status to dialing. Dispatching Exotel SIP call...'
       );
 
-      // 4. Dial SIP participant through Exotel Outbound Trunk
       const participant = await this.sipClient.createSipParticipant(
         env.SIP_OUTBOUND_TRUNK_ID,
         dialablePhone,
         roomName,
         {
           participantIdentity: `phone-${dialablePhone.replace(/[^0-9]/g, '')}`,
-          displayName: customer.name,
+          participantName: customer.name,
           fromNumber: callerId,
           waitUntilAnswered: false,
-        }
+        } as any
       );
-      // 5. SIP call dispatched to carrier; Webhook participant_joined marks it answered
       logger.info({ callId, sipCallId: participant.sipCallId }, 'Exotel SIP call dispatched to carrier!');
-      await query(
-        `UPDATE calls 
-         SET sip_call_id = $1 
-         WHERE id = $2`,
-        [participant.sipCallId || null, callId]
-      );
-
+      await query(`UPDATE calls SET sip_call_id = $1 WHERE id = $2`, [participant.sipCallId || null, callId]);
     } catch (err: any) {
       let mappedStatus: 'NO_ANSWER' | 'BUSY' | 'FAILED' = 'FAILED';
       let failureReason = err.message || 'Call placement failed';
@@ -361,8 +427,6 @@ export class CallService {
         } else if (err.sipStatusCode === 403) {
           failureReason = `SIP 403 Forbidden: Exotel rejected call authentication or caller ID. Check SIP credentials or ExoPhone caller ID (${env.SIP_CALLER_ID || 'Trunk Default'}).`;
           mappedStatus = 'FAILED';
-        } else {
-          mappedStatus = 'FAILED';
         }
       } else if (err.message && err.message.toLowerCase().includes('timeout')) {
         mappedStatus = 'NO_ANSWER';
@@ -371,16 +435,12 @@ export class CallService {
       logger.warn({ callId, mappedStatus, failureReason }, 'Outbound dial failed or rejected');
 
       await query(
-        `UPDATE calls 
-         SET status = $1, 
-             call_status = $1,
-             failure_reason = $2, 
-             ended_at = NOW() 
+        `UPDATE calls
+         SET status = $1, call_status = $1, failure_reason = $2, ended_at = NOW()
          WHERE id = $3`,
         [mappedStatus, failureReason, callId]
       );
 
-      // Trigger retry evaluation on telephony failure
       await this.evaluateRetry(customer.id, mappedStatus, null);
 
       try {
@@ -394,18 +454,16 @@ export class CallService {
    */
   private async evaluateRetry(customerId: string, disposition: string, _date: string | null) {
     const custRes = await query(
-      'SELECT id, total_attempts, max_attempts FROM customers WHERE id = $1',
+      'SELECT id, total_attempts, max_attempts, is_closed, current_disposition FROM customers WHERE id = $1',
       [customerId]
     );
     if (custRes.rows.length === 0) return;
     const cust = custRes.rows[0];
 
-    const isTerminal = TERMINAL_DISPOSITIONS.has(disposition);
-
-    if (isTerminal) {
+    if (TERMINAL_DISPOSITIONS.has(disposition)) {
       await query(
-        `UPDATE customers 
-         SET current_disposition = $1, is_closed = TRUE, next_attempt_time = NULL 
+        `UPDATE customers
+         SET current_disposition = $1, is_closed = TRUE, next_attempt_time = NULL
          WHERE id = $2`,
         [disposition, customerId]
       );
@@ -413,31 +471,33 @@ export class CallService {
       return;
     }
 
-    // Special case per spec section 5 "Willing, no date":
-    // WILLING_TO_PICKUP → allow exactly ONE more follow-up call to confirm the date.
-    if (disposition === 'WILLING_TO_PICKUP') {
+    // Already closed (max attempts reached / inbound-only record): a non-terminal outcome must not
+    // re-schedule it. Also makes duplicate saveOutcome calls harmless.
+    if (cust.is_closed) {
+      logger.info({ customerId, disposition }, 'Customer already closed; skipping retry scheduling');
+      return;
+    }
+
+    // "Willing, no date": allow exactly ONE more follow-up call. Only grant it the first time,
+    // otherwise a customer who keeps saying "willing" would be called forever.
+    if (disposition === 'WILLING_TO_PICKUP' && cust.current_disposition !== 'WILLING_TO_PICKUP') {
       const newMax = cust.total_attempts + 1;
       await query(
-        `UPDATE customers 
+        `UPDATE customers
          SET current_disposition = $1,
              max_attempts = $2,
              next_attempt_time = NOW() + INTERVAL '3 hours'
          WHERE id = $3`,
         [disposition, newMax, customerId]
       );
-      logger.info(
-        { customerId, disposition, newMax },
-        'WILLING_TO_PICKUP: scheduled one follow-up call (max_attempts capped at current+1)'
-      );
+      logger.info({ customerId, disposition, newMax }, 'WILLING_TO_PICKUP: scheduled one follow-up call');
       return;
     }
 
-    // Customer is not terminal (retryable outcome)
     if (cust.total_attempts >= cust.max_attempts) {
-      // Reached maximum attempts (3) -> Close as NOT_REACHED
       await query(
-        `UPDATE customers 
-         SET current_disposition = 'NOT_REACHED', is_closed = TRUE, next_attempt_time = NULL 
+        `UPDATE customers
+         SET current_disposition = 'NOT_REACHED', is_closed = TRUE, next_attempt_time = NULL
          WHERE id = $1`,
         [customerId]
       );
@@ -445,28 +505,20 @@ export class CallService {
       return;
     }
 
-    // Schedule next attempt
-    let nextAttemptSql: string;
-    if (cust.total_attempts === 1) {
-      // Attempt 2: at least 3 hours after previous one
-      nextAttemptSql = "NOW() + INTERVAL '3 hours'";
-    } else {
-      // Attempt 3: next calling day (tomorrow at 10:30 AM)
-      nextAttemptSql = "(DATE_TRUNC('day', NOW() + INTERVAL '1 day') + INTERVAL '10 hours 30 minutes')";
-    }
+    const nextAttemptSql =
+      cust.total_attempts === 1
+        ? "NOW() + INTERVAL '3 hours'"
+        : "(DATE_TRUNC('day', NOW() + INTERVAL '1 day') + INTERVAL '10 hours 30 minutes')";
 
     await query(
-      `UPDATE customers 
-       SET current_disposition = $1, 
-           next_attempt_time = ${nextAttemptSql} 
+      `UPDATE customers
+       SET current_disposition = $1,
+           next_attempt_time = ${nextAttemptSql}
        WHERE id = $2`,
       [disposition, customerId]
     );
 
-    logger.info(
-      { customerId, disposition, attempt: cust.total_attempts },
-      'Scheduled next retry attempt for customer'
-    );
+    logger.info({ customerId, disposition, attempt: cust.total_attempts }, 'Scheduled next retry attempt for customer');
   }
 
   /**
@@ -476,7 +528,6 @@ export class CallService {
     const finalDisp = data.final_disposition || data.outcome || 'DISCONNECTED';
     logger.info({ callId, finalDisposition: finalDisp }, 'Saving call outcome (idempotent)');
 
-    // Ensure call exists
     const callRes = await query('SELECT id, customer_id, status FROM calls WHERE id = $1', [callId]);
     if (callRes.rows.length === 0) {
       throw new AppError(`Call not found: ${callId}`, 404);
@@ -486,7 +537,6 @@ export class CallService {
     const transcriptJson = data.transcript ? JSON.stringify(data.transcript) : null;
     const baseOutcome = data.outcome || finalDisp.toLowerCase();
 
-    // Idempotent upsert into call_outcomes
     const outcomeRes = await query(
       `INSERT INTO call_outcomes (
          call_id, outcome, pickup_date, address_confirmed, corrected_address, transcript,
@@ -496,7 +546,7 @@ export class CallService {
        )
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
        ON CONFLICT (call_id)
-       DO UPDATE SET 
+       DO UPDATE SET
          outcome = EXCLUDED.outcome,
          pickup_date = EXCLUDED.pickup_date,
          address_confirmed = EXCLUDED.address_confirmed,
@@ -535,13 +585,12 @@ export class CallService {
       ]
     );
 
-    // Update call status and metrics
     const duration = data.duration_seconds || 0;
     const medianLatency = data.median_latency_ms || null;
     const costEstimate = data.cost_estimate_inr || (duration > 0 ? (duration / 60) * 2.4 : 0.04);
 
     await query(
-      `UPDATE calls 
+      `UPDATE calls
        SET status = 'COMPLETED',
            call_status = $1,
            duration_seconds = $2,
@@ -553,7 +602,6 @@ export class CallService {
       [finalDisp, duration, medianLatency, costEstimate, data.recording_url || null, callId]
     );
 
-    // Evaluate retry rules for customer if present
     if (call.customer_id) {
       await this.evaluateRetry(call.customer_id, finalDisp, data.confirmed_date || null);
     }
@@ -566,15 +614,15 @@ export class CallService {
    */
   async getPendingRetries(limit = 50) {
     const res = await query(
-      `SELECT * FROM customers 
-       WHERE is_closed = FALSE 
-         AND total_attempts < max_attempts 
+      `SELECT * FROM customers
+       WHERE is_closed = FALSE
+         AND total_attempts < max_attempts
          AND (next_attempt_time IS NULL OR next_attempt_time <= NOW())
        ORDER BY next_attempt_time ASC NULLS FIRST
        LIMIT $1`,
       [limit]
     );
-    return res.rows;
+    return res.rows.map((r: any) => serializeCustomer(r));
   }
 
   /**
@@ -596,7 +644,7 @@ export class CallService {
          )
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 3, NOW())
          ON CONFLICT (phone)
-         DO UPDATE SET 
+         DO UPDATE SET
            name = EXCLUDED.name,
            address = EXCLUDED.address,
            account_no = COALESCE(EXCLUDED.account_no, customers.account_no),
@@ -615,18 +663,25 @@ export class CallService {
           normalizedRDate,
         ]
       );
-      inserted.push(res.rows[0]);
+      inserted.push(serializeCustomer(res.rows[0]));
     }
     return inserted;
   }
 
   /**
-   * Generates the campaign summary matching Image 1: "Airtel IP TV Urgent Campaign Summary"
+   * Generates the campaign summary: "Airtel IP TV Urgent Campaign Summary"
    */
   async getCampaignSummary() {
     const totalCustomersRes = await query('SELECT COUNT(*) as count, COUNT(DISTINCT phone) as unique_contacts FROM customers');
-    const totalCallsRes = await query('SELECT COUNT(*) as attempts, COUNT(*) FILTER (WHERE status IN (\'answered\', \'completed\', \'COMPLETED\')) as connected FROM calls');
-    const dispositionedRes = await query('SELECT COUNT(*) as count FROM customers WHERE is_closed = TRUE OR current_disposition != \'PENDING\'');
+    const totalCallsRes = await query(
+      `SELECT COUNT(*) as attempts,
+              COUNT(*) FILTER (WHERE status IN ('answered', 'completed', 'COMPLETED')) as connected
+       FROM calls`
+    );
+    const dispositionedRes = await query(
+      `SELECT COUNT(*) as count FROM customers
+       WHERE is_closed = TRUE OR COALESCE(current_disposition, 'PENDING') != 'PENDING'`
+    );
 
     const dispositionsQuery = await query(`
       SELECT current_disposition, COUNT(*) as count
@@ -647,13 +702,7 @@ export class CallService {
     const dispositionedContacts = parseInt(dispositionedRes.rows[0]?.count || '0', 10);
 
     return {
-      overview: {
-        sourceRows,
-        uniqueContacts,
-        connectedCalls,
-        totalAttempts,
-        dispositionedContacts,
-      },
+      overview: { sourceRows, uniqueContacts, connectedCalls, totalAttempts, dispositionedContacts },
       categories: [
         {
           category: 'Ready For Pickup',
@@ -670,9 +719,7 @@ export class CallService {
         },
         {
           category: 'Scheduled Callback',
-          dispositions: [
-            { name: 'Schedule Callback', count: dispMap['SCHEDULE_CALLBACK'] || 0 },
-          ],
+          dispositions: [{ name: 'Schedule Callback', count: dispMap['SCHEDULE_CALLBACK'] || 0 }],
         },
         {
           category: 'Will Not Return',
@@ -680,7 +727,7 @@ export class CallService {
             { name: 'Already Returned Device', count: (dispMap['ALREADY_RETURNED'] || 0) + (dispMap['ALREADY_PICKED_UP'] || 0) },
             { name: 'Refused To Return', count: (dispMap['REFUSED_TO_RETURN'] || 0) + (dispMap['PICKUP_DECLINED'] || 0) },
             { name: 'Willing To Recharge', count: dispMap['WILLING_TO_RECHARGE'] || 0 },
-            { name: 'Already Recharged', count: dispMap['RECHARGED_DEVICE'] || 0 },
+            { name: 'Already Recharged', count: (dispMap['RECHARGED_DEVICE'] || 0) + (dispMap['ALREADY_RECHARGED'] || 0) },
             { name: 'Damaged Device', count: dispMap['DAMAGED_DEVICE'] || 0 },
             { name: 'Lost Device', count: dispMap['LOST_DEVICE'] || 0 },
             { name: 'Refund Request', count: (dispMap['REFUND_REQUEST'] || 0) + (dispMap['REFUND_OR_OWNERSHIP_QUERY'] || 0) },
@@ -728,21 +775,28 @@ export class CallService {
       return { handled: false, reason: 'unrelated_room' };
     }
 
+    const p: any = event.participant;
+    const sip = isSipParticipant(p);
+
     let callId: string | null = null;
     const isInbound = roomName.startsWith('inbound-');
 
     if (isInbound) {
-      const existingCallRes = await query('SELECT id FROM calls WHERE room_name = $1', [roomName]);
-      if (existingCallRes.rows.length > 0) {
-        callId = existingCallRes.rows[0].id;
-      } else {
-        const callerPhone = event.participant?.identity?.replace(/^phone-/, '') || '';
+      const existing = await query('SELECT id FROM calls WHERE room_name = $1', [roomName]);
+      if (existing.rows.length > 0) {
+        callId = existing.rows[0].id;
+      } else if (event.event === 'participant_joined' && sip) {
+        // Only register once the real caller is known; room_started / agent-joined events carry no number.
+        const attrs = p?.attributes || {};
         const inbound = await this.registerInboundCall({
           roomName,
-          phone: callerPhone,
-          sipCallId: event.participant?.sid,
+          phone: attrs['sip.phoneNumber'] || extractPhone(p?.identity),
+          sipCallId: attrs['sip.callID'] || undefined,
         });
         callId = inbound.call.id;
+      } else {
+        // The agent registers the call itself; nothing to update yet.
+        return { handled: false, reason: 'inbound_call_not_registered_yet' };
       }
     } else if (roomName.startsWith('call-')) {
       callId = roomName.replace('call-', '');
@@ -751,24 +805,24 @@ export class CallService {
     }
 
     if (event.event === 'participant_joined') {
-      const p = event.participant;
-      if (p?.identity?.startsWith('phone-') || p?.kind === 2 /* SIP */) {
-        logger.info({ callId, participant: p.identity }, 'Customer phone joined LiveKit room via SIP');
+      if (sip) {
+        logger.info({ callId, participant: p?.identity }, 'Customer phone joined LiveKit room via SIP');
         await query(
-          `UPDATE calls 
-           SET status = 'answered', 
+          `UPDATE calls
+           SET status = 'answered',
                call_status = 'answered',
-               answered_at = COALESCE(answered_at, NOW()) 
+               answered_at = COALESCE(answered_at, NOW())
            WHERE id = $1 AND status IN ('initiated', 'dialing')`,
           [callId]
         );
       }
-    } else if (event.event === 'participant_left' || event.event === 'room_finished') {
+    } else if ((event.event === 'participant_left' && sip) || event.event === 'room_finished') {
+      // Only the phone leg ends the call (the agent leaving is not the customer hanging up)
       logger.info({ callId, event: event.event }, 'Call ended via webhook');
       await query(
-        `UPDATE calls 
+        `UPDATE calls
          SET status = CASE WHEN status = 'answered' THEN 'completed' ELSE status END,
-             ended_at = COALESCE(ended_at, NOW()) 
+             ended_at = COALESCE(ended_at, NOW())
          WHERE id = $1`,
         [callId]
       );
@@ -782,12 +836,13 @@ export class CallService {
    */
   async sweepStuckCalls() {
     const res = await query(
-      `UPDATE calls 
-       SET status = 'NO_ANSWER', 
+      `UPDATE calls
+       SET status = 'NO_ANSWER',
            call_status = 'NO_ANSWER',
            failure_reason = 'Dialing timeout: callee did not answer within timeout period',
-           ended_at = NOW() 
-       WHERE status IN ('initiated', 'dialing') 
+           ended_at = NOW()
+       WHERE status IN ('initiated', 'dialing')
+         AND COALESCE(direction, 'outbound') = 'outbound'
          AND created_at < NOW() - INTERVAL '3 minutes'
        RETURNING id, customer_id, room_name, created_at`
     );
@@ -795,7 +850,7 @@ export class CallService {
     if (res.rows.length > 0) {
       logger.warn({ sweptCount: res.rows.length, sweptCalls: res.rows }, 'Sweeper resolved stuck calls to NO_ANSWER');
       for (const row of res.rows) {
-        await this.evaluateRetry(row.customer_id, 'NO_ANSWER', null);
+        if (row.customer_id) await this.evaluateRetry(row.customer_id, 'NO_ANSWER', null);
       }
     }
   }
@@ -805,7 +860,7 @@ export class CallService {
    */
   async getCall(callId: string) {
     const res = await query(
-      `SELECT c.*, 
+      `SELECT c.*,
               cust.name as customer_name, cust.phone as customer_phone, cust.address as customer_address,
               cust.account_no, cust.subs_del_no, cust.service_end_date, cust.total_attempts,
               co.outcome, co.final_disposition, co.pickup_date, co.confirmed_date,
@@ -824,23 +879,14 @@ export class CallService {
     return res.rows[0];
   }
 
-  /**
-   * Lists all customers / leads with retry and status info.
-   */
   async listCustomers(limit = 100) {
-    const res = await query(
-      `SELECT * FROM customers ORDER BY created_at DESC LIMIT $1`,
-      [limit]
-    );
-    return res.rows;
+    const res = await query(`SELECT * FROM customers ORDER BY created_at DESC LIMIT $1`, [limit]);
+    return res.rows.map((r: any) => serializeCustomer(r));
   }
 
-  /**
-   * Lists latest 20 calls.
-   */
   async listRecentCalls(limit = 20) {
     const res = await query(
-      `SELECT c.*, 
+      `SELECT c.*,
               cust.name as customer_name, cust.phone as customer_phone,
               co.final_disposition, co.confirmed_date, co.pickup_date
        FROM calls c
