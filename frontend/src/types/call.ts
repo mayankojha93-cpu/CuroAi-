@@ -22,6 +22,7 @@ export interface CallRecord {
   total_attempts?: number;
   status: string;
   call_status?: string;
+  direction?: 'inbound' | 'outbound';
   attempt_number?: number;
   duration_seconds?: number;
   median_latency_ms?: number;
