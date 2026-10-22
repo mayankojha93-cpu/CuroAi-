@@ -94,8 +94,8 @@ export const Header: React.FC<HeaderProps> = ({
             fontSize: '0.78rem',
           }}>
             <Activity size={14} color="var(--accent-blue)" />
-            <span style={{ color: 'var(--text-secondary)' }}>Exotel SIP:</span>
-            <span style={{ color: 'var(--accent-green)', fontWeight: 600 }}>Connected</span>
+            <span style={{ color: 'var(--text-secondary)' }}>Exotel SIP (In & Out):</span>
+            <span style={{ color: 'var(--accent-green)', fontWeight: 600 }}>Active</span>
           </div>
 
           <div className="glass-panel" style={{
