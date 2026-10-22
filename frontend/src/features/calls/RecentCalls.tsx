@@ -74,8 +74,35 @@ export const RecentCalls: React.FC<RecentCallsProps> = ({ calls, onSelectCall })
                   </td>
 
                   <td style={{ padding: '14px 18px' }}>
-                    <div style={{ fontWeight: 600, color: '#fff' }}>
-                      {call.customer_name || 'Customer'}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontWeight: 600, color: '#fff' }}>
+                        {call.customer_name || 'Customer'}
+                      </span>
+                      {call.direction === 'inbound' ? (
+                        <span style={{
+                          fontSize: '0.65rem',
+                          padding: '1px 6px',
+                          borderRadius: 4,
+                          background: 'rgba(56, 189, 248, 0.15)',
+                          color: '#38bdf8',
+                          border: '1px solid rgba(56, 189, 248, 0.3)',
+                          fontWeight: 700,
+                        }}>
+                          INBOUND
+                        </span>
+                      ) : (
+                        <span style={{
+                          fontSize: '0.65rem',
+                          padding: '1px 6px',
+                          borderRadius: 4,
+                          background: 'rgba(255, 255, 255, 0.05)',
+                          color: 'var(--text-muted)',
+                          border: '1px solid rgba(255, 255, 255, 0.1)',
+                          fontWeight: 500,
+                        }}>
+                          OUTBOUND
+                        </span>
+                      )}
                     </div>
                     <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
                       {call.customer_phone || 'PSTN Line'}
