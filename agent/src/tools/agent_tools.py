@@ -1,3 +1,4 @@
+import time
 import logging
 from livekit.agents import function_tool
 
@@ -32,8 +33,18 @@ class AgentTools:
     17. Already Using Device                    → record_still_using_device()
     """
 
-    def __init__(self, state: ConversationState):
+    def __init__(self, state: ConversationState, timing_tracker: dict = None):
         self.state = state
+        self.timing_tracker = timing_tracker if timing_tracker is not None else {}
+
+    def _notify_tool_activity(self):
+        """Cancels any pending provider filler task and refreshes watchdog activity timestamp."""
+        if self.timing_tracker:
+            self.timing_tracker["provider_filler_pending"] = False
+            self.timing_tracker["last_activity_time"] = time.time()
+            task = self.timing_tracker.get("provider_filler_task")
+            if task and not task.done():
+                task.cancel()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Core flow tools
@@ -55,6 +66,7 @@ class AgentTools:
         Scenario 16 (Wrong Number): call with is_wrong_person=True after validating
         that the registered address/customer details are NOT known to this person.
         """
+        self._notify_tool_activity()
         logger.info(f"[Tool] confirm_identity: correct={is_correct}, wrong={is_wrong_person}, later={call_later}")
 
         if is_wrong_person or (not is_correct and not call_later):
@@ -89,6 +101,7 @@ class AgentTools:
         - decision='callback' → customer is busy, schedule callback.
         - date_text           → optional preferred date if mentioned in same turn.
         """
+        self._notify_tool_activity()
         logger.info(f"[Tool] set_pickup: decision={decision}, date='{date_text}'")
         decision_clean = decision.lower().strip()
 
@@ -124,6 +137,7 @@ class AgentTools:
         Customer agrees to return but cannot commit to a date.
         Sets WILLING_TO_PICKUP — triggers exactly one follow-up call per spec.
         """
+        self._notify_tool_activity()
         logger.info("[Tool] record_willing_no_date")
         self.state.pickup_accepted = True
         self.state.final_disposition = "WILLING_TO_PICKUP"
@@ -138,6 +152,7 @@ class AgentTools:
         Resolves the preferred pickup date from the customer's utterance.
         Examples: 'kal', 'parso', 'agle somwar', '22 tarikh'.
         """
+        self._notify_tool_activity()
         logger.info(f"[Tool] set_pickup_date: '{date_text}'")
         iso, spoken, err = resolve_relative_date(date_text)
 
@@ -180,6 +195,7 @@ class AgentTools:
         - confirmed=False   → capture new_address from customer.
         - alternate_phone   → optional alternate contact number.
         """
+        self._notify_tool_activity()
         logger.info(f"[Tool] confirm_address: confirmed={confirmed}, new='{new_address}'")
         self.state.registered_address_confirmed = confirmed
         if not confirmed and new_address:
