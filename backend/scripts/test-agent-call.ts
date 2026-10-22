@@ -33,7 +33,7 @@ async function main() {
   console.log(`  - Service End Date:  ${serviceEndDate}`);
   console.log(`  - R. Date:           ${rDate}`);
   console.log(`  - Address:           ${address}`);
-  console.log(`  - Agent Model:       Priya (Sarvam STT + Groq Qwen)`);
+  console.log(`  - Agent Model:       Priya (Sarvam STT + Kimi-k3 / Gemini + Sarvam TTS)`);
   console.log(`  - Outbound SIP Trunk:${env.SIP_OUTBOUND_TRUNK_ID || 'Not Configured'}\n`);
 
   console.log('⚡ Placing test call with Priya agent dispatch...');
@@ -55,9 +55,22 @@ async function main() {
     console.log(`  - Customer ID:       ${customer.id}`);
     console.log(`  - LiveKit Room:      ${call.room_name}`);
     console.log(`  - Call Status:       ${call.status}`);
-    console.log('\n👉 If SIP trunk is connected, your phone should ring shortly.');
-    console.log('👉 Agent Priya will greet you in Hindi/Hinglish regarding router pickup for account:', accountNo);
-    console.log('\nExiting CLI.');
+    console.log('\n👉 LiveKit room and agent dispatch created.');
+    console.log('👉 Dispatched to Exotel SIP gateway:', env.SIP_DOMAIN || 'in.voip.exotel.com:5070');
+    console.log('👉 Agent Priya will greet the customer upon pickup.');
+    console.log('\nMonitoring call status for 20 seconds...');
+
+    for (let i = 0; i < 20; i++) {
+      await new Promise((res) => setTimeout(res, 1000));
+      const statusRes = await callService.getCall(call.id);
+      process.stdout.write(`\r[Second ${i + 1}] Call Status: ${statusRes.status} | SIP Call ID: ${statusRes.sip_call_id || 'connecting...'}`);
+      if (statusRes.status === 'answered' || statusRes.status === 'completed') {
+        console.log('\n\n🎉 Call answered/active with AI Agent Priya!');
+        break;
+      }
+    }
+
+    console.log('\n\nTest call dispatched. Exiting CLI.\n');
     process.exit(0);
   } catch (err: any) {
     console.error('\n❌ Failed to initiate test call:');
