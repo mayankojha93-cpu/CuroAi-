@@ -62,6 +62,7 @@ class ConversationState:
         self.offered_date_spoken: Optional[str] = None
         self.strikes: Dict[str, int] = {}
         self.outcome_posted: bool = False
+        self.shifted_with_customer: bool = False   # shifted, still has device: pickup from new address
         self.registered_address_confirmed: Optional[bool] = None
         self.new_address: Optional[str] = None
         self.alternate_phone: Optional[str] = None
@@ -69,6 +70,7 @@ class ConversationState:
         # Final disposition (Airtel campaign standardized string)
         self.final_disposition: str = "DISCONNECTED"
         self.customer_note: Optional[str] = None
+        self.closing_line: str = ""   # last line a tool told the LLM to speak (watchdog fallback)
         self.escalation_required: bool = False
 
         # Transcript tracking
@@ -121,3 +123,4 @@ class ConversationState:
             Step.ESCALATED,
             Step.TERMINATED,
         ]
+        
