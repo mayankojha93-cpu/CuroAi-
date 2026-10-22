@@ -56,28 +56,48 @@ async def entrypoint(ctx: agents.JobContext):
 
     if direction == "inbound":
         logger.info(f"Detected INBOUND call in room {ctx.room.name}. Registering session...")
-        incoming_phone = phone
-        for p in ctx.room.remote_participants.values():
-            if p.identity and p.identity.startswith("phone-"):
-                incoming_phone = p.identity.replace("phone-", "")
-                break
-            elif getattr(p, "attributes", None) and p.attributes.get("sip.phoneNumber"):
-                incoming_phone = p.attributes.get("sip.phoneNumber")
-                break
+        # Wait for the real SIP caller: the dispatch rule fires on join, but remote_participants can
+        # still be empty at this instant. Inbound SIP identities look like "sip_<number>" (NOT "phone-").
+        sip_participant = None
+        try:
+            sip_participant = await asyncio.wait_for(ctx.wait_for_participant(), timeout=15.0)
+        except Exception as e:
+            logger.warning(f"No SIP participant found within 15s: {e}")
 
-        inbound_data = register_inbound_call_to_backend(ctx.room.name, incoming_phone)
+        incoming_phone = phone
+        sip_call_id = ""
+        if sip_participant is not None:
+            attrs = getattr(sip_participant, "attributes", None) or {}
+            ident = (sip_participant.identity or "")
+            for prefix in ("phone-", "sip_", "sip:"):
+                if ident.startswith(prefix):
+                    ident = ident[len(prefix):]
+                    break
+            incoming_phone = attrs.get("sip.phoneNumber") or ident or phone
+            sip_call_id = attrs.get("sip.callID", "") or ""
+        logger.info(f"Inbound caller number: {incoming_phone or 'withheld/unknown'}")
+
+        # requests is blocking -> run in a thread so live audio is never frozen
+        inbound_data = await asyncio.to_thread(
+            register_inbound_call_to_backend, ctx.room.name, incoming_phone, sip_call_id
+        )
         if inbound_data:
             call_info = inbound_data.get("call") or {}
             cust_info = inbound_data.get("customer") or {}
             call_id = call_info.get("id", call_id)
+            phone = incoming_phone
             if cust_info:
                 customer_name = cust_info.get("name") or customer_name
                 phone = cust_info.get("phone") or incoming_phone
-                address = cust_info.get("address") or address
+                db_address = cust_info.get("address") or ""
+                if db_address and db_address != "Pending address verification":
+                    address = db_address
                 account_no = cust_info.get("account_no") or account_no
                 subs_del_no = cust_info.get("subs_del_no") or subs_del_no
                 service_end_date = str(cust_info.get("service_end_date") or "")
                 r_date = str(cust_info.get("r_date") or "")
+        else:
+            logger.error("Inbound call could NOT be registered with backend; outcome will not be saved.")
 
     # 2. Initialize Conversation State with lead info & call direction
     state = ConversationState(
@@ -327,8 +347,18 @@ async def entrypoint(ctx: agents.JobContext):
                 state.final_disposition = "DISCONNECTED"
                 state.customer_note = "Call abruptly dropped / hung up mid-conversation"
             logger.info(f"Room disconnected abruptly. Saving {state.final_disposition} for retry queue.")
-            if not state.outcome_posted:
-                state.outcome_posted = bool(post_outcome_to_backend(state))
+            # The blocking HTTP save happens in the shutdown callback below (thread, awaited by the job
+            # runner) instead of blocking the event loop inside this sync handler.
+
+    async def _final_save():
+        """Runs on job shutdown: guarantees the outcome reaches the backend exactly when still missing."""
+        if state.call_id and not state.outcome_posted:
+            try:
+                state.outcome_posted = bool(await asyncio.to_thread(post_outcome_to_backend, state))
+            except Exception as e:
+                logger.error(f"Final outcome save failed: {e}")
+
+    ctx.add_shutdown_callback(_final_save)
 
     # 5. Start agent session
     await session.start(room=ctx.room, agent=agent)
