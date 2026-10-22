@@ -50,7 +50,7 @@ const envSchema = z.object({
   // AI Providers
   SARVAM_API_KEY: z.string().optional().default(''),
   GROQ_API_KEY: z.string().optional().default(''),
-  LLM_MODEL: z.string().default('meta-llama/llama-3.1-8b-instruct'),
+  LLM_MODEL: z.string().default('meta-llama/llama-3.3-70b-instruct'),
 
   // Seed / Test customer
   TEST_PHONE: z.string().default('+919999999999'),
