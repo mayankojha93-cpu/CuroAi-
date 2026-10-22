@@ -9,7 +9,7 @@ from src.tools.api import post_outcome_to_backend
 
 logger = logging.getLogger("agent-tools")
 
-GENERIC_NAME_TOKENS = ("customer", "subscriber", "user", "airtel", "client")
+GENERIC_NAME_TOKENS = ("customer", "subscriber", "user", "airtel", "client", "inbound", "caller")
 
 CLOSING_LINE = "पुष्टि के लिए धन्यवाद। किसी भी अन्य जानकारी के लिए कृपया एयरटेल 121 पर संपर्क करें।"
 
@@ -236,6 +236,17 @@ class AgentTools:
             )
 
         s.identity_confirmed = True
+
+        # Inbound caller who is not in the campaign list: there is no suspended account / pickup to
+        # arrange, so never offer a pickup date. Route to 121 instead.
+        if getattr(s, "direction", "outbound") == "inbound" and not (s.account_no or s.subs_del_no):
+            s.escalation_required = True
+            return await self._finish(
+                Step.ESCALATED, "NEEDS_AIRTEL_SUPPORT",
+                "Inbound caller not found in campaign records. Routed to 121.",
+                "आपका अकाउंट हमारे रिकॉर्ड में नहीं मिला। कृपया एयरटेल 121 पर या एयरटेल Thanks ऐप पर संपर्क करें। धन्यवाद।",
+            )
+
         # Offer next available working date (skips Sundays)
         iso, spoken = get_next_available_pickup_date(skip_sundays=True)
         s.offered_date, s.offered_date_spoken = iso, spoken
@@ -451,7 +462,10 @@ class AgentTools:
                     else "Device left at previous address. No occupant contact. No pickup without device confirmation.")
             return await self._finish(
                 Step.CLOSE, "SHIFTED_DEVICE_LEFT_PREVIOUS", note,
-                "विवरण नोट कर लिया है। हमारी टीम आपसे संपर्क करेगी। धन्यवाद।",
+                # With an occupant contact the team follows up; without one the case is simply closed
+                # (spec: "update the appropriate disposition and close"), so don't promise a call.
+                ("विवरण नोट कर लिया है। हमारी टीम उनसे संपर्क करेगी। धन्यवाद।" if occupant_contact
+                 else "विवरण नोट कर लिया है। किसी भी जानकारी के लिए कृपया एयरटेल 121 पर संपर्क करें। धन्यवाद।"),
             )
 
         # Scenario: shifted but still has the device -> new address, then arrange pickup from there
