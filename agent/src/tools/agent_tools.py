@@ -7,68 +7,100 @@ from src.tools.api import post_outcome_to_backend
 
 logger = logging.getLogger("agent-tools")
 
+
 class AgentTools:
+    """
+    17 FAQ scenarios mapped to LLM-callable tools.
+
+    Scenario → Tool mapping:
+    1.  Damaged Device                          → record_device_issue(issue_type="damaged")
+    2.  Lost Device                             → record_device_issue(issue_type="lost")
+    3.  Refund Request                          → record_refusal(objection_type="refund_request")
+    4.  Not Available / Temporarily Unavailable → record_temporarily_unavailable()
+    5.  Recharged Device                        → record_recharge()
+    6.  Complaint / Escalation                  → escalate_to_121()
+    7.  Refusal – Device Becomes Free           → record_refusal(objection_type="ownership_claim")
+    8.  Customer Shifted – Device With Customer → record_shifted(device_location="with_customer")
+    9.  Customer Shifted – Device With Relative → record_shifted(device_location="with_relative")
+    10. Customer Shifted – Left at Previous     → record_shifted(device_location="left_at_previous")
+    11. Ringing / No Answer                     → handled by call_status (NO_ANSWER) — backend only
+    12. Call Disconnected                       → handled by room disconnect event — backend only
+    13. Voicemail / Switched Off                → handled by call_status (VOICEMAIL) — backend only
+    14. Already Picked Up                       → record_already_picked_up()
+    15. DND                                     → record_do_not_call()
+    16. Wrong Number                            → confirm_identity(is_correct=False, is_wrong_person=True)
+    17. Already Using Device                    → record_still_using_device()
+    """
+
     def __init__(self, state: ConversationState):
         self.state = state
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Core flow tools
+    # ─────────────────────────────────────────────────────────────────────────
+
     @function_tool
-    def confirm_identity(
+    async def confirm_identity(
         self,
         is_correct: bool,
         is_wrong_person: bool = False,
         call_later: bool = False
     ) -> str:
         """
-        Confirms whether the callee is the target customer.
-        - is_correct: True if callee confirms their name.
-        - is_wrong_person: True if callee states they are someone else or wrong number.
-        - call_later: True if callee is busy or requests a callback.
+        Confirms whether the callee is the intended customer.
+        - is_correct=True   → customer confirmed identity → move to pickup decision.
+        - is_wrong_person=True → wrong number; close as WRONG_NUMBER_OR_IDENTITY_NOT_CONFIRMED.
+        - call_later=True   → customer busy; schedule callback.
+
+        Scenario 16 (Wrong Number): call with is_wrong_person=True after validating
+        that the registered address/customer details are NOT known to this person.
         """
         logger.info(f"[Tool] confirm_identity: correct={is_correct}, wrong={is_wrong_person}, later={call_later}")
 
         if is_wrong_person or (not is_correct and not call_later):
             self.state.identity_confirmed = False
             self.state.final_disposition = "WRONG_NUMBER_OR_IDENTITY_NOT_CONFIRMED"
-            self.state.customer_note = "Callee confirmed wrong number / identity not confirmed"
+            self.state.customer_note = "Wrong number or identity not confirmed"
             self.state.transition_to(Step.WRONG_PERSON)
             post_outcome_to_backend(self.state)
-            return "माफ़ कीजिए, गलत नंबर डायल हो गया था। आपका दिन शुभ हो।"
+            return "माफ़ कीजिए, गलत नंबर लग गया। आपका दिन शुभ हो।"
 
         if call_later:
             self.state.identity_confirmed = True
             self.state.final_disposition = "SCHEDULE_CALLBACK"
-            self.state.customer_note = "Customer requested callback at a later time"
+            self.state.customer_note = "Customer requested callback"
             self.state.transition_to(Step.CALLBACK_REQUESTED)
             post_outcome_to_backend(self.state)
-            return "जी ठीक है, हम आपसे बाद में संपर्क करेंगे। धन्यवाद।"
+            return "ठीक है, हम बाद में कॉल करेंगे। धन्यवाद।"
 
         self.state.identity_confirmed = True
         self.state.transition_to(Step.PICKUP_DECISION)
         return (
-            "आपके एयरटेल वाई-फाई राउटर का अकाउंट लंबे समय से रिचार्ज न होने के कारण सस्पेंड कर दिया गया है। "
-            "क्या मैं कल आपके वाई-फाई राउटर का पिकअप शेड्यूल कर सकती हूँ?"
+            "आपके एयरटेल वाई-फाई का अकाउंट रिचार्ज न होने के कारण सस्पेंड हो गया है। "
+            "क्या मैं कल आपके राउटर का पिकअप शेड्यूल कर सकती हूँ?"
         )
 
     @function_tool
-    def set_pickup(self, decision: str, date_text: str = "") -> str:
+    async def set_pickup(self, decision: str, date_text: str = "") -> str:
         """
-        Records the customer's decision regarding router pickup.
-        - decision: 'yes' (agrees), 'no' (declines), 'callback' (call later).
-        - date_text: Optional preferred date if mentioned in the same turn (e.g., 'kal', 'parso').
+        Records customer's pickup decision.
+        - decision='yes'      → customer agrees to pickup.
+        - decision='no'       → routes to record_refusal.
+        - decision='callback' → customer is busy, schedule callback.
+        - date_text           → optional preferred date if mentioned in same turn.
         """
-        logger.info(f"[Tool] set_pickup: decision={decision}, date_text='{date_text}'")
+        logger.info(f"[Tool] set_pickup: decision={decision}, date='{date_text}'")
         decision_clean = decision.lower().strip()
 
         if decision_clean in ["no", "decline", "refuse", "reject"]:
-            return self.record_refusal("Customer refused router pickup", "general_refusal")
+            return await self.record_refusal("Customer refused router pickup")
 
         if decision_clean in ["callback", "busy", "later"]:
             self.state.final_disposition = "SCHEDULE_CALLBACK"
             self.state.transition_to(Step.CALLBACK_REQUESTED)
             post_outcome_to_backend(self.state)
-            return "जी ठीक है, हम आपसे बाद में संपर्क करेंगे। धन्यवाद।"
+            return "ठीक है, हम बाद में संपर्क करेंगे। धन्यवाद।"
 
-        # Customer agreed
         self.state.pickup_accepted = True
 
         if date_text and date_text.strip():
@@ -79,37 +111,38 @@ class AgentTools:
                 self.state.pickup_date_spoken = spoken
                 self.state.transition_to(Step.ADDRESS_CONFIRMATION)
                 return (
-                    f"धन्यवाद! हमने {spoken} को पिकअप तय किया है। "
-                    f"हमारे पास आपका पता दर्ज है: {self.state.address}। क्या यह पता सही है?"
+                    f"{spoken} को पिकअप तय हुआ। "
+                    f"क्या आपका पता '{self.state.address}' सही है?"
                 )
 
         self.state.transition_to(Step.DATE_RESOLUTION)
-        return "राउटर पिकअप के लिए आप किस दिन उपलब्ध होंगे? जैसे कल या परसों?"
+        return "पिकअप के लिए कौन सा दिन ठीक रहेगा — कल या परसों?"
 
     @function_tool
-    def record_willing_no_date(self) -> str:
+    async def record_willing_no_date(self) -> str:
         """
-        Records that customer agrees to return router, but cannot commit to a specific date right now.
-        Sets disposition to WILLING_TO_PICKUP (triggers 1 follow-up call as per policy).
+        Customer agrees to return but cannot commit to a date.
+        Sets WILLING_TO_PICKUP — triggers exactly one follow-up call per spec.
         """
         logger.info("[Tool] record_willing_no_date")
         self.state.pickup_accepted = True
         self.state.final_disposition = "WILLING_TO_PICKUP"
-        self.state.customer_note = "Customer willing to return router but could not finalize date"
+        self.state.customer_note = "Willing to return but could not confirm date"
         self.state.transition_to(Step.CLOSE)
         post_outcome_to_backend(self.state)
-        return "कोई बात नहीं, हम पिकअप की तारीख तय करने के लिए आपसे दोबारा संपर्क करेंगे। धन्यवाद!"
+        return "ठीक है, हम तारीख तय करने के लिए दोबारा कॉल करेंगे। धन्यवाद!"
 
     @function_tool
-    def set_pickup_date(self, date_text: str) -> str:
+    async def set_pickup_date(self, date_text: str) -> str:
         """
-        Resolves the preferred pickup date given by the customer (e.g. 'kal', 'parso', 'agle somwar').
+        Resolves the preferred pickup date from the customer's utterance.
+        Examples: 'kal', 'parso', 'agle somwar', '22 tarikh'.
         """
-        logger.info(f"[Tool] set_pickup_date: date_text='{date_text}'")
+        logger.info(f"[Tool] set_pickup_date: '{date_text}'")
         iso, spoken, err = resolve_relative_date(date_text)
 
         if err == "past_date":
-            return "यह तारीख निकल चुकी है। कृपया आने वाले किसी दिन की तारीख बताएं, जैसे कल या परसों।"
+            return "यह तारीख बीत चुकी है। कोई आने वाली तारीख बताएं।"
 
         if err or not iso or not spoken:
             self.state.date_retry_count += 1
@@ -120,221 +153,292 @@ class AgentTools:
                 self.state.pickup_date_spoken = spoken
                 self.state.transition_to(Step.ADDRESS_CONFIRMATION)
                 return (
-                    f"हमने कल ({spoken}) के लिए पिकअप तय किया है। "
-                    f"हमारे पास आपका पता दर्ज है: {self.state.address}। क्या यह पता सही है?"
+                    f"कल ({spoken}) के लिए पिकअप तय किया। "
+                    f"क्या आपका पता '{self.state.address}' सही है?"
                 )
-            return "माफ़ कीजिए, मैं तारीख समझ नहीं पाया। क्या आप कल, परसों, या कोई खास दिन बता सकते हैं?"
+            return "माफ़ कीजिए, तारीख समझ नहीं आई। कल, परसों, या कोई दिन बताएं।"
 
         self.state.proposed_date = iso
         self.state.confirmed_date = iso
         self.state.pickup_date_spoken = spoken
         self.state.transition_to(Step.ADDRESS_CONFIRMATION)
         return (
-            f"बहुत अच्छा, हमने {spoken} को पिकअप तय किया है। "
-            f"हमारे पास आपका पता दर्ज है: {self.state.address}। क्या यह पता सही है?"
+            f"{spoken} को पिकअप तय हुआ। "
+            f"क्या आपका पता '{self.state.address}' सही है?"
         )
 
     @function_tool
-    def confirm_address(
+    async def confirm_address(
         self,
         confirmed: bool,
         new_address: str = "",
         alternate_phone: str = ""
     ) -> str:
         """
-        Confirms or records a new pickup address and optional alternate phone number.
-        - confirmed: True if address on file is correct.
-        - new_address: If confirmed is False, customer's new address.
-        - alternate_phone: Optional alternate contact number.
+        Confirms or updates the pickup address.
+        - confirmed=True    → address on file is correct.
+        - confirmed=False   → capture new_address from customer.
+        - alternate_phone   → optional alternate contact number.
         """
-        logger.info(f"[Tool] confirm_address: confirmed={confirmed}, new_address='{new_address}'")
+        logger.info(f"[Tool] confirm_address: confirmed={confirmed}, new='{new_address}'")
         self.state.registered_address_confirmed = confirmed
         if not confirmed and new_address:
             self.state.new_address = new_address.strip()
         if alternate_phone:
             self.state.alternate_phone = alternate_phone.strip()
 
-        # Check if customer requested an alternate date within 30 days
-        if self.state.date_retry_count > 0 or (self.state.pickup_date_spoken and "कल" not in self.state.pickup_date_spoken):
+        if self.state.date_retry_count > 0 or (
+            self.state.pickup_date_spoken and "कल" not in self.state.pickup_date_spoken
+        ):
             self.state.final_disposition = "PICKUP_CONFIRMED_NEW_DATE"
         else:
             self.state.final_disposition = "PICKUP_CONFIRMED"
 
         self.state.transition_to(Step.CLOSE)
         post_outcome_to_backend(self.state)
+        return "पुष्टि के लिए शुक्रिया। किसी और जानकारी के लिए 121 पर संपर्क करें। शुभ दिन!"
 
-        pickup_when = self.state.pickup_date_spoken or self.state.confirmed_date or "तय तारीख"
-        return f"पुष्टि के लिए धन्यवाद। किसी अन्य जानकारी के लिए कृपया एयरटेल 121 पर संपर्क करें। आपका दिन शुभ हो!"
+    # ─────────────────────────────────────────────────────────────────────────
+    # FAQ scenario tools (all 17 covered)
+    # ─────────────────────────────────────────────────────────────────────────
 
     @function_tool
-    def record_refusal(self, reason: str, objection_type: str = "general_refusal") -> str:
+    async def record_refusal(self, reason: str, objection_type: str = "general_refusal") -> str:
         """
-        Records customer refusal to return router, handling ownership beliefs or refund demands.
-        - objection_type: 'ownership_claim' | 'refund_request' | 'general_refusal'
+        Scenario 3 — Refund Request: customer refuses to return and asks for refund.
+        Scenario 7 — Refusal: customer believes device becomes free after 3-4 months.
+        - objection_type: 'refund_request' | 'ownership_claim' | 'general_refusal'
+        Do NOT argue repeatedly. State once, record, and close.
         """
         logger.info(f"[Tool] record_refusal: reason='{reason}', type='{objection_type}'")
         self.state.pickup_accepted = False
 
-        if "refund" in objection_type.lower() or "ownership" in objection_type.lower() or "refund" in reason.lower() or "ownership" in reason.lower() or "free" in reason.lower():
+        if "refund" in objection_type.lower() or "refund" in reason.lower():
             self.state.final_disposition = "REFUND_OR_OWNERSHIP_QUERY"
-            self.state.customer_note = f"Refund / ownership query: {reason}"
-            self.state.transition_to(Step.CLOSE)
-            post_outcome_to_backend(self.state)
-            return "राउटर एयरटेल की प्रॉपर्टी है और सब्सक्रिप्शन चार्ज इसके मालिकाना हक के लिए नहीं होते। अधिक जानकारी के लिए कृपया एयरटेल 121 पर संपर्क करें। धन्यवाद।"
+            self.state.customer_note = f"Refund demand: {reason}"
+        elif "ownership" in objection_type.lower() or "free" in reason.lower():
+            self.state.final_disposition = "REFUND_OR_OWNERSHIP_QUERY"
+            self.state.customer_note = f"Ownership claim / device free belief: {reason}"
         else:
             self.state.final_disposition = "PICKUP_DECLINED"
-            self.state.customer_note = f"Customer refused pickup: {reason}"
-            self.state.transition_to(Step.CLOSE)
-            post_outcome_to_backend(self.state)
-            return "मैं समझ सकती हूँ, मैंने आपकी प्रतिक्रिया दर्ज कर ली है। अधिक स्पष्टीकरण के लिए कृपया एयरटेल 121 पर संपर्क करें। धन्यवाद।"
+            self.state.customer_note = f"Customer refused: {reason}"
+
+        self.state.transition_to(Step.CLOSE)
+        post_outcome_to_backend(self.state)
+        return (
+            "राउटर एयरटेल की संपत्ति है, सब्सक्रिप्शन फीस से ओनरशिप नहीं मिलती। "
+            "अधिक जानकारी के लिए 121 पर कॉल करें। धन्यवाद।"
+        )
 
     @function_tool
-    def record_device_issue(self, issue_type: str) -> str:
+    async def record_device_issue(self, issue_type: str) -> str:
         """
-        Records that customer's device is damaged or lost. (No pickup required).
+        Scenario 1 — Damaged Device: device is completely damaged — no pickup needed.
+        Scenario 2 — Lost Device: device is lost/not available — no pickup needed.
         - issue_type: 'damaged' or 'lost'
         """
-        logger.info(f"[Tool] record_device_issue: issue_type='{issue_type}'")
+        logger.info(f"[Tool] record_device_issue: type='{issue_type}'")
+        self.state.pickup_accepted = False
         if "lost" in issue_type.lower():
             self.state.final_disposition = "LOST_DEVICE"
-            self.state.customer_note = "Customer confirms device is lost / not available. No pickup required."
+            self.state.customer_note = "Device lost. No pickup required."
         else:
             self.state.final_disposition = "DAMAGED_DEVICE"
-            self.state.customer_note = "Customer confirms device is completely damaged. No pickup required."
+            self.state.customer_note = "Device completely damaged. No pickup required."
 
+        self.state.transition_to(Step.CLOSE)
+        post_outcome_to_backend(self.state)
+        return "समझ गई। पिकअप की ज़रूरत नहीं है। शुभ दिन!"
+
+    @function_tool
+    async def record_recharge(self, recharge_date: str = "") -> str:
+        """
+        Scenario 5 — Recharged Device: customer says they have recharged the device.
+        Capture when they recharged; if recharge date is later than disconnection date,
+        update as 'Recharged Device' and close.
+        """
+        logger.info(f"[Tool] record_recharge: date='{recharge_date}'")
+        self.state.final_disposition = "RECHARGED_DEVICE"
+        self.state.customer_note = f"Customer recharged on: {recharge_date or 'recently'}"
+        self.state.transition_to(Step.CLOSE)
+        post_outcome_to_backend(self.state)
+        return "बहुत अच्छा। रिचार्ज के बाद पिकअप की ज़रूरत नहीं। धन्यवाद!"
+
+    @function_tool
+    async def record_already_picked_up(self) -> str:
+        """
+        Scenario 14 — Already Picked Up: customer confirms device has already been collected.
+        Update as 'Already Picked Up' and close. Do NOT initiate another pickup.
+        """
+        logger.info("[Tool] record_already_picked_up")
+        self.state.final_disposition = "ALREADY_PICKED_UP"
+        self.state.customer_note = "Customer confirmed device already collected"
         self.state.pickup_accepted = False
         self.state.transition_to(Step.CLOSE)
         post_outcome_to_backend(self.state)
-        return "आपकी जानकारी नोट कर ली गई है। इसके लिए कोई पिकअप की आवश्यकता नहीं है। आपका दिन शुभ हो।"
+        return "ठीक है, सिस्टम में अपडेट कर दिया गया। शुभ दिन!"
 
     @function_tool
-    def record_recharge(self, recharge_date: str = "") -> str:
+    async def record_already_returned(self) -> str:
         """
-        Records when customer claims they have already recharged or are willing to recharge.
-        """
-        logger.info(f"[Tool] record_recharge: recharge_date='{recharge_date}'")
-        self.state.final_disposition = "RECHARGED_DEVICE"
-        self.state.customer_note = f"Customer claims recharged on: {recharge_date or 'Recent'}"
-        self.state.transition_to(Step.CLOSE)
-        post_outcome_to_backend(self.state)
-        return "बहुत अच्छा, यदि आपका कनेक्शन रीचार्ज हो चुका है तो पिकअप की आवश्यकता नहीं है। धन्यवाद!"
-
-    @function_tool
-    def record_already_returned(self) -> str:
-        """
-        Records when customer confirms device has already been collected/returned.
+        Customer confirmed device has already been returned/collected (alternate phrasing).
+        Uses ALREADY_RETURNED disposition.
         """
         logger.info("[Tool] record_already_returned")
         self.state.final_disposition = "ALREADY_RETURNED"
-        self.state.customer_note = "Customer confirmed device has already been collected/returned"
+        self.state.customer_note = "Customer confirmed device already returned"
         self.state.transition_to(Step.CLOSE)
         post_outcome_to_backend(self.state)
-        return "जानकारी के लिए धन्यवाद, हमने सिस्टम में अपडेट कर दिया है कि डिवाइस पहले ही वापस हो चुका है। आपका दिन शुभ हो!"
+        return "जानकारी के लिए धन्यवाद। सिस्टम अपडेट कर दिया। शुभ दिन!"
 
     @function_tool
-    def record_shifted(
+    async def record_shifted(
         self,
         device_location: str,
         new_address: str = "",
-        relative_phone: str = ""
+        relative_phone: str = "",
+        occupant_contact: str = ""
     ) -> str:
         """
-        Records relocated customer scenarios:
+        Scenario 8 — Shifted, Device With Customer: get new address, arrange pickup there.
+        Scenario 9 — Shifted, Device With Relative: get relative's number, confirm availability.
+        Scenario 10 — Shifted, Device Left at Previous Address: get current occupant contact
+                       if available; if not, record and close.
         - device_location: 'with_customer' | 'with_relative' | 'left_at_previous'
+        - new_address: customer's new address (scenario 8)
+        - relative_phone: relative's contact number (scenario 9)
+        - occupant_contact: current occupant at previous address (scenario 10)
         """
-        logger.info(f"[Tool] record_shifted: location={device_location}, new_addr='{new_address}', relative='{relative_phone}'")
+        logger.info(
+            f"[Tool] record_shifted: loc={device_location}, "
+            f"new='{new_address}', rel='{relative_phone}', occupant='{occupant_contact}'"
+        )
         loc = device_location.lower()
+
         if "relative" in loc:
+            # Scenario 9: validate with relative before updating pickup
             self.state.final_disposition = "SHIFTED_DEVICE_WITH_RELATIVE"
             self.state.alternate_phone = relative_phone
-            self.state.customer_note = f"Device left with relative. Contact: {relative_phone}"
+            self.state.customer_note = (
+                f"Device with relative. Contact: {relative_phone or 'not provided'}"
+            )
         elif "previous" in loc or "old" in loc:
-            self.state.final_disposition = "SHIFTED_DEVICE_LEFT_PREVIOUS"
-            self.state.customer_note = "Customer shifted and left device at previous rented accommodation."
+            # Scenario 10: try to get current occupant contact
+            if occupant_contact:
+                self.state.final_disposition = "SHIFTED_DEVICE_LEFT_PREVIOUS"
+                self.state.customer_note = (
+                    f"Device left at previous address. "
+                    f"Current occupant contact: {occupant_contact}"
+                )
+            else:
+                self.state.final_disposition = "SHIFTED_DEVICE_LEFT_PREVIOUS"
+                self.state.customer_note = (
+                    "Device left at previous rented address. "
+                    "No occupant contact available."
+                )
         else:
+            # Scenario 8: get new address, arrange pickup
             self.state.final_disposition = "SHIFTED_DEVICE_WITH_CUSTOMER"
             self.state.new_address = new_address
             self.state.customer_note = f"Customer shifted with device. New address: {new_address}"
 
         self.state.transition_to(Step.CLOSE)
         post_outcome_to_backend(self.state)
-        return "विवरण सुरक्षित कर लिया गया है। हमारी टीम इस जानकारी के आधार पर पिकअप का समन्वय करेगी। धन्यवाद!"
+        return "विवरण नोट कर लिया। हमारी टीम संपर्क करेगी। धन्यवाद!"
 
     @function_tool
-    def record_language_barrier(self) -> str:
-        """
-        Records customer unable to converse in Hindi or English (Language Barrier).
-        """
-        logger.info("[Tool] record_language_barrier")
-        self.state.final_disposition = "LANGUAGE_BARRIER"
-        self.state.customer_note = "Language barrier detected. Customer requires regional language agent."
-        self.state.transition_to(Step.TERMINATED)
-        post_outcome_to_backend(self.state)
-        return "Thank you. Our regional language executive will connect with you. Have a good day."
-
-    @function_tool
-    def record_do_not_call(self) -> str:
-        """
-        Records customer demanding DND (Do Not Call).
-        """
-        logger.info("[Tool] record_do_not_call")
-        self.state.final_disposition = "DO_NOT_CALL"
-        self.state.customer_note = "Customer requested Do Not Call / DND"
-        self.state.transition_to(Step.TERMINATED)
-        post_outcome_to_backend(self.state)
-        return "हमने आपकी डीएनडी रिक्वेस्ट दर्ज कर ली है। आपको दोबारा कॉल नहीं किया जाएगा। धन्यवाद।"
-
-    @function_tool
-    def escalate_to_121(self, reason: str) -> str:
-        """
-        Escalates disputes, complaints or questions outside approved FAQ to Airtel 121.
-        Matches Build Brief: NEEDS_AIRTEL_SUPPORT.
-        """
-        logger.info(f"[Tool] escalate_to_121: reason='{reason}'")
-        self.state.final_disposition = "NEEDS_AIRTEL_SUPPORT"
-        self.state.customer_note = f"Dispute / query outside approved FAQ: {reason}"
-        self.state.escalation_required = True
-        self.state.transition_to(Step.ESCALATED)
-        post_outcome_to_backend(self.state)
-        return "माफ़ कीजिए, मैं आपको गलत जानकारी नहीं देना चाहती। कृपया स्पष्टीकरण के लिए एयरटेल 121 पर संपर्क करें। धन्यवाद।"
-
-    @function_tool
-    def record_temporarily_unavailable(
+    async def record_temporarily_unavailable(
         self,
         alternate_address: str = "",
         alternate_phone: str = "",
         schedule_callback: bool = True
     ) -> str:
         """
-        Records Scenario 4: Customer is temporarily unavailable at the registered address.
-        - If device is elsewhere: capture alternate_address and alternate_phone to arrange pickup.
-        - If no feasible location: schedule callback.
+        Scenario 4 — Not Available for Specific Time:
+        Customer is temporarily unavailable at registered address.
+        - If device is available elsewhere: capture alternate_address + alternate_phone.
+        - If no feasible pickup location: schedule callback.
         """
-        logger.info(f"[Tool] record_temporarily_unavailable: addr='{alternate_address}', phone='{alternate_phone}', callback={schedule_callback}")
+        logger.info(
+            f"[Tool] record_temporarily_unavailable: "
+            f"addr='{alternate_address}', phone='{alternate_phone}'"
+        )
         if alternate_address:
             self.state.new_address = alternate_address
             self.state.alternate_phone = alternate_phone
             self.state.final_disposition = "CONFIRMED_FOR_PICKUP"
-            self.state.customer_note = f"Temporarily unavailable at registered address; alternate pickup arranged at: {alternate_address}"
+            self.state.customer_note = (
+                f"Temporarily unavailable; alternate pickup: {alternate_address}"
+            )
             self.state.transition_to(Step.CLOSE)
             post_outcome_to_backend(self.state)
-            return f"धन्यवाद, हमने आपके दिए गए वैकल्पिक पते पर पिकअप नोट कर लिया है। आपका दिन शुभ हो!"
+            return "ठीक है, वैकल्पिक पते पर पिकअप नोट कर लिया। धन्यवाद!"
         else:
             self.state.final_disposition = "SCHEDULE_CALLBACK"
-            self.state.customer_note = "Customer temporarily unavailable at registered address. No alternate location available. Callback scheduled."
+            self.state.customer_note = (
+                "Temporarily unavailable. No alternate location. Callback scheduled."
+            )
             self.state.transition_to(Step.CALLBACK_REQUESTED)
             post_outcome_to_backend(self.state)
-            return "जी ठीक है, हम आपकी सुविधा अनुसार बाद में आपसे दोबारा संपर्क करेंगे। धन्यवाद!"
+            return "ठीक है, हम बाद में संपर्क करेंगे। धन्यवाद!"
 
     @function_tool
-    def record_still_using_device(self) -> str:
+    async def record_still_using_device(self) -> str:
         """
-        Records Scenario 17: Customer claims they are still actively using the device/connection.
+        Scenario 17 — Already Using Device:
+        Customer says they are still using the device/connection.
+        Validate the connection/service ID and disconnection status.
+        If connection is active → update disposition and close.
+        If disconnected → proceed with recovery on the applicable scenario.
         """
         logger.info("[Tool] record_still_using_device")
         self.state.final_disposition = "ALREADY_USING_DEVICE"
-        self.state.customer_note = f"Customer confirms active device usage for account: {self.state.account_no or self.state.subs_del_no}"
+        self.state.customer_note = (
+            f"Customer claims active usage. Account: {self.state.account_no or self.state.subs_del_no}. "
+            "Backend to validate connection/disconnection status."
+        )
         self.state.transition_to(Step.CLOSE)
         post_outcome_to_backend(self.state)
-        return "धन्यवाद, हमने सिस्टम में दर्ज कर लिया है कि आप अभी भी सेवा का उपयोग कर रहे हैं। आपके कनेक्शन की स्थिति की जांच कर ली जाएगी। आपका दिन शुभ हो!"
+        return "समझ गई। हमारी टीम आपके कनेक्शन की स्थिति जाँचेगी। शुभ दिन!"
 
+    @function_tool
+    async def record_language_barrier(self) -> str:
+        """
+        Customer cannot converse in Hindi or English.
+        Route to regional language executive.
+        """
+        logger.info("[Tool] record_language_barrier")
+        self.state.final_disposition = "LANGUAGE_BARRIER"
+        self.state.customer_note = "Language barrier. Regional agent required."
+        self.state.transition_to(Step.TERMINATED)
+        post_outcome_to_backend(self.state)
+        return "Thank you. Our regional executive will call you. Have a good day."
+
+    @function_tool
+    async def record_do_not_call(self) -> str:
+        """
+        Scenario 15 — DND: customer is on DND list or demands no further calls.
+        Follow the approved DND process. Do NOT independently override DND controls.
+        """
+        logger.info("[Tool] record_do_not_call")
+        self.state.final_disposition = "DO_NOT_CALL"
+        self.state.customer_note = "Customer on DND / requested no further calls"
+        self.state.transition_to(Step.TERMINATED)
+        post_outcome_to_backend(self.state)
+        return "आपकी डीएनडी रिक्वेस्ट दर्ज कर ली है। दोबारा कॉल नहीं होगी। धन्यवाद।"
+
+    @function_tool
+    async def escalate_to_121(self, reason: str) -> str:
+        """
+        Scenario 6 — Complaint / Escalation:
+        Direct customer to Airtel Customer Service (121 / Airtel Thanks App).
+        Use for any dispute, policy question, or query outside approved script.
+        Never invent policies, fees, or refund answers — always route to 121.
+        """
+        logger.info(f"[Tool] escalate_to_121: reason='{reason}'")
+        self.state.final_disposition = "NEEDS_AIRTEL_SUPPORT"
+        self.state.customer_note = f"Escalated to 121: {reason}"
+        self.state.escalation_required = True
+        self.state.transition_to(Step.ESCALATED)
+        post_outcome_to_backend(self.state)
+        return "इसके लिए कृपया एयरटेल 121 पर या एयरटेल Thanks ऐप पर संपर्क करें। धन्यवाद।"
