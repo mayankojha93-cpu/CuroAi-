@@ -58,6 +58,10 @@ class ConversationState:
         self.proposed_date: Optional[str] = None          # YYYY-MM-DD
         self.pickup_date_spoken: Optional[str] = None     # e.g. 'कल, 21 अक्टूबर'
         self.confirmed_date: Optional[str] = None         # YYYY-MM-DD
+        self.offered_date: Optional[str] = None
+        self.offered_date_spoken: Optional[str] = None
+        self.strikes: Dict[str, int] = {}
+        self.outcome_posted: bool = False
         self.registered_address_confirmed: Optional[bool] = None
         self.new_address: Optional[str] = None
         self.alternate_phone: Optional[str] = None
