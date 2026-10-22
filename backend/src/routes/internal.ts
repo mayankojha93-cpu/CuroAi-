@@ -60,3 +60,46 @@ internalRouter.post(
     }
   }
 );
+
+// GET /internal/customers/lookup - Lookup customer record by incoming phone number
+internalRouter.get(
+  '/internal/customers/lookup',
+  requireInternalSecret,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const phone = req.query.phone as string;
+      if (!phone) {
+        return res.status(400).json({ error: 'phone query parameter is required' });
+      }
+      const customer = await callService.lookupCustomerByPhone(phone);
+      return res.status(200).json({
+        found: !!customer,
+        customer,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
+// POST /internal/calls/inbound - Register inbound SIP call session and return customer details
+internalRouter.post(
+  '/internal/calls/inbound',
+  requireInternalSecret,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { roomName, phone, sipCallId } = req.body;
+      if (!roomName) {
+        return res.status(400).json({ error: 'roomName is required' });
+      }
+      const result = await callService.registerInboundCall({ roomName, phone, sipCallId });
+      return res.status(201).json({
+        success: true,
+        call: result.call,
+        customer: result.customer,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
