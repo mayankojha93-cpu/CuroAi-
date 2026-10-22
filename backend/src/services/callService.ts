@@ -87,6 +87,15 @@ const TERMINAL_DISPOSITIONS = new Set([
   'DO_NOT_CALL',
   'COMPLAINT_ESCALATION',
   'NEEDS_AIRTEL_SUPPORT',
+  // Shifted customers: pickup (or ops follow-up with relative/occupant) is arranged by this call.
+  // Re-dialling the customer would be wrong, so close them.
+  'SHIFTED_DEVICE_WITH_CUSTOMER',
+  'SHIFTED_DEVICE_WITH_RELATIVE',
+  'SHIFTED_DEVICE_LEFT_PREVIOUS',
+  // Spec: "Already Using Device" -> update disposition and close.
+  'ALREADY_USING_DEVICE',
+  // Regional-language executive takes over; an AI retry would hit the same barrier.
+  'LANGUAGE_BARRIER',
 ]);
 
 export class CallService {
@@ -649,8 +658,14 @@ export class CallService {
         {
           category: 'Ready For Pickup',
           dispositions: [
-            { name: 'Confirmed For Pickup', count: dispMap['CONFIRMED_FOR_PICKUP'] || 0 },
+            {
+              name: 'Confirmed For Pickup',
+              count: (dispMap['CONFIRMED_FOR_PICKUP'] || 0) + (dispMap['PICKUP_CONFIRMED'] || 0) + (dispMap['PICKUP_CONFIRMED_NEW_DATE'] || 0),
+            },
             { name: 'Willing To Pickup', count: dispMap['WILLING_TO_PICKUP'] || 0 },
+            { name: 'Shifted - Device With Customer', count: dispMap['SHIFTED_DEVICE_WITH_CUSTOMER'] || 0 },
+            { name: 'Shifted - Device With Relative', count: dispMap['SHIFTED_DEVICE_WITH_RELATIVE'] || 0 },
+            { name: 'Shifted - Device Left At Previous Address', count: dispMap['SHIFTED_DEVICE_LEFT_PREVIOUS'] || 0 },
           ],
         },
         {
@@ -663,18 +678,20 @@ export class CallService {
           category: 'Will Not Return',
           dispositions: [
             { name: 'Already Returned Device', count: (dispMap['ALREADY_RETURNED'] || 0) + (dispMap['ALREADY_PICKED_UP'] || 0) },
-            { name: 'Refused To Return', count: dispMap['REFUSED_TO_RETURN'] || 0 },
+            { name: 'Refused To Return', count: (dispMap['REFUSED_TO_RETURN'] || 0) + (dispMap['PICKUP_DECLINED'] || 0) },
             { name: 'Willing To Recharge', count: dispMap['WILLING_TO_RECHARGE'] || 0 },
             { name: 'Already Recharged', count: dispMap['RECHARGED_DEVICE'] || 0 },
             { name: 'Damaged Device', count: dispMap['DAMAGED_DEVICE'] || 0 },
             { name: 'Lost Device', count: dispMap['LOST_DEVICE'] || 0 },
-            { name: 'Refund Request', count: dispMap['REFUND_REQUEST'] || 0 },
+            { name: 'Refund Request', count: (dispMap['REFUND_REQUEST'] || 0) + (dispMap['REFUND_OR_OWNERSHIP_QUERY'] || 0) },
+            { name: 'Already Using Device', count: dispMap['ALREADY_USING_DEVICE'] || 0 },
           ],
         },
         {
           category: 'Other Customer Outcomes',
           dispositions: [
-            { name: 'Wrong Number', count: dispMap['WRONG_NUMBER'] || 0 },
+            { name: 'Wrong Number', count: (dispMap['WRONG_NUMBER'] || 0) + (dispMap['WRONG_NUMBER_OR_IDENTITY_NOT_CONFIRMED'] || 0) },
+            { name: 'Complaint / Escalated To 121', count: (dispMap['NEEDS_AIRTEL_SUPPORT'] || 0) + (dispMap['COMPLAINT_ESCALATION'] || 0) },
             { name: 'Language Barrier', count: dispMap['LANGUAGE_BARRIER'] || 0 },
             { name: 'Do Not Call', count: dispMap['DO_NOT_CALL'] || 0 },
             { name: 'Abruptly Disconnected Call', count: dispMap['DISCONNECTED'] || 0 },
@@ -684,6 +701,7 @@ export class CallService {
           category: "Customer couldn't be connected after multiple attempts",
           dispositions: [
             { name: 'Voicemail or IVR Detected', count: dispMap['VOICEMAIL'] || 0 },
+            { name: 'No Response (Silence)', count: dispMap['NO_RESPONSE'] || 0 },
             { name: 'Not Connected (No Answer)', count: dispMap['NO_ANSWER'] || 0 },
             { name: 'Not Connected (Failed)', count: dispMap['FAILED'] || 0 },
             { name: 'Not Reached (Max attempts)', count: dispMap['NOT_REACHED'] || 0 },
