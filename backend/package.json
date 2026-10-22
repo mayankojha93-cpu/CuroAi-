@@ -1,0 +1,38 @@
+{
+  "name": "ai-calling-backend",
+  "version": "1.0.0",
+  "description": "Outbound AI Voice Calling backend with LiveKit and PostgreSQL",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "migrate": "tsx src/db/migrate.ts",
+    "seed": "tsx src/db/seed.ts",
+    "trunk:create": "tsx scripts/create-outbound-trunk.ts",
+    "trunk:inbound:create": "tsx scripts/create-inbound-trunk.ts",
+    "trunk:list": "tsx scripts/list-trunks.ts",
+    "trunk:dial": "tsx scripts/test-dial.ts",
+    "call:test": "tsx scripts/test-agent-call.ts"
+  },
+  "dependencies": {
+    "@livekit/protocol": "^1.51.0",
+    "cors": "^2.8.6",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "livekit-server-sdk": "^2.9.8",
+    "pg": "^8.13.1",
+    "pino": "^9.6.0",
+    "pino-http": "^10.4.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.13.4",
+    "@types/pg": "^8.11.11",
+    "pino-pretty": "^13.0.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3"
+  }
+}
