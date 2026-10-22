@@ -3,7 +3,7 @@ import time
 import asyncio
 from livekit import agents
 from livekit.agents import AgentSession, Agent, AgentServer
-from livekit.plugins import sarvam, groq, silero
+from livekit.plugins import sarvam, silero, openai
 try:
     import numpy.fft  # Preload to prevent event loop blocking during audio STFT
 except ImportError:
@@ -14,13 +14,13 @@ from src.config import (
     AGENT_NAME,
     LLM_MODEL,
     SARVAM_API_KEY,
-    GROQ_API_KEY,
+    OPENROUTER_API_KEY,
 )
 from src.state import Step, ConversationState
 from src.prompts import get_step_instructions
 from src.tools import AgentTools
 from src.utils import silence_watchdog, clean_hangup
-from src.tools.api import post_outcome_to_backend
+from src.tools.api import post_outcome_to_backend, register_inbound_call_to_backend
 
 server = AgentServer()
 
@@ -49,7 +49,37 @@ async def entrypoint(ctx: agents.JobContext):
     r_date = metadata.get("rDate") or metadata.get("r_date", "")
     attempt_number = int(metadata.get("attemptNumber", 1))
 
-    # 2. Initialize Conversation State with Airtel Campaign lead info
+    # Detect inbound call direction (from metadata or room prefix)
+    direction = metadata.get("direction", "outbound")
+    if ctx.room.name.startswith("inbound-") or not call_id:
+        direction = "inbound"
+
+    if direction == "inbound":
+        logger.info(f"Detected INBOUND call in room {ctx.room.name}. Registering session...")
+        incoming_phone = phone
+        for p in ctx.room.remote_participants.values():
+            if p.identity and p.identity.startswith("phone-"):
+                incoming_phone = p.identity.replace("phone-", "")
+                break
+            elif getattr(p, "attributes", None) and p.attributes.get("sip.phoneNumber"):
+                incoming_phone = p.attributes.get("sip.phoneNumber")
+                break
+
+        inbound_data = register_inbound_call_to_backend(ctx.room.name, incoming_phone)
+        if inbound_data:
+            call_info = inbound_data.get("call") or {}
+            cust_info = inbound_data.get("customer") or {}
+            call_id = call_info.get("id", call_id)
+            if cust_info:
+                customer_name = cust_info.get("name") or customer_name
+                phone = cust_info.get("phone") or incoming_phone
+                address = cust_info.get("address") or address
+                account_no = cust_info.get("account_no") or account_no
+                subs_del_no = cust_info.get("subs_del_no") or subs_del_no
+                service_end_date = str(cust_info.get("service_end_date") or "")
+                r_date = str(cust_info.get("r_date") or "")
+
+    # 2. Initialize Conversation State with lead info & call direction
     state = ConversationState(
         call_id=call_id,
         customer_name=customer_name,
@@ -61,26 +91,32 @@ async def entrypoint(ctx: agents.JobContext):
         service_end_date=service_end_date,
         r_date=r_date,
         attempt_number=attempt_number,
+        direction=direction,
     )
 
-    # 3. Initialize Agent Tools for all 17 Airtel campaign scenarios
+    # 3. Register all 17 FAQ scenario tools
     tools_instance = AgentTools(state)
     tools = [
+        # Core call flow
         tools_instance.confirm_identity,
         tools_instance.set_pickup,
         tools_instance.record_willing_no_date,
         tools_instance.set_pickup_date,
         tools_instance.confirm_address,
-        tools_instance.record_refusal,
-        tools_instance.record_device_issue,
-        tools_instance.record_recharge,
-        tools_instance.record_already_returned,
-        tools_instance.record_shifted,
+        # FAQ Scenarios 1-10
+        tools_instance.record_device_issue,          # 1. Damaged / 2. Lost
+        tools_instance.record_refusal,               # 3. Refund Request / 7. Device Becomes Free
+        tools_instance.record_temporarily_unavailable,  # 4. Not Available
+        tools_instance.record_recharge,              # 5. Recharged Device
+        tools_instance.escalate_to_121,              # 6. Complaint / Escalation
+        tools_instance.record_shifted,               # 8/9/10. Customer Shifted (all sub-types)
+        # FAQ Scenarios 14-17
+        tools_instance.record_already_picked_up,     # 14. Already Picked Up
+        tools_instance.record_already_returned,      # alternate "already returned" phrasing
+        tools_instance.record_do_not_call,           # 15. DND
+        tools_instance.record_still_using_device,    # 17. Already Using Device
+        # Utility
         tools_instance.record_language_barrier,
-        tools_instance.record_do_not_call,
-        tools_instance.escalate_to_121,
-        tools_instance.record_temporarily_unavailable,
-        tools_instance.record_still_using_device,
     ]
 
     # 4. Speech and Audio Pipeline Setup
@@ -97,10 +133,13 @@ async def entrypoint(ctx: agents.JobContext):
         activation_threshold=0.45,
     )
 
-    llm = groq.LLM(
+    # LLM — OpenRouter, meta-llama/llama-3.1-8b-instruct
+    llm = openai.LLM(
         model=LLM_MODEL,
-        api_key=GROQ_API_KEY,
-        temperature=0.2,
+        base_url="https://openrouter.ai/api/v1",
+        api_key=OPENROUTER_API_KEY,
+        temperature=0.15,
+        max_completion_tokens=80,
     )
 
     tts = sarvam.TTS(
@@ -123,6 +162,8 @@ async def entrypoint(ctx: agents.JobContext):
         "stt_final": 0.0,
         "last_activity_time": time.time(),
         "is_agent_speaking": False,
+        "provider_filler_pending": False,  # True while waiting to inject "One moment please"
+        "provider_filler_task": None,      # Asyncio task for the filler timeout
     }
 
     watchdog_task = None
@@ -134,12 +175,69 @@ async def entrypoint(ctx: agents.JobContext):
         # In livekit-agents 1.8+, the transcript is in 'transcript', with fallback to 'text'
         raw_text = getattr(ev, "transcript", None) or getattr(ev, "text", "")
         is_final = getattr(ev, "is_final", True)
-        if is_final and raw_text and raw_text.strip():
+        confidence = getattr(ev, "confidence", 1.0) or 1.0
+
+        if is_final:
+            # STT failure: empty text or very low confidence (< 0.3) — per spec, ask to repeat up to 2x
+            if not raw_text or not raw_text.strip() or confidence < 0.3:
+                state.stt_retry_count += 1
+                logger.warning(f"⚠️ STT failure (attempt {state.stt_retry_count}/2): empty or low-confidence transcript")
+                if state.stt_retry_count <= 2:
+                    asyncio.create_task(
+                        session.say("माफ़ कीजिए, मैं समझ नहीं पाई। क्या आप दोबारा बोल सकते हैं?", allow_interruptions=True)
+                    )
+                else:
+                    # After 2 retries, apologise and route to 121 per spec
+                    state.is_completed = True
+                    state.final_disposition = "FAILED"
+                    state.customer_note = "STT failed after 2 retries. Routed to Airtel 121."
+                    state.transition_to(Step.TERMINATED)
+                    logger.error("❌ STT failed after 2 retries. Closing call, routing to 121.")
+                    asyncio.create_task(clean_hangup(ctx, session, state))
+                return
+
             clean_text = raw_text.strip()
             timing_tracker["stt_final"] = time.time()
+            state.stt_retry_count = 0  # Reset on successful transcription
             logger.info(f"🗣️ [Customer]: \"{clean_text}\"")
             state.add_transcript("customer", clean_text)
             state.silence_count = 0
+
+            # Provider timeout: start a 3-second filler timer (spec: LLM/TTS/STT > ~3s → "One moment please")
+            if not timing_tracker["provider_filler_pending"] and not state.is_completed:
+                timing_tracker["provider_filler_pending"] = True
+                timing_tracker["_provider_filler_retry"] = getattr(timing_tracker, "_provider_filler_retry", 0)
+
+                async def _provider_timeout_filler():
+                    await asyncio.sleep(3.0)
+                    if timing_tracker.get("provider_filler_pending") and not state.is_completed:
+                        retry = timing_tracker.get("_provider_filler_retry", 0) + 1
+                        timing_tracker["_provider_filler_retry"] = retry
+                        if retry == 1:
+                            filler = "एक पल रुकिए।"
+                            logger.warning("⚠️ Provider timeout >3s. Playing 'One moment please' filler.")
+                            try:
+                                await session.say(filler, allow_interruptions=False)
+                            except Exception:
+                                pass
+                        else:
+                            # Second timeout → apologise and route to 121 per spec
+                            logger.error("❌ Provider timeout after filler retry. Routing to 121.")
+                            state.is_completed = True
+                            state.final_disposition = "FAILED"
+                            state.customer_note = "Provider (LLM/TTS/STT) timed out twice. Routed to Airtel 121."
+                            state.transition_to(Step.TERMINATED)
+                            try:
+                                await session.say(
+                                    "माफ़ करें, तकनीकी समस्या आ गई है। कृपया एयरटेल 121 पर संपर्क करें। धन्यवाद।",
+                                    allow_interruptions=False
+                                )
+                            except Exception:
+                                pass
+                            await clean_hangup(ctx, session, state)
+
+                filler_task = asyncio.create_task(_provider_timeout_filler())
+                timing_tracker["provider_filler_task"] = filler_task
 
     @session.on("conversation_item_added")
     def on_conversation_item(ev):
@@ -180,6 +278,8 @@ async def entrypoint(ctx: agents.JobContext):
                     latency_ms = (time.time() - stt_time) * 1000
                     state.add_latency(latency_ms)
                     latency_str = f"({latency_ms:.0f} ms)"
+                    # Provider timeout: if agent took > 3 seconds to respond, cancel the filler task
+                    timing_tracker["provider_filler_pending"] = False
                 else:
                     latency_str = ""
 
@@ -217,12 +317,24 @@ async def entrypoint(ctx: agents.JobContext):
     await session.start(room=ctx.room, agent=agent)
     logger.info("Agent session active in room.")
 
-    # 6. Opening Line: Greeting + Priya persona speaking on behalf of Airtel (Build Brief Section 2)
-    opening_line = (
-        f"नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं {customer_name} जी से बात कर रही हूँ?"
-    )
+    # 6. Opening Line: Greeting + Priya persona speaking on behalf of Airtel
+    if direction == "inbound":
+        name_lower = (customer_name or "").lower().strip()
+        is_generic = not name_lower or any(t in name_lower for t in ["customer", "subscriber", "inbound", "caller"])
+        if not is_generic:
+            opening_line = (
+                f"नमस्ते {customer_name} जी, एयरटेल में आपका स्वागत है। मैं प्रिया बोल रही हूँ। क्या आपने अपने वाई-फाई राउटर पिकअप या अकाउंट के संबंध में कॉल किया है?"
+            )
+        else:
+            opening_line = (
+                "नमस्ते, एयरटेल में आपका स्वागत है। मैं प्रिया बोल रही हूँ। मैं आपकी क्या मदद कर सकती हूँ?"
+            )
+    else:
+        opening_line = (
+            f"नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं {customer_name} जी से बात कर रही हूँ?"
+        )
 
-    logger.info(f"Speaking opening line: {opening_line}")
+    logger.info(f"Speaking opening line ({direction}): {opening_line}")
     state.add_transcript("assistant", opening_line)
     await session.say(opening_line, allow_interruptions=True)
     timing_tracker["last_activity_time"] = time.time()
