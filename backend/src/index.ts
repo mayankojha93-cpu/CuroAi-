@@ -17,17 +17,6 @@ export const app = express();
 // Enable CORS for frontend Vite dev server and production
 app.use(cors());
 
-// Capture raw body for webhook verification while parsing JSON for all endpoints
-app.use(
-  express.json({
-    verify: (req: Request, _res: Response, buf: Buffer) => {
-      (req as any).rawBody = buf;
-    },
-  })
-);
-app.use(express.urlencoded({ extended: true }));
-app.use(express.text({ type: ['text/csv', 'text/plain'], limit: '10mb' }));
-
 // Structured request logging with Pino
 app.use(
   pinoHttp({
@@ -38,11 +27,22 @@ app.use(
   })
 );
 
+// ──────────────────────────────────────────────────────────────────────────
+// LiveKit webhook MUST be mounted BEFORE the body parsers below.
+// LiveKit signs the exact raw bytes (content-type: application/webhook+json); webhooksRouter uses
+// express.raw() itself, so the untouched Buffer reaches the signature check.
+// ──────────────────────────────────────────────────────────────────────────
+app.use(webhooksRouter);
+
+// Body parsers for all other endpoints
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.text({ type: ['text/csv', 'text/plain'], limit: '10mb' }));
+
 // Register routes
 app.use(healthRouter);
 app.use(callsRouter);
 app.use(internalRouter);
-app.use(webhooksRouter);
 
 // 404 handler
 app.use((req: Request, res: Response) => {
@@ -52,8 +52,9 @@ app.use((req: Request, res: Response) => {
 // Central error handler
 app.use(errorHandler);
 
-// Background sweeper timer
+// Background timers
 let sweeperInterval: NodeJS.Timeout | null = null;
+let recordingInterval: NodeJS.Timeout | null = null;
 
 // Start server if not imported as module in tests
 if (process.env.NODE_ENV !== 'test') {
@@ -71,7 +72,7 @@ if (process.env.NODE_ENV !== 'test') {
 
     // Start recording downloader every 5 minutes
     // Per spec: Exotel recording appears 1–15 min after call, valid for 24 h
-    setInterval(() => {
+    recordingInterval = setInterval(() => {
       downloadPendingRecordings().catch((err: any) => {
         logger.error({ err }, 'Error running recording downloader');
       });
@@ -82,9 +83,8 @@ if (process.env.NODE_ENV !== 'test') {
 
   const gracefulShutdown = (signal: string) => {
     logger.info(`Received ${signal}. Shutting down gracefully...`);
-    if (sweeperInterval) {
-      clearInterval(sweeperInterval);
-    }
+    if (sweeperInterval) clearInterval(sweeperInterval);
+    if (recordingInterval) clearInterval(recordingInterval);
     server.close(async () => {
       logger.info('HTTP server closed.');
       try {
