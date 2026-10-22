@@ -1,7 +1,13 @@
 from src.state import Step, ConversationState
 
 
-SYSTEM_BASE_PROMPT = """You are Priya, Airtel's outbound voice agent calling to arrange pickup of a suspended Wi-Fi router.
+OUTBOUND_ROLE = "You are Priya, Airtel's outbound voice agent calling to arrange pickup of a suspended Wi-Fi router."
+INBOUND_ROLE = (
+    "You are Priya, Airtel's voice agent. The customer CALLED IN (inbound call) about a suspended Wi-Fi router "
+    "pickup or their account. Never say you are calling them."
+)
+
+SYSTEM_BASE_PROMPT = """{role_line}
 Account: {account_no}. Customer: {customer_name}.
 
 FLOW (client-approved script): confirm identity -> say account is suspended and offer pickup date -> confirm pickup -> confirm registered address -> thank and point to 121.
@@ -24,11 +30,13 @@ VOICE STYLE
 def get_step_instructions(state: ConversationState) -> str:
     name_lower = (state.customer_name or "").lower().strip()
     is_generic_name = not name_lower or any(
-        t in name_lower for t in ["customer", "subscriber", "user", "airtel", "client"]
+        t in name_lower for t in ["customer", "subscriber", "user", "airtel", "client", "inbound", "caller"]
     )
     subscriber_ref = state.subs_del_no or state.account_no or "Registered"
+    is_inbound = getattr(state, "direction", "outbound") == "inbound"
 
     base = SYSTEM_BASE_PROMPT.format(
+        role_line=(INBOUND_ROLE if is_inbound else OUTBOUND_ROLE),
         customer_name=(state.customer_name if not is_generic_name else f"एयरटेल सब्सक्राइबर ({subscriber_ref})"),
         account_no=state.account_no or state.subs_del_no or "on record",
     )
