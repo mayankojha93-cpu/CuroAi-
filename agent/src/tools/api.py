@@ -52,3 +52,48 @@ def post_outcome_to_backend(state: ConversationState) -> bool:
     except Exception as e:
         logger.error(f"❌ Exception posting outcome to backend: {e}")
         return False
+
+def lookup_customer_by_phone(phone: str):
+    """Queries backend database to find existing customer lead by incoming phone number."""
+    if not phone:
+        return None
+    url = f"{BACKEND_URL}/internal/customers/lookup"
+    try:
+        res = requests.get(
+            url,
+            params={"phone": phone},
+            headers={"X-Internal-Secret": INTERNAL_SECRET},
+            timeout=4.0
+        )
+        if res.status_code == 200:
+            data = res.json()
+            return data.get("customer")
+    except Exception as e:
+        logger.warn(f"Failed to lookup customer by phone {phone}: {e}")
+    return None
+
+def register_inbound_call_to_backend(room_name: str, phone: str = "", sip_call_id: str = ""):
+    """Registers an inbound SIP call session with the backend and retrieves customer info."""
+    url = f"{BACKEND_URL}/internal/calls/inbound"
+    payload = {
+        "roomName": room_name,
+        "phone": phone,
+        "sipCallId": sip_call_id,
+    }
+    try:
+        res = requests.post(
+            url,
+            json=payload,
+            headers={
+                "X-Internal-Secret": INTERNAL_SECRET,
+                "Content-Type": "application/json",
+            },
+            timeout=5.0
+        )
+        if res.status_code in [200, 201]:
+            return res.json()
+        else:
+            logger.warn(f"Failed to register inbound call: {res.status_code} - {res.text}")
+    except Exception as e:
+        logger.error(f"Exception registering inbound call to backend: {e}")
+    return None
