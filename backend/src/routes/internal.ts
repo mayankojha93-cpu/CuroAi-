@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import { z } from 'zod';
 import { env } from '../config/env.js';
 import { callService } from '../services/callService.js';
@@ -13,7 +14,7 @@ const outcomeSchema = {
   }),
   body: z.object({
     outcome: z.string().optional(),
-    final_disposition: z.string(),
+    final_disposition: z.string().min(1),
     identity_confirmed: z.boolean().nullable().optional(),
     pickup_accepted: z.boolean().nullable().optional(),
     proposed_date: z.string().nullable().optional(),
@@ -22,7 +23,7 @@ const outcomeSchema = {
     new_address: z.string().nullable().optional(),
     alternate_phone: z.string().nullable().optional(),
     customer_note: z.string().nullable().optional(),
-    escalation_required: z.boolean().optional(),
+    escalation_required: z.boolean().nullable().optional(),
     transcript_reference: z.string().nullable().optional(),
     transcript: z.any().optional(),
     duration_seconds: z.number().nullable().optional(),
@@ -32,10 +33,20 @@ const outcomeSchema = {
   }),
 };
 
-// Internal secret auth middleware
+const inboundSchema = {
+  body: z.object({
+    roomName: z.string().min(1),
+    phone: z.string().optional().default(''),
+    sipCallId: z.string().optional().default(''),
+  }),
+};
+
+// Constant-time secret comparison
 const requireInternalSecret = (req: Request, _res: Response, next: NextFunction) => {
-  const secretHeader = req.get('X-Internal-Secret');
-  if (!secretHeader || secretHeader !== env.INTERNAL_SECRET) {
+  const secretHeader = req.get('X-Internal-Secret') || '';
+  const a = Buffer.from(secretHeader);
+  const b = Buffer.from(env.INTERNAL_SECRET || '');
+  if (!env.INTERNAL_SECRET || a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
     return next(new AppError('Unauthorized: Invalid or missing X-Internal-Secret header', 401));
   }
   next();
@@ -48,8 +59,7 @@ internalRouter.post(
   validateRequest(outcomeSchema),
   async (req: Request<{ callId: string }>, res: Response, next: NextFunction) => {
     try {
-      const { callId } = req.params;
-      const outcome = await callService.saveOutcome(callId, req.body);
+      const outcome = await callService.saveOutcome(req.params.callId, req.body);
       return res.status(200).json({
         success: true,
         message: 'Call outcome saved successfully',
@@ -72,26 +82,21 @@ internalRouter.get(
         return res.status(400).json({ error: 'phone query parameter is required' });
       }
       const customer = await callService.lookupCustomerByPhone(phone);
-      return res.status(200).json({
-        found: !!customer,
-        customer,
-      });
+      return res.status(200).json({ found: !!customer, customer });
     } catch (err) {
       return next(err);
     }
   }
 );
 
-// POST /internal/calls/inbound - Register inbound SIP call session and return customer details
+// POST /internal/calls/inbound - Register (idempotent per room) inbound SIP call and return customer details
 internalRouter.post(
   '/internal/calls/inbound',
   requireInternalSecret,
+  validateRequest(inboundSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { roomName, phone, sipCallId } = req.body;
-      if (!roomName) {
-        return res.status(400).json({ error: 'roomName is required' });
-      }
       const result = await callService.registerInboundCall({ roomName, phone, sipCallId });
       return res.status(201).json({
         success: true,
