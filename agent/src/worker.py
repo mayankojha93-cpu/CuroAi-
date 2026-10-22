@@ -17,7 +17,7 @@ from src.config import (
     OPENROUTER_API_KEY,
 )
 from src.state import Step, ConversationState
-from src.prompts import get_step_instructions
+from src.agent import AirtelAgent
 from src.tools import AgentTools
 from src.utils import silence_watchdog, clean_hangup
 from src.tools.api import post_outcome_to_backend, register_inbound_call_to_backend
@@ -103,30 +103,10 @@ async def entrypoint(ctx: agents.JobContext):
         "provider_filler_task": None,      # Asyncio task for the filler timeout
     }
 
-    # 3. Register all 17 FAQ scenario tools
+    # 3. Agent and Tools Setup
     tools_instance = AgentTools(state, timing_tracker)
-    tools = [
-        # Core call flow
-        tools_instance.confirm_identity,
-        tools_instance.set_pickup,
-        tools_instance.record_willing_no_date,
-        tools_instance.set_pickup_date,
-        tools_instance.confirm_address,
-        # FAQ Scenarios 1-10
-        tools_instance.record_device_issue,          # 1. Damaged / 2. Lost
-        tools_instance.record_refusal,               # 3. Refund Request / 7. Device Becomes Free
-        tools_instance.record_temporarily_unavailable,  # 4. Not Available
-        tools_instance.record_recharge,              # 5. Recharged Device
-        tools_instance.escalate_to_121,              # 6. Complaint / Escalation
-        tools_instance.record_shifted,               # 8/9/10. Customer Shifted (all sub-types)
-        # FAQ Scenarios 14-17
-        tools_instance.record_already_picked_up,     # 14. Already Picked Up
-        tools_instance.record_already_returned,      # alternate "already returned" phrasing
-        tools_instance.record_do_not_call,           # 15. DND
-        tools_instance.record_still_using_device,    # 17. Already Using Device
-        # Utility
-        tools_instance.record_language_barrier,
-    ]
+    agent = AirtelAgent(state, tools_instance)
+    tools_instance.agent = agent
 
     # 4. Speech and Audio Pipeline Setup
     stt = sarvam.STT(
@@ -148,7 +128,8 @@ async def entrypoint(ctx: agents.JobContext):
         base_url="https://openrouter.ai/api/v1",
         api_key=OPENROUTER_API_KEY,
         temperature=0.15,
-        max_completion_tokens=100,
+        parallel_tool_calls=False,
+        max_completion_tokens=150,
     )
 
     tts = sarvam.TTS(
@@ -164,6 +145,7 @@ async def entrypoint(ctx: agents.JobContext):
         llm=llm,
         tts=tts,
         allow_interruptions=True,
+        max_tool_steps=1,
     )
 
     watchdog_task = None
@@ -293,6 +275,7 @@ async def entrypoint(ctx: agents.JobContext):
                 if task and not task.done():
                     task.cancel()
 
+                latency_str = ""
                 if content_str and not is_raw_tool_json(content_str):
                     timing_tracker["last_activity_time"] = time.time()
                     stt_time = timing_tracker.get("stt_final", 0)
@@ -300,11 +283,9 @@ async def entrypoint(ctx: agents.JobContext):
                         latency_ms = (time.time() - stt_time) * 1000
                         state.add_latency(latency_ms)
                         latency_str = f"({latency_ms:.0f} ms)"
-                    else:
-                        latency_str = ""
-
-                logger.info(f"🤖 [Agent]: \"{content_str}\" {latency_str}")
-                state.add_transcript("assistant", content_str)
+                        timing_tracker["stt_final"] = 0.0
+                    logger.info(f"🤖 [Agent]: \"{content_str}\" {latency_str}")
+                    state.add_transcript("assistant", content_str)
 
                 # Check if conversation reached a terminal state
                 if state.is_terminal() and not state.is_completed:
@@ -330,10 +311,7 @@ async def entrypoint(ctx: agents.JobContext):
             logger.info(f"Room disconnected abruptly. Saving {state.final_disposition} for retry queue.")
             post_outcome_to_backend(state)
 
-    # 5. Build dynamic instructions and start agent
-    instructions = get_step_instructions(state)
-    agent = Agent(instructions=instructions, tools=tools)
-
+    # 5. Start agent session
     await session.start(room=ctx.room, agent=agent)
     logger.info("Agent session active in room.")
 
