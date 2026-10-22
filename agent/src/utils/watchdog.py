@@ -21,13 +21,34 @@ async def clean_hangup(ctx: agents.JobContext, session: AgentSession, state: Con
     # Save outcome and transcript to backend
     post_outcome_to_backend(state)
 
-    # Give TTS audio 3.0 seconds to complete playout
-    await asyncio.sleep(3.0)
+    # Wait gracefully for TTS playback to complete before disconnecting room
+    try:
+        if hasattr(session, "wait_for_idle"):
+            await asyncio.wait_for(session.wait_for_idle(), timeout=4.0)
+        else:
+            await asyncio.sleep(3.0)
+    except Exception:
+        await asyncio.sleep(1.0)
+
+    # Allow audio queues to drain cleanly
+    try:
+        if hasattr(session, "drain"):
+            await asyncio.wait_for(session.drain(), timeout=1.5)
+    except Exception:
+        pass
+
+    # Gracefully close session before disconnecting room transport
+    try:
+        if hasattr(session, "aclose"):
+            await asyncio.wait_for(session.aclose(), timeout=2.0)
+    except Exception:
+        pass
+
     logger.info(f"Cleanly disconnecting room {ctx.room.name} (Final disposition: {state.final_disposition})...")
     try:
         await ctx.room.disconnect()
     except Exception as e:
-        logger.error(f"Error disconnecting room: {e}")
+        logger.debug(f"Room disconnect note: {e}")
 
 async def silence_watchdog(
     ctx: agents.JobContext,
@@ -36,7 +57,7 @@ async def silence_watchdog(
     timing_tracker: dict
 ):
     """
-    Monitors customer silence based on Airtel Campaign rules (Image 4):
+    Monitors customer silence based on Airtel Campaign rules:
     - Waits 5 seconds: Asks "नमस्ते, क्या आप मुझे सुन पा रहे हैं?"
     - Waits 5 more seconds: repeats once more.
     - If still silent: ends politely, marks 'NO_RESPONSE', sent back to retry queue.
@@ -53,10 +74,22 @@ async def silence_watchdog(
             break
 
         now = time.time()
+
+        # Do NOT treat as customer silence if agent is speaking, generating, or running filler
+        agent_state = getattr(session, "agent_state", "idle")
+        is_busy = (
+            agent_state in ("speaking", "thinking")
+            or timing_tracker.get("is_agent_speaking", False)
+            or timing_tracker.get("provider_filler_pending", False)
+        )
+        if is_busy:
+            timing_tracker["last_activity_time"] = now
+            continue
+
         elapsed = now - timing_tracker.get("last_activity_time", now)
 
-        if elapsed >= SILENCE_THRESHOLD_SECONDS and not state.is_completed:
-            # Check again before attempting to speak
+        if elapsed >= SILENCE_THRESHOLD_SECONDS and not state.is_completed and not state.is_terminal():
+            # Double check session active state before speaking
             if getattr(session, "_activity", None) is None:
                 break
 
