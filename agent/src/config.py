@@ -35,6 +35,19 @@ LLM_MODEL = os.getenv("LLM_MODEL", "meta-llama/llama-3.3-70b-instruct")
 # Speech — Sarvam AI (STT + TTS)
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
 
+
+DIRECT_SPEAK = os.getenv("DIRECT_SPEAK", "1") == "1"
+OPENROUTER_PROVIDER_SORT = os.getenv("OPENROUTER_PROVIDER_SORT", "latency").strip()
+PREEMPTIVE_GENERATION = os.getenv("PREEMPTIVE_GENERATION", "1") == "1"
+def _opt_float(name):
+    v = os.getenv(name, "").strip()
+    try:
+        return float(v) if v else None
+    except ValueError:
+        return None
+ENDPOINT_MIN_DELAY = _opt_float("ENDPOINT_MIN_DELAY")
+ENDPOINT_MAX_DELAY = _opt_float("ENDPOINT_MAX_DELAY")
+
 # Backend & Integration Configs
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:3000")
 INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "dev-secret-key-12345")

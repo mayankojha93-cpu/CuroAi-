@@ -2,11 +2,11 @@
   "name": "ai-calling-backend",
   "version": "1.0.0",
   "description": "Outbound AI Voice Calling backend with LiveKit and PostgreSQL",
-  "main": "dist/index.js",
+  "main": "dist/src/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js",
+    "start": "node dist/src/index.js",
     "migrate": "tsx src/db/migrate.ts",
     "seed": "tsx src/db/seed.ts",
     "trunk:create": "tsx scripts/create-outbound-trunk.ts",

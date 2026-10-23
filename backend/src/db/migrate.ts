@@ -18,7 +18,12 @@ export async function runMigrations() {
       );
     `);
 
-    const migrationsDir = path.resolve(__dirname, '../../migrations');
+    const candidates = [
+      path.resolve(__dirname, '../../migrations'),
+      path.resolve(__dirname, '../../../migrations'),
+      path.resolve(process.cwd(), 'migrations'),
+    ];
+    const migrationsDir = candidates.find((dir) => fs.existsSync(dir)) || candidates[0];
     const files = fs
       .readdirSync(migrationsDir)
       .filter((f) => f.endsWith('.sql'))

@@ -2,7 +2,7 @@ import json
 import time
 import asyncio
 from livekit import agents
-from livekit.agents import AgentSession, Agent, AgentServer
+from livekit.agents import AgentSession, Agent, AgentServer, TurnHandlingOptions
 from livekit.plugins import sarvam, silero, openai
 try:
     import numpy.fft  # Preload to prevent event loop blocking during audio STFT
@@ -15,9 +15,14 @@ from src.config import (
     LLM_MODEL,
     SARVAM_API_KEY,
     OPENROUTER_API_KEY,
+    OPENROUTER_PROVIDER_SORT,
+    PREEMPTIVE_GENERATION,
+    ENDPOINT_MIN_DELAY,
+    ENDPOINT_MAX_DELAY,
 )
 from src.state import Step, ConversationState
 from src.agent import AirtelAgent
+from src.carrier_filter import classify_carrier_message
 from src.tools import AgentTools
 from src.utils import silence_watchdog, clean_hangup
 from src.tools.api import post_outcome_to_backend, register_inbound_call_to_backend
@@ -121,6 +126,7 @@ async def entrypoint(ctx: agents.JobContext):
         "is_agent_speaking": False,
         "provider_filler_pending": False,  # True while waiting to inject "One moment please"
         "provider_filler_task": None,      # Asyncio task for the filler timeout
+        "session_closed": False,           # True once the customer/session is gone: no timer may speak or save FAILED
     }
 
     # 3. Agent and Tools Setup
@@ -143,6 +149,10 @@ async def entrypoint(ctx: agents.JobContext):
     )
 
     # LLM — OpenRouter
+    llm_extra = {}
+    if OPENROUTER_PROVIDER_SORT:
+        # Ask OpenRouter for the fastest host of this model (fallbacks stay enabled by default).
+        llm_extra["extra_body"] = {"provider": {"sort": OPENROUTER_PROVIDER_SORT}}
     llm = openai.LLM(
         model=LLM_MODEL,
         base_url="https://openrouter.ai/api/v1",
@@ -150,6 +160,7 @@ async def entrypoint(ctx: agents.JobContext):
         temperature=0.15,
         parallel_tool_calls=False,
         max_completion_tokens=150,
+        **llm_extra,
     )
 
     tts = sarvam.TTS(
@@ -159,6 +170,15 @@ async def entrypoint(ctx: agents.JobContext):
         api_key=SARVAM_API_KEY,
     )
 
+    turn_opts = {"preemptive_generation": {"enabled": PREEMPTIVE_GENERATION}}
+    endpointing_opts = {}
+    if ENDPOINT_MIN_DELAY is not None:
+        endpointing_opts["min_delay"] = ENDPOINT_MIN_DELAY
+    if ENDPOINT_MAX_DELAY is not None:
+        endpointing_opts["max_delay"] = ENDPOINT_MAX_DELAY
+    if endpointing_opts:
+        turn_opts["endpointing"] = endpointing_opts
+
     session = AgentSession(
         stt=stt,
         vad=vad,
@@ -166,18 +186,71 @@ async def entrypoint(ctx: agents.JobContext):
         tts=tts,
         allow_interruptions=True,
         max_tool_steps=1,
+        # Preemptive generation only pre-computes the LLM reply; nothing is spoken and no tool runs until the turn
+        # is authorized, so the carrier-announcement filter (on_user_turn_completed) still blocks those turns.
+        turn_handling=TurnHandlingOptions(**turn_opts),
     )
 
     watchdog_task = None
 
+    def _cancel_timers():
+        """Stop every background timer that could still speak or overwrite the outcome."""
+        timing_tracker["provider_filler_pending"] = False
+        task = timing_tracker.get("provider_filler_task")
+        if task and not task.done():
+            task.cancel()
+        if watchdog_task and not watchdog_task.done():
+            watchdog_task.cancel()
+
+    async def _save_outcome(force: bool = False):
+        """Blocking HTTP save in a thread. The backend save is an idempotent upsert, so re-posting is safe."""
+        if not state.call_id:
+            return
+        if state.outcome_posted and not force:
+            return
+        try:
+            if await asyncio.to_thread(post_outcome_to_backend, state):
+                state.outcome_posted = True
+        except Exception as e:
+            logger.error(f"Outcome save failed: {e}")
+
+    def _end_as_voicemail(text: str):
+        """A voicemail / not-reachable greeting answered: no human to talk to. Close as VOICEMAIL (backend retries)."""
+        if state.is_completed:
+            return
+        state.is_completed = True
+        state.final_disposition = "VOICEMAIL"
+        state.customer_note = f"Voicemail / not-reachable announcement detected: {text[:120]}"
+        state.transition_to(Step.TERMINATED)
+        _cancel_timers()
+        logger.warning("📼 Voicemail / not-reachable announcement detected. Ending call as VOICEMAIL.")
+        try:
+            session.interrupt(force=True)  # do not keep talking into a voicemail box
+        except Exception:
+            pass
+        asyncio.create_task(clean_hangup(ctx, session, state))
+
     # Transcripts & Metrics Hooks
     @session.on("user_input_transcribed")
     def on_user_transcribed(ev):
-        timing_tracker["last_activity_time"] = time.time()
         # In livekit-agents 1.8+, the transcript is in 'transcript', with fallback to 'text'
         raw_text = getattr(ev, "transcript", None) or getattr(ev, "text", "")
         is_final = getattr(ev, "is_final", True)
         confidence = getattr(ev, "confidence", 1.0) or 1.0
+
+        # Automated carrier announcements (call-waiting "on hold", voicemail, not reachable) are NOT the
+        # customer. Do not log them as customer speech, do not reset the silence timer, do not start the
+        # provider-timeout timer (no LLM reply will follow). AirtelAgent.on_user_turn_completed blocks the LLM.
+        carrier_kind = classify_carrier_message(raw_text)
+        if carrier_kind:
+            if is_final:
+                logger.warning(f"📵 Carrier announcement ({carrier_kind}) ignored: \"{raw_text.strip()[:120]}\"")
+                state.add_transcript("system", f"[carrier announcement: {carrier_kind}] {raw_text.strip()}")
+                if carrier_kind == "voicemail":
+                    _end_as_voicemail(raw_text)
+            return
+
+        timing_tracker["last_activity_time"] = time.time()
 
         if is_final:
             # STT failure: empty text or very low confidence (< 0.3) — per spec, ask to repeat up to 2x
@@ -222,9 +295,17 @@ async def entrypoint(ctx: agents.JobContext):
                 timing_tracker["_provider_filler_retry"] = timing_tracker.get("_provider_filler_retry", 0)
 
                 async def _provider_timeout_filler():
-                    while timing_tracker.get("provider_filler_pending") and not state.is_completed:
+                    while (
+                        timing_tracker.get("provider_filler_pending")
+                        and not state.is_completed
+                        and not timing_tracker.get("session_closed")
+                    ):
                         await asyncio.sleep(3.2)
-                        if not timing_tracker.get("provider_filler_pending") or state.is_completed:
+                        if (
+                            not timing_tracker.get("provider_filler_pending")
+                            or state.is_completed
+                            or timing_tracker.get("session_closed")
+                        ):
                             return
                         agent_st = getattr(session, "agent_state", "idle")
                         if agent_st in ("speaking", "thinking") or state.is_terminal():
@@ -244,6 +325,8 @@ async def entrypoint(ctx: agents.JobContext):
                                 pass
                         else:
                             # Second timeout → apologise and route to 121 per spec
+                            if timing_tracker.get("session_closed"):
+                                return  # customer already hung up: that is DISCONNECTED, not a provider failure
                             logger.error("❌ Provider timeout after filler retry. Routing to 121.")
                             state.is_completed = True
                             state.final_disposition = "FAILED"
@@ -336,27 +419,44 @@ async def entrypoint(ctx: agents.JobContext):
                     )
                     asyncio.create_task(clean_hangup(ctx, session, state))
 
-    # Room disconnect handler: ensure outcome is recorded even on abrupt customer drop
+    # Session closed (customer hung up / participant disconnected / aclose).
+    # This is THE reliable "customer dropped" signal: the phone leg leaving does not disconnect the agent's room.
+    @session.on("close")
+    def on_session_close(ev):
+        timing_tracker["session_closed"] = True
+        _cancel_timers()  # a pending provider-timeout timer must never fire after the customer is gone
+        reason = getattr(getattr(ev, "reason", None), "value", getattr(ev, "reason", None))
+        logger.info(f"Session closed (reason={reason}).")
+        if state.is_completed:
+            return  # clean_hangup (or another terminal path) already owns the save
+        state.is_completed = True
+        if not state.is_terminal():
+            state.final_disposition = "DISCONNECTED"
+            state.customer_note = "Call dropped / customer hung up mid-conversation"
+        logger.info(f"Customer dropped. Saving {state.final_disposition} for the retry queue.")
+
+        async def _save_and_shutdown():
+            await _save_outcome(force=True)  # force: transcript/duration are newer than any earlier post
+            ctx.shutdown(reason="session closed")
+
+        asyncio.create_task(_save_and_shutdown())
+
+    # Room disconnect handler (agent lost its own connection): make sure the outcome still gets saved
     @ctx.room.on("disconnected")
     def on_room_disconnected():
-        if watchdog_task and not watchdog_task.done():
-            watchdog_task.cancel()
+        timing_tracker["session_closed"] = True
+        _cancel_timers()
         if not state.is_completed:
             state.is_completed = True
             if not state.is_terminal():
                 state.final_disposition = "DISCONNECTED"
                 state.customer_note = "Call abruptly dropped / hung up mid-conversation"
             logger.info(f"Room disconnected abruptly. Saving {state.final_disposition} for retry queue.")
-            # The blocking HTTP save happens in the shutdown callback below (thread, awaited by the job
-            # runner) instead of blocking the event loop inside this sync handler.
+            asyncio.create_task(_save_outcome(force=True))
 
     async def _final_save():
-        """Runs on job shutdown: guarantees the outcome reaches the backend exactly when still missing."""
-        if state.call_id and not state.outcome_posted:
-            try:
-                state.outcome_posted = bool(await asyncio.to_thread(post_outcome_to_backend, state))
-            except Exception as e:
-                logger.error(f"Final outcome save failed: {e}")
+        """Runs on job shutdown: last chance to save if nothing has been saved yet."""
+        await _save_outcome()
 
     ctx.add_shutdown_callback(_final_save)
 
@@ -388,9 +488,9 @@ async def entrypoint(ctx: agents.JobContext):
 
     logger.info(f"Speaking opening line ({direction}): {opening_line}")
     state.add_transcript("assistant", opening_line)
-    await session.say(opening_line, allow_interruptions=True)
+    # Uninterruptible: a hold/IVR announcement or early 'hello' must not cut the greeting off mid-sentence.
+    await session.say(opening_line, allow_interruptions=False)
     timing_tracker["last_activity_time"] = time.time()
 
     # 7. Start 5-second silence watchdog task
     watchdog_task = asyncio.create_task(silence_watchdog(ctx, session, state, timing_tracker))
-    
