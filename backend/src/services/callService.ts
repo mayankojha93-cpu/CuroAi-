@@ -94,6 +94,9 @@ const TERMINAL_DISPOSITIONS = new Set([
   'LANGUAGE_BARRIER',
 ]);
 
+// A call in 'initiated' / 'dialing' / 'answered' younger than this blocks another dial to the same customer
+const ACTIVE_CALL_WINDOW_MINUTES = 10;
+
 // ───────────────────────── helpers ─────────────────────────
 
 /**
@@ -174,25 +177,67 @@ export class CallService {
       logger.warn({ customerId, disposition: customer.current_disposition }, 'Customer is already closed/dispositioned');
     }
 
-    const currentAttempt = (customer.total_attempts || 0) + 1;
-
     const callId = randomUUID();
     const roomName = `call-${callId}`;
 
-    logger.info(
-      { customerId, callId, roomName, phone: customer.phone, attempt: currentAttempt },
-      'Initiating outbound call'
-    );
+    // ── Duplicate-dial guard ──────────────────────────────────────────────────────────────────────
+    // A double click / double request used to place two simultaneous calls to the same phone. The carrier
+    // then played its call-waiting "on hold" announcement into the live call and the agent treated it as
+    // the customer's answer. Check + insert run in ONE transaction under a per-customer advisory lock, so
+    // two parallel requests cannot both pass the check. The time window stops a crashed call that never
+    // reached a final status from blocking the customer forever.
+    let call: CallRecord;
+    let currentAttempt: number;
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`dial:${customerId}`]);
 
-    await query('UPDATE customers SET total_attempts = total_attempts + 1 WHERE id = $1', [customerId]);
+      const active = await client.query(
+        `SELECT id, status, room_name FROM calls
+         WHERE customer_id = $1
+           AND status IN ('initiated', 'dialing', 'answered')
+           AND created_at > NOW() - INTERVAL '${ACTIVE_CALL_WINDOW_MINUTES} minutes'
+         ORDER BY created_at DESC
+         LIMIT 1`,
+        [customerId]
+      );
+      if (active.rows.length > 0) {
+        await client.query('ROLLBACK');
+        const a = active.rows[0];
+        logger.warn({ customerId, activeCallId: a.id, status: a.status }, 'Duplicate dial blocked: call already in progress');
+        throw new AppError(
+          `A call to this customer is already in progress (call ${a.id}, status ${a.status}). Wait for it to finish before calling again.`,
+          409
+        );
+      }
 
-    const insertRes = await query<CallRecord>(
-      `INSERT INTO calls (id, customer_id, status, call_status, attempt_number, room_name, direction)
-       VALUES ($1, $2, 'initiated', 'initiated', $3, $4, 'outbound')
-       RETURNING *`,
-      [callId, customerId, currentAttempt, roomName]
-    );
-    const call = insertRes.rows[0];
+      // Increment atomically and read the new value back (no read-then-write race)
+      const attemptRes = await client.query(
+        'UPDATE customers SET total_attempts = COALESCE(total_attempts, 0) + 1 WHERE id = $1 RETURNING total_attempts',
+        [customerId]
+      );
+      currentAttempt = attemptRes.rows[0].total_attempts;
+
+      logger.info(
+        { customerId, callId, roomName, phone: customer.phone, attempt: currentAttempt },
+        'Initiating outbound call'
+      );
+
+      const insertRes = await client.query(
+        `INSERT INTO calls (id, customer_id, status, call_status, attempt_number, room_name, direction)
+         VALUES ($1, $2, 'initiated', 'initiated', $3, $4, 'outbound')
+         RETURNING *`,
+        [callId, customerId, currentAttempt, roomName]
+      );
+      call = insertRes.rows[0];
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
 
     this.executeOutboundCallWorkflow(callId, customer, roomName, currentAttempt).catch((err) => {
       logger.error({ err, callId }, 'Unhandled error in outbound call workflow');

@@ -1,6 +1,11 @@
-from livekit.agents import Agent
+import logging
 
+from livekit.agents import Agent, StopResponse
+
+from src.carrier_filter import classify_carrier_message
 from src.prompts import get_step_instructions
+
+logger = logging.getLogger("telecom-voice-agent")
 
 
 class AirtelAgent(Agent):
@@ -18,6 +23,19 @@ class AirtelAgent(Agent):
         """Called by AgentTools._go() after every step change."""
         await self.update_instructions(get_step_instructions(self._airtel_state))
         await self.update_tools(self._airtel_tools.tools_for_step(self._airtel_state.step))
+
+    async def on_user_turn_completed(self, turn_ctx, new_message):
+        """
+        Gate between the customer's transcript and the LLM.
+        Carrier announcements (call-waiting "on hold", voicemail, not reachable) are NOT the customer.
+        Raising StopResponse means the LLM never sees them, so no tool can be triggered by them.
+        (worker.py handles the call outcome for voicemail.)
+        """
+        text = (getattr(new_message, "text_content", None) or "").strip()
+        kind = classify_carrier_message(text)
+        if kind:
+            logger.warning(f"📵 Carrier announcement ({kind}) ignored, not sent to LLM: \"{text[:120]}\"")
+            raise StopResponse()
 
     async def llm_node(self, chat_ctx, tools, model_settings):
         """

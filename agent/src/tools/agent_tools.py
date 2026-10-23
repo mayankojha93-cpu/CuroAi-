@@ -1,8 +1,10 @@
+import re
 import time
 import asyncio
 import logging
 from livekit.agents import function_tool
 
+from src.config import DIRECT_SPEAK
 from src.state import Step, ConversationState
 from src.utils.dates import resolve_relative_date, get_next_available_pickup_date
 from src.tools.api import post_outcome_to_backend
@@ -24,6 +26,29 @@ _YES_WORDS = {
 def _is_yes(v) -> bool:
     """LLMs pass 'Yes', 'true', 'haan' ... - treat all as agreement; anything else is NOT consent."""
     return _clean(v).lower() in _YES_WORDS
+
+
+_CLEAR_YES_TOKENS = {
+    # Hindi / Devanagari
+    "हाँ", "हां", "हा", "हाँजी", "हांजी", "जी", "जीहां", "सही", "ठीक", "बिल्कुल", "बोलिए", "बोलिये", "बोलो",
+    "बोल", "बोलता", "बोलती", "हूँ", "हूं", "है", "हैं", "वाईफाई", "वाई", "कनेक्शन", "एयरटेल",
+    # Romanised / English
+    "haan", "han", "ha", "haa", "ji", "yes", "yeah", "yep", "yup", "ok", "okay", "correct", "right", "sahi",
+    "theek", "thik", "bilkul", "boliye", "bolo", "bol", "speaking", "hoon", "hun", "hai", "wifi", "connection", "airtel",
+}
+_NEGATION_TOKENS = {
+    "नहीं", "नही", "ना", "गलत", "मत", "nahi", "nahin", "no", "not", "wrong", "galat",
+}
+_SPLIT_RE = re.compile(r"[\s,.;:!?।|/()\-\"']+")
+
+
+def is_clear_yes(text) -> bool:
+    """True only if the customer's last utterance contains an affirmative word and no negation.
+    Used to stop the LLM confirming identity on off-topic text, noise or recorded announcements."""
+    tokens = [t for t in _SPLIT_RE.split(str(text or "").lower()) if t]
+    if not tokens or any(t in _NEGATION_TOKENS for t in tokens):
+        return False
+    return any(t in _CLEAR_YES_TOKENS for t in tokens)
 
 
 def _clean(v) -> str:
@@ -74,8 +99,24 @@ class AgentTools:
             if task and not task.done():
                 task.cancel()
 
-    @staticmethod
-    def _say(text: str) -> str:
+    def _say(self, text: str):
+        """Tool return value for a FIXED line the customer must hear.
+
+        DIRECT_SPEAK on  : speak it right now through TTS and return None. LiveKit treats a None tool result as
+                           "no reply needed", so the LLM is NOT called a second time just to read the line back
+                           (that second call was ~2s of every tool turn). The line is added to the chat history,
+                           logged and transcribed like any other assistant message, and the terminal-step
+                           hangup logic is unchanged because it keys off that same assistant message.
+        DIRECT_SPEAK off : (or if speaking fails) the original behaviour: tell the LLM to say it word for word.
+        """
+        if DIRECT_SPEAK and self.agent is not None:
+            try:
+                session = self.agent.session
+                # closing lines must not be cut off by "ok / thank you" from the customer
+                session.say(text, allow_interruptions=not self.state.is_terminal(), add_to_chat_ctx=True)
+                return None
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"Direct speak failed ({e}); falling back to LLM-spoken line")
         return f"Say exactly this to the customer, nothing else: {text}"
 
     async def _post_outcome(self):
@@ -117,6 +158,17 @@ class AgentTools:
         n = self.state.strikes.get(key, 0) + 1
         self.state.strikes[key] = n
         return n
+
+    def _last_customer_text(self) -> str:
+        for item in reversed(self.state.transcript):
+            if item.get("role") == "customer":
+                return item.get("message", "")
+        return ""
+
+    def _identity_question(self) -> str:
+        if self._is_generic_name():
+            return "क्या मैं एयरटेल वाई-फाई कनेक्शन के रजिस्टर्ड ग्राहक से बात कर रही हूँ?"
+        return f"क्या मैं {self.state.customer_name} जी से बात कर रही हूँ?"
 
     def _is_generic_name(self) -> bool:
         name = (self.state.customer_name or "").lower().strip()
@@ -234,6 +286,22 @@ class AgentTools:
                 Step.CALLBACK_REQUESTED, "SCHEDULE_CALLBACK", "Customer requested callback",
                 "ठीक है, हम बाद में कॉल करेंगे। धन्यवाद।",
             )
+
+        # OUTBOUND: identity may only be confirmed by a CLEAR yes. If the LLM calls this on off-topic words,
+        # noise or an automated message, do not accept it: ask once or twice more, then close as NO_RESPONSE
+        # (non-terminal in the backend, so the customer stays in the retry queue).
+        if getattr(s, "direction", "outbound") != "inbound":
+            last = self._last_customer_text()
+            if not is_clear_yes(last):
+                n = self._strike("identity_unclear")
+                logger.warning(f"[Tool] confirm_identity REJECTED (no clear yes). strike={n}, last='{last}'")
+                if n <= 2:
+                    return self._say(self._identity_question())
+                return await self._finish(
+                    Step.CALLBACK_REQUESTED, "NO_RESPONSE",
+                    "Identity could not be confirmed: customer replies were unclear.",
+                    "ठीक है, हम आपसे बाद में संपर्क करेंगे। धन्यवाद।",
+                )
 
         s.identity_confirmed = True
 
