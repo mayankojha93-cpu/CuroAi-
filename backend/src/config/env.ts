@@ -13,6 +13,12 @@ const envSchema = z.object({
   BACKEND_URL: z.string().default('http://localhost:3000'),
   INTERNAL_SECRET: z.string().default('dev-secret-key-12345'),
 
+  // Auth / JWT
+  JWT_SECRET: z.string().default('curo-ai-super-secret-jwt-key-2026-auth'),
+  JWT_EXPIRES_IN: z.string().default('24h'),
+  DEFAULT_ADMIN_EMAIL: z.string().default('admin@curoai.in'),
+  DEFAULT_ADMIN_PASSWORD: z.string().default('admin12345'),
+
   // LiveKit credentials
   LIVEKIT_URL: z.string().optional().default(''),
   LIVEKIT_API_KEY: z.string().optional().default(''),

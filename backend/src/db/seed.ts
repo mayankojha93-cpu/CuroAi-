@@ -1,6 +1,7 @@
 import { pool } from './index.js';
 import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
+import { authService } from '../services/authService.js';
 
 export async function seedCustomer() {
   const phone = env.TEST_PHONE;
@@ -42,9 +43,9 @@ export async function seedCustomer() {
 
 // Run directly if invoked via CLI
 if (process.argv[1]?.endsWith('seed.ts') || process.argv[1]?.endsWith('seed.js')) {
-  seedCustomer()
-    .then((c) => {
-      console.log(`\n🎉 Customer ready! ID: ${c.id}`);
+  Promise.all([authService.ensureDefaultAdmin(), seedCustomer()])
+    .then(([, c]) => {
+      console.log(`\n🎉 Admin user ready & Test customer ready! ID: ${c.id}`);
       process.exit(0);
     })
     .catch((err) => {

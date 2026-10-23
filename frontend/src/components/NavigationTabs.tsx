@@ -29,12 +29,14 @@ export const NavigationTabs: React.FC<NavigationTabsProps> = ({
       label: 'Lead Directory & Calling',
       icon: <Users size={16} />,
       badge: leadsCount > 0 ? leadsCount : null,
+      badgeColor: 'badge-green',
     },
     {
       id: 'CALLS' as TabKey,
       label: 'Recent Calls & Audio Audit',
       icon: <PhoneCall size={16} />,
       badge: callsCount > 0 ? callsCount : null,
+      badgeColor: 'badge-blue',
     },
     {
       id: 'RETRIES' as TabKey,
@@ -48,14 +50,14 @@ export const NavigationTabs: React.FC<NavigationTabsProps> = ({
       label: '17 FAQ & SOP Scenarios',
       icon: <BookOpen size={16} />,
       badge: '17 SOP',
-      badgeColor: 'badge-blue',
+      badgeColor: 'badge-neutral',
     },
   ];
 
   return (
     <div style={{
       display: 'flex',
-      gap: 8,
+      gap: 6,
       borderBottom: '1px solid var(--border-subtle)',
       paddingBottom: 2,
       marginBottom: 24,
@@ -73,22 +75,34 @@ export const NavigationTabs: React.FC<NavigationTabsProps> = ({
               gap: 8,
               padding: '12px 18px',
               borderRadius: 'var(--radius-md) var(--radius-md) 0 0',
-              background: isActive ? 'rgba(228, 0, 0, 0.12)' : 'transparent',
+              background: isActive ? 'rgba(156, 195, 169, 0.12)' : 'transparent',
               border: 'none',
-              borderBottom: isActive ? '2px solid var(--airtel-red)' : '2px solid transparent',
-              color: isActive ? '#fff' : 'var(--text-secondary)',
-              fontWeight: isActive ? 700 : 500,
+              borderBottom: isActive ? '2px solid var(--curo-sage)' : '2px solid transparent',
+              color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
+              fontWeight: isActive ? 600 : 500,
               fontSize: '0.88rem',
               cursor: 'pointer',
               whiteSpace: 'nowrap',
               transition: 'all 0.15s ease',
+            }}
+            onMouseEnter={(e) => {
+              if (!isActive) {
+                e.currentTarget.style.color = 'var(--text-primary)';
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (!isActive) {
+                e.currentTarget.style.color = 'var(--text-secondary)';
+                e.currentTarget.style.background = 'transparent';
+              }
             }}
           >
             {tab.icon}
             {tab.label}
             {tab.badge !== null && (
               <span 
-                className={`badge ${tab.badgeColor || (isActive ? 'badge-red' : 'badge-neutral')}`} 
+                className={`badge ${tab.badgeColor || (isActive ? 'badge-green' : 'badge-neutral')}`} 
                 style={{ fontSize: '0.7rem', padding: '1px 6px' }}
               >
                 {tab.badge}
