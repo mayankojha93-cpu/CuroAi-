@@ -1,9 +1,29 @@
 import type { CampaignSummary, CallRecord, Customer, CustomerCreateInput, SystemHealth } from '../types';
+import { getStoredAuthToken } from '../context/AuthContext';
 
 const API_BASE = '';
 
 /**
- * Checks system and database connectivity health
+ * Custom fetch wrapper that automatically appends Authorization Bearer token
+ */
+async function authFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const token = getStoredAuthToken();
+  const headers = new Headers(init.headers || {});
+  if (token && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+
+  const res = await fetch(input, { ...init, headers });
+  if (res.status === 401) {
+    localStorage.removeItem('curo_auth_token');
+    localStorage.removeItem('curo_auth_user');
+    window.dispatchEvent(new Event('auth:unauthorized'));
+  }
+  return res;
+}
+
+/**
+ * Checks system and database connectivity health (public)
  */
 export async function fetchHealth(): Promise<SystemHealth> {
   const res = await fetch(`${API_BASE}/health`);
@@ -15,7 +35,7 @@ export async function fetchHealth(): Promise<SystemHealth> {
  * Fetches the audited Airtel IP TV Campaign Summary (MIS)
  */
 export async function fetchCampaignSummary(): Promise<CampaignSummary> {
-  const res = await fetch(`${API_BASE}/api/campaign/summary`);
+  const res = await authFetch(`${API_BASE}/api/campaign/summary`);
   if (!res.ok) throw new Error(`Failed to fetch campaign summary: ${res.statusText}`);
   const data = await res.json();
   return data.summary;
@@ -25,7 +45,7 @@ export async function fetchCampaignSummary(): Promise<CampaignSummary> {
  * Fetches recent call history with latency and recording details
  */
 export async function fetchRecentCalls(): Promise<CallRecord[]> {
-  const res = await fetch(`${API_BASE}/calls`);
+  const res = await authFetch(`${API_BASE}/calls`);
   if (!res.ok) throw new Error(`Failed to fetch calls: ${res.statusText}`);
   const data = await res.json();
   return data.calls || [];
@@ -35,7 +55,7 @@ export async function fetchRecentCalls(): Promise<CallRecord[]> {
  * Fetches full details and turn-by-turn transcript for a specific call
  */
 export async function fetchCallDetail(callId: string): Promise<CallRecord> {
-  const res = await fetch(`${API_BASE}/calls/${callId}`);
+  const res = await authFetch(`${API_BASE}/calls/${callId}`);
   if (!res.ok) throw new Error(`Failed to fetch call details: ${res.statusText}`);
   const data = await res.json();
   return data.call;
@@ -45,7 +65,7 @@ export async function fetchCallDetail(callId: string): Promise<CallRecord> {
  * Fetches customer leads with attempts and disposition status
  */
 export async function fetchCustomers(): Promise<Customer[]> {
-  const res = await fetch(`${API_BASE}/api/customers`);
+  const res = await authFetch(`${API_BASE}/api/customers`);
   if (!res.ok) throw new Error(`Failed to fetch customers: ${res.statusText}`);
   const data = await res.json();
   return data.customers || [];
@@ -55,7 +75,7 @@ export async function fetchCustomers(): Promise<Customer[]> {
  * Fetches pending leads eligible for retry under the 3-hour cooldown rule
  */
 export async function fetchPendingRetries(): Promise<Customer[]> {
-  const res = await fetch(`${API_BASE}/api/retries/pending`);
+  const res = await authFetch(`${API_BASE}/api/retries/pending`);
   if (!res.ok) throw new Error(`Failed to fetch pending retries: ${res.statusText}`);
   const data = await res.json();
   return data.pending || [];
@@ -65,7 +85,7 @@ export async function fetchPendingRetries(): Promise<Customer[]> {
  * Triggers outbound SIP call dispatched to agent Priya
  */
 export async function initiateCall(customerId: string): Promise<{ id: string; status: string; roomName: string }> {
-  const res = await fetch(`${API_BASE}/calls`, {
+  const res = await authFetch(`${API_BASE}/calls`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ customerId }),
@@ -82,7 +102,7 @@ export async function initiateCall(customerId: string): Promise<{ id: string; st
  * Imports campaign leads batch
  */
 export async function importLeads(leads: Partial<CustomerCreateInput>[]): Promise<{ count: number }> {
-  const res = await fetch(`${API_BASE}/api/leads/import`, {
+  const res = await authFetch(`${API_BASE}/api/leads/import`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ leads }),
@@ -124,7 +144,7 @@ export async function initiateTestCall(payload: TestCallInput): Promise<{
     createdAt: string;
   };
 }> {
-  const res = await fetch(`${API_BASE}/api/calls/test`, {
+  const res = await authFetch(`${API_BASE}/api/calls/test`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
