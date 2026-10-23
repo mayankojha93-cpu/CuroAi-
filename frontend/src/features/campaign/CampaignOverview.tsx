@@ -137,169 +137,149 @@ export const CampaignOverview: React.FC<CampaignOverviewProps> = ({ summary, loa
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      {/* Hero Header */}
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        flexWrap: 'wrap',
-        gap: 12,
-      }}>
-        <div>
-          <h2 style={{ fontSize: '1.4rem', fontWeight: 800, color: '#fff', letterSpacing: '-0.02em' }}>
-            Airtel IP TV Urgent Campaign Summary (MIS)
-          </h2>
-          <p style={{ fontSize: '0.84rem', color: 'var(--text-muted)' }}>
-            Audited management information system tracking base penetration, connection yield, and disposition shares
-          </p>
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span className="badge badge-green" style={{ fontSize: '0.78rem', padding: '4px 10px' }}>
-            <span className="pulse-indicator" style={{ background: '#10b981' }}></span>
-            Real-Time Audit Active
-          </span>
-        </div>
-      </div>
-
-      {/* 5 Audited KPI Cards (Matching Image 1) */}
+      {/* 5 Audited KPI Cards in One Line */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))',
-        gap: 16,
+        gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
+        gap: 12,
       }}>
         {/* Total Base Uploaded */}
-        <div className="glass-panel" style={{ padding: 20 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase' }}>
+        <div className="glass-panel" style={{ padding: '16px 14px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <span style={{ fontSize: '0.70rem', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
               Total Base Uploaded
             </span>
             <div style={{
-              width: 34,
-              height: 34,
+              width: 30,
+              height: 30,
               borderRadius: 8,
               background: 'rgba(59, 130, 246, 0.15)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               color: 'var(--accent-blue)',
+              flexShrink: 0,
             }}>
-              <Users size={18} />
+              <Users size={16} />
             </div>
           </div>
-          <div style={{ fontSize: '2rem', fontWeight: 800, color: '#fff', lineHeight: 1 }}>
+          <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#fff', lineHeight: 1.1 }}>
             {overview.sourceRows.toLocaleString()}
           </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 8 }}>
+          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             Unique Contacts: <strong style={{ color: '#fff' }}>{overview.uniqueContacts}</strong>
           </div>
         </div>
 
         {/* Connected Calls (Ring Done) */}
-        <div className="glass-panel" style={{ padding: 20, borderColor: 'rgba(16, 185, 129, 0.25)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--accent-green)', textTransform: 'uppercase' }}>
+        <div className="glass-panel" style={{ padding: '16px 14px', borderColor: 'rgba(16, 185, 129, 0.25)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <span style={{ fontSize: '0.70rem', fontWeight: 700, color: 'var(--accent-green)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
               Connected (Ring Done)
             </span>
             <div style={{
-              width: 34,
-              height: 34,
+              width: 30,
+              height: 30,
               borderRadius: 8,
               background: 'rgba(16, 185, 129, 0.15)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               color: 'var(--accent-green)',
+              flexShrink: 0,
             }}>
-              <PhoneCall size={18} />
+              <PhoneCall size={16} />
             </div>
           </div>
-          <div style={{ fontSize: '2rem', fontWeight: 800, color: 'var(--accent-green)', lineHeight: 1 }}>
+          <div style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--accent-green)', lineHeight: 1.1 }}>
             {overview.connectedCalls.toLocaleString()}
           </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 8 }}>
+          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             Connection Rate: <strong style={{ color: 'var(--accent-green)' }}>{connectedPercent}%</strong>
           </div>
         </div>
 
         {/* Disconnected / Ring No Answer */}
-        <div className="glass-panel" style={{ padding: 20 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--accent-amber)', textTransform: 'uppercase' }}>
+        <div className="glass-panel" style={{ padding: '16px 14px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <span style={{ fontSize: '0.70rem', fontWeight: 700, color: 'var(--accent-amber)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
               Disconnected / RNA
             </span>
             <div style={{
-              width: 34,
-              height: 34,
+              width: 30,
+              height: 30,
               borderRadius: 8,
               background: 'rgba(245, 158, 11, 0.15)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               color: 'var(--accent-amber)',
+              flexShrink: 0,
             }}>
-              <PhoneOff size={18} />
+              <PhoneOff size={16} />
             </div>
           </div>
-          <div style={{ fontSize: '2rem', fontWeight: 800, color: 'var(--accent-amber)', lineHeight: 1 }}>
+          <div style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--accent-amber)', lineHeight: 1.1 }}>
             {disconnectedCount > 0 ? disconnectedCount.toLocaleString() : 0}
           </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 8 }}>
-            Scheduled for 3-Hour Retry ({disconnectedPercent}%)
+          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            Retry: {disconnectedPercent}%
           </div>
         </div>
 
         {/* Total Call Attempts */}
-        <div className="glass-panel" style={{ padding: 20 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--accent-cyan)', textTransform: 'uppercase' }}>
+        <div className="glass-panel" style={{ padding: '16px 14px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <span style={{ fontSize: '0.70rem', fontWeight: 700, color: 'var(--accent-cyan)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
               Total Dial Attempts
             </span>
             <div style={{
-              width: 34,
-              height: 34,
+              width: 30,
+              height: 30,
               borderRadius: 8,
               background: 'rgba(6, 182, 212, 0.15)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               color: 'var(--accent-cyan)',
+              flexShrink: 0,
             }}>
-              <BarChart3 size={18} />
+              <BarChart3 size={16} />
             </div>
           </div>
-          <div style={{ fontSize: '2rem', fontWeight: 800, color: '#fff', lineHeight: 1 }}>
+          <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#fff', lineHeight: 1.1 }}>
             {overview.totalAttempts.toLocaleString()}
           </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 8 }}>
-            Max 3 attempts per subscriber
+          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            Max 3 attempts/sub
           </div>
         </div>
 
         {/* Closed / Upgraded Conversions */}
-        <div className="glass-panel" style={{ padding: 20, borderColor: 'rgba(228, 0, 0, 0.3)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--airtel-red)', textTransform: 'uppercase' }}>
+        <div className="glass-panel" style={{ padding: '16px 14px', borderColor: 'rgba(16, 185, 129, 0.3)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <span style={{ fontSize: '0.70rem', fontWeight: 700, color: 'var(--accent-green)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
               Pickup Scheduled
             </span>
             <div style={{
-              width: 34,
-              height: 34,
+              width: 30,
+              height: 30,
               borderRadius: 8,
-              background: 'rgba(228, 0, 0, 0.15)',
+              background: 'rgba(16, 185, 129, 0.15)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              color: 'var(--airtel-red)',
+              color: 'var(--accent-green)',
+              flexShrink: 0,
             }}>
-              <CalendarCheck size={18} />
+              <CalendarCheck size={16} />
             </div>
           </div>
-          <div style={{ fontSize: '2rem', fontWeight: 800, color: 'var(--airtel-red)', lineHeight: 1 }}>
+          <div style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--accent-green)', lineHeight: 1.1 }}>
             {overview.dispositionedContacts.toLocaleString()}
           </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 8 }}>
-            Technician visit confirmed
+          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            Technician confirmed
           </div>
         </div>
       </div>
