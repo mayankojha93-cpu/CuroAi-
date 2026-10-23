@@ -1,5 +1,5 @@
 import React from 'react';
-import { PhoneCall, Cpu, Activity, Database, RefreshCw, PlusCircle, UploadCloud } from 'lucide-react';
+import { PhoneCall, Cpu, Activity, Database, RefreshCw, PlusCircle, UploadCloud, Globe } from 'lucide-react';
 import type { SystemHealth } from '../types';
 
 interface HeaderProps {
@@ -9,6 +9,7 @@ interface HeaderProps {
   onSeedLead: () => void;
   onImportModalOpen?: () => void;
   onTestCallOpen?: () => void;
+  onBackToLanding?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({ 
@@ -17,7 +18,8 @@ export const Header: React.FC<HeaderProps> = ({
   onRefresh, 
   onSeedLead,
   onImportModalOpen,
-  onTestCallOpen
+  onTestCallOpen,
+  onBackToLanding
 }) => {
   return (
     <header style={{
@@ -160,6 +162,29 @@ export const Header: React.FC<HeaderProps> = ({
             >
               <PhoneCall size={14} />
               Test AI Call
+            </button>
+          )}
+
+          {onBackToLanding && (
+            <button
+              onClick={onBackToLanding}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                background: 'rgba(200, 173, 126, 0.12)',
+                border: '1px solid rgba(200, 173, 126, 0.4)',
+                color: '#e4d3b6',
+                padding: '8px 14px',
+                borderRadius: 'var(--radius-md)',
+                fontSize: '0.82rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+              title="Return to Curo AI Landing Page"
+            >
+              <Globe size={15} />
+              Website
             </button>
           )}
 

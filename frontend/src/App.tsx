@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useDashboardData } from './hooks';
 import { Header, NavigationTabs, Toast } from './components';
 import { 
@@ -9,12 +9,17 @@ import {
   CallDetailModal, 
   TestCallModal,
   RetryQueue, 
-  SopReference 
+  SopReference,
+  LandingPage
 } from './features';
 import './index.css';
 import './App.css';
 
-export const App: React.FC = () => {
+interface DashboardViewProps {
+  onBackToLanding: () => void;
+}
+
+const DashboardView: React.FC<DashboardViewProps> = ({ onBackToLanding }) => {
   const {
     activeTab,
     setActiveTab,
@@ -67,6 +72,7 @@ export const App: React.FC = () => {
         onSeedLead={handleSeedLead}
         onImportModalOpen={() => setIsImportModalOpen(true)}
         onTestCallOpen={() => setIsTestCallModalOpen(true)}
+        onBackToLanding={onBackToLanding}
       />
 
       {/* Main Dashboard Body */}
@@ -149,6 +155,41 @@ export const App: React.FC = () => {
       )}
     </div>
   );
+};
+
+export const App: React.FC = () => {
+  const [currentView, setCurrentView] = useState<'landing' | 'dashboard'>(() => {
+    const hash = window.location.hash.toLowerCase();
+    const path = window.location.pathname.toLowerCase();
+    return hash === '#dashboard' || path.startsWith('/dashboard') ? 'dashboard' : 'landing';
+  });
+
+  useEffect(() => {
+    const handleUrlChange = () => {
+      const hash = window.location.hash.toLowerCase();
+      const path = window.location.pathname.toLowerCase();
+      setCurrentView(hash === '#dashboard' || path.startsWith('/dashboard') ? 'dashboard' : 'landing');
+    };
+    window.addEventListener('popstate', handleUrlChange);
+    window.addEventListener('hashchange', handleUrlChange);
+    return () => {
+      window.removeEventListener('popstate', handleUrlChange);
+      window.removeEventListener('hashchange', handleUrlChange);
+    };
+  }, []);
+
+  const navigateTo = (view: 'landing' | 'dashboard') => {
+    setCurrentView(view);
+    const targetHash = view === 'dashboard' ? '#dashboard' : '#';
+    window.history.pushState(null, '', targetHash);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  if (currentView === 'landing') {
+    return <LandingPage onOpenDashboard={() => navigateTo('dashboard')} />;
+  }
+
+  return <DashboardView onBackToLanding={() => navigateTo('landing')} />;
 };
 
 export default App;
