@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useMemo } from 'react';
 import './landing.css';
 
 interface LandingPageProps {
-  onOpenDashboard: () => void;
+  onLogin: () => void;
 }
 
 const CLIENTS = [
@@ -34,7 +34,7 @@ const MOMENTS = [
 const MANIFESTO_TEXT = 'Enterprises do not run on software alone. They run on moments: a call answered, a document understood, a decision explained, a promise kept.';
 const CURRENT_YEAR = new Date().getFullYear();
 
-export const LandingPage: React.FC<LandingPageProps> = ({ onOpenDashboard }) => {
+export const LandingPage: React.FC<LandingPageProps> = ({ onLogin }) => {
   const [scrolled, setScrolled] = useState(false);
   const [headlineActive, setHeadlineActive] = useState(false);
   const [activeMoment, setActiveMoment] = useState(0);
@@ -348,9 +348,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenDashboard }) => 
               <li><a href="#industries">Industries</a></li>
               <li><a href="#trust">Trust</a></li>
             </ul>
-            <a className="btn light" href="#contact">
-              Talk to us
-            </a>
+            <button type="button" className="btn light" onClick={onLogin}>
+              Login
+            </button>
           </nav>
         </div>
       </header>
@@ -375,7 +375,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenDashboard }) => 
               </p>
               <div className="cta">
                 <a className="btn light" href="#care">See how care scales</a>
-                <a className="btn line" href="#contact">Talk to us</a>
+                <button type="button" className="btn line" onClick={onLogin}>
+                  Login
+                </button>
               </div>
             </div>
 
@@ -643,18 +645,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenDashboard }) => 
           </span>
         </div>
       </footer>
-
-      {/* Discrete floating pill to access the Airtel Voice AI Operations Console */}
-      <button
-        type="button"
-        className="curo-console-pill"
-        onClick={onOpenDashboard}
-        title="Switch to Airtel Voice AI Operations Console"
-        aria-label="Open Operations Console"
-      >
-        <span className="curo-console-dot" aria-hidden="true" />
-        Console &rarr;
-      </button>
     </div>
   );
 };

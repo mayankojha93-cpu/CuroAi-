@@ -7,19 +7,23 @@ import {
   LeadImportModal,
   RecentCalls, 
   CallDetailModal, 
-  TestCallModal,
+  TestCallModal, 
   RetryQueue, 
   SopReference,
-  LandingPage
+  LandingPage,
+  LoginPage
 } from './features';
+import { AuthProvider, useAuth, getStoredAuthToken } from './context/AuthContext';
+import type { AuthUser } from './types';
 import './index.css';
 import './App.css';
 
 interface DashboardViewProps {
-  onBackToLanding: () => void;
+  user: AuthUser | null;
+  onLogout: () => void;
 }
 
-const DashboardView: React.FC<DashboardViewProps> = ({ onBackToLanding }) => {
+const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) => {
   const {
     activeTab,
     setActiveTab,
@@ -72,7 +76,8 @@ const DashboardView: React.FC<DashboardViewProps> = ({ onBackToLanding }) => {
         onSeedLead={handleSeedLead}
         onImportModalOpen={() => setIsImportModalOpen(true)}
         onTestCallOpen={() => setIsTestCallModalOpen(true)}
-        onBackToLanding={onBackToLanding}
+        user={user}
+        onLogout={onLogout}
       />
 
       {/* Main Dashboard Body */}
@@ -157,39 +162,131 @@ const DashboardView: React.FC<DashboardViewProps> = ({ onBackToLanding }) => {
   );
 };
 
-export const App: React.FC = () => {
-  const [currentView, setCurrentView] = useState<'landing' | 'dashboard'>(() => {
-    const hash = window.location.hash.toLowerCase();
-    const path = window.location.pathname.toLowerCase();
-    return hash === '#dashboard' || path.startsWith('/dashboard') ? 'dashboard' : 'landing';
-  });
+type AppRoute = '/' | '/login' | '/dashboard';
+
+function resolveRoute(): AppRoute {
+  const path = window.location.pathname.toLowerCase();
+  const hash = window.location.hash.toLowerCase();
+
+  if (path === '/login' || hash === '#/login' || hash === '#login') {
+    return '/login';
+  }
+  if (path === '/dashboard' || hash === '#/dashboard' || hash === '#dashboard') {
+    return '/dashboard';
+  }
+  return '/';
+}
+
+const AppRouter: React.FC = () => {
+  const { isAuthenticated, user, logout } = useAuth();
+  const [currentRoute, setCurrentRoute] = useState<AppRoute>(resolveRoute);
+
+  const navigateTo = React.useCallback((route: AppRoute) => {
+    setCurrentRoute(route);
+    window.history.pushState(null, '', route);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
 
   useEffect(() => {
     const handleUrlChange = () => {
-      const hash = window.location.hash.toLowerCase();
-      const path = window.location.pathname.toLowerCase();
-      setCurrentView(hash === '#dashboard' || path.startsWith('/dashboard') ? 'dashboard' : 'landing');
+      setCurrentRoute(resolveRoute());
     };
+
+    const handleUnauthorized = () => {
+      navigateTo('/login');
+    };
+
     window.addEventListener('popstate', handleUrlChange);
     window.addEventListener('hashchange', handleUrlChange);
+    window.addEventListener('auth:unauthorized', handleUnauthorized);
+
     return () => {
       window.removeEventListener('popstate', handleUrlChange);
       window.removeEventListener('hashchange', handleUrlChange);
+      window.removeEventListener('auth:unauthorized', handleUnauthorized);
     };
-  }, []);
+  }, [navigateTo]);
 
-  const navigateTo = (view: 'landing' | 'dashboard') => {
-    setCurrentView(view);
-    const targetHash = view === 'dashboard' ? '#dashboard' : '#';
-    window.history.pushState(null, '', targetHash);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+  // Instantly recognize auth state from React context or stored token
+  const isAuthed = isAuthenticated || !!getStoredAuthToken();
 
-  if (currentView === 'landing') {
-    return <LandingPage onOpenDashboard={() => navigateTo('dashboard')} />;
+  // If user is logged in, auto-redirect from / or /login to /dashboard
+  useEffect(() => {
+    if (isAuthed && (currentRoute === '/' || currentRoute === '/login')) {
+      navigateTo('/dashboard');
+    }
+  }, [isAuthed, currentRoute, navigateTo]);
+
+  // Route Guard: /dashboard
+  if (currentRoute === '/dashboard') {
+    if (!isAuthed) {
+      return (
+        <LoginPage
+          onSuccess={() => navigateTo('/dashboard')}
+          onBackToHome={() => navigateTo('/')}
+        />
+      );
+    }
+
+    return (
+      <DashboardView
+        user={user}
+        onLogout={() => {
+          logout();
+          navigateTo('/login');
+        }}
+      />
+    );
   }
 
-  return <DashboardView onBackToLanding={() => navigateTo('landing')} />;
+  // Route: /login
+  if (currentRoute === '/login') {
+    if (isAuthed) {
+      return (
+        <DashboardView
+          user={user}
+          onLogout={() => {
+            logout();
+            navigateTo('/login');
+          }}
+        />
+      );
+    }
+
+    return (
+      <LoginPage
+        onSuccess={() => navigateTo('/dashboard')}
+        onBackToHome={() => navigateTo('/')}
+      />
+    );
+  }
+
+  // Route: / (Default Public Landing Page - Only shown when unauthenticated)
+  if (isAuthed) {
+    return (
+      <DashboardView
+        user={user}
+        onLogout={() => {
+          logout();
+          navigateTo('/login');
+        }}
+      />
+    );
+  }
+
+  return (
+    <LandingPage
+      onLogin={() => navigateTo('/login')}
+    />
+  );
+};
+
+export const App: React.FC = () => {
+  return (
+    <AuthProvider>
+      <AppRouter />
+    </AuthProvider>
+  );
 };
 
 export default App;

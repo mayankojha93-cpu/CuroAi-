@@ -1,6 +1,6 @@
 import React from 'react';
-import { PhoneCall, Cpu, Activity, Database, RefreshCw, PlusCircle, UploadCloud, Globe } from 'lucide-react';
-import type { SystemHealth } from '../types';
+import { PhoneCall, Cpu, Activity, Database, RefreshCw, PlusCircle, UploadCloud, Globe, LogOut, User } from 'lucide-react';
+import type { SystemHealth, AuthUser } from '../types';
 
 interface HeaderProps {
   health: SystemHealth | null;
@@ -10,6 +10,8 @@ interface HeaderProps {
   onImportModalOpen?: () => void;
   onTestCallOpen?: () => void;
   onBackToLanding?: () => void;
+  user?: AuthUser | null;
+  onLogout?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({ 
@@ -19,7 +21,9 @@ export const Header: React.FC<HeaderProps> = ({
   onSeedLead,
   onImportModalOpen,
   onTestCallOpen,
-  onBackToLanding
+  onBackToLanding,
+  user,
+  onLogout
 }) => {
   return (
     <header style={{
@@ -227,6 +231,48 @@ export const Header: React.FC<HeaderProps> = ({
             <RefreshCw size={14} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} />
             Refresh
           </button>
+
+          {user && (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '6px 12px',
+              borderRadius: 'var(--radius-md)',
+              background: 'rgba(255, 255, 255, 0.05)',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              fontSize: '0.8rem',
+            }}>
+              <User size={14} color="var(--accent-cyan)" />
+              <span style={{ color: '#fff', fontWeight: 600 }}>{user.name}</span>
+              <span className="badge badge-neutral" style={{ fontSize: '0.68rem', padding: '1px 6px', textTransform: 'uppercase' }}>
+                {user.role}
+              </span>
+            </div>
+          )}
+
+          {onLogout && (
+            <button
+              onClick={onLogout}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                background: 'rgba(244, 63, 94, 0.1)',
+                border: '1px solid rgba(244, 63, 94, 0.3)',
+                color: '#fda4af',
+                padding: '8px 12px',
+                borderRadius: 'var(--radius-md)',
+                fontSize: '0.82rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+              title="Sign out of Operations Console"
+            >
+              <LogOut size={14} />
+              Logout
+            </button>
+          )}
         </div>
       </div>
     </header>
