@@ -1,0 +1,916 @@
+body.is-landing {
+  background-color: #F6F4EE !important;
+  background-image: none !important;
+  color: #14201A !important;
+  font-family: "Inter", system-ui, sans-serif !important;
+  overflow-x: hidden !important;
+  -webkit-font-smoothing: antialiased !important;
+  scroll-behavior: smooth !important;
+  scroll-padding-top: 76px !important;
+}
+
+html.is-landing {
+  scroll-behavior: smooth !important;
+  scroll-padding-top: 76px !important;
+}
+
+.curo-landing {
+  --night: #0C1511;
+  --night2: #13211A;
+  --paper: #F6F4EE;
+  --card: #FFFFFF;
+  --ink: #14201A;
+  --mu: #5B685F;
+  --line: #E1E3DA;
+  --green: #315D4B;
+  --sage: #9CC3A9;
+  --gold: #C8AD7E;
+  --serif: "Fraunces", Georgia, serif;
+  --sans: "Inter", system-ui, sans-serif;
+  --ease: cubic-bezier(.16, 1, .3, 1);
+
+  font: 16.5px/1.65 var(--sans);
+  color: var(--ink);
+  background: var(--paper);
+  min-height: 100vh;
+  position: relative;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+.curo-landing * {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+.curo-landing a {
+  color: inherit;
+}
+
+.curo-landing :focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.curo-landing .wrap {
+  width: min(1160px, calc(100% - 48px));
+  margin-inline: auto;
+}
+
+.curo-landing section {
+  position: relative;
+  padding: 112px 0;
+}
+
+.curo-landing h1,
+.curo-landing h2,
+.curo-landing h3 {
+  font-family: var(--serif);
+  font-weight: 400;
+  line-height: 1.06;
+  letter-spacing: -.025em;
+}
+
+.curo-landing h2 {
+  font-size: clamp(34px, 4.6vw, 56px);
+  max-width: 18ch;
+}
+
+.curo-landing .kick {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--green);
+}
+
+.curo-landing .lead {
+  color: var(--mu);
+  max-width: 56ch;
+  margin-top: 18px;
+  font-size: 18px;
+}
+
+.curo-landing .btn {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 24px;
+  border-radius: 99px;
+  font: 600 14.5px var(--sans);
+  text-decoration: none;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: #fff;
+  cursor: pointer;
+  transition: transform .35s var(--ease), box-shadow .35s;
+}
+
+.curo-landing .btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 30px -10px rgba(20, 32, 26, .5);
+}
+
+.curo-landing .btn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, transparent 35%, rgba(255, 255, 255, .35) 50%, transparent 65%);
+  transform: translateX(-130%);
+  transition: transform .8s var(--ease);
+}
+
+.curo-landing .btn:hover::after {
+  transform: translateX(130%);
+}
+
+.curo-landing .btn.light {
+  background: #F4F1E8;
+  border-color: #F4F1E8;
+  color: var(--night);
+}
+
+.curo-landing .btn.line {
+  background: transparent;
+  color: #F4F1E8;
+  border-color: rgba(255, 255, 255, .28);
+}
+
+.curo-landing .rv {
+  opacity: 0;
+  transform: translateY(28px);
+  transition: opacity 1s var(--ease), transform 1s var(--ease);
+}
+
+.curo-landing .rv.in {
+  opacity: 1;
+  transform: none;
+}
+
+.curo-landing header {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 50;
+  transition: background .4s, border-color .4s;
+  border-bottom: 1px solid transparent;
+}
+
+.curo-landing header.sc {
+  background: rgba(12, 21, 17, .88);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-color: rgba(255, 255, 255, .08);
+}
+
+.curo-landing nav {
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.curo-landing .logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  color: #F6F4EE;
+  font: 500 24px var(--serif);
+  letter-spacing: -.03em;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.curo-landing .logo i {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1.5px solid var(--gold);
+  position: relative;
+  display: inline-block;
+}
+
+.curo-landing .logo i::after {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  border-radius: 50%;
+  background: var(--gold);
+}
+
+.curo-landing nav ul {
+  display: flex;
+  gap: 30px;
+  list-style: none;
+  margin-left: auto;
+}
+
+.curo-landing nav ul a {
+  font-size: 14px;
+  color: #B7C4BB;
+  text-decoration: none;
+  transition: color .2s;
+}
+
+.curo-landing nav ul a:hover {
+  color: #fff;
+}
+
+.curo-landing nav .btn {
+  padding: 10px 20px;
+}
+
+.curo-landing .hero {
+  min-height: 100svh;
+  display: flex;
+  align-items: center;
+  padding: 140px 0 90px;
+  background: radial-gradient(ellipse at 80% 10%, rgba(49, 93, 75, .55), transparent 55%),
+              linear-gradient(180deg, var(--night), var(--night2));
+  color: #F6F4EE;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.curo-landing #net {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -1;
+}
+
+.curo-landing .hero-grid {
+  display: grid;
+  grid-template-columns: 1.2fr .8fr;
+  gap: 56px;
+  align-items: end;
+}
+
+.curo-landing .hero .kick {
+  color: var(--gold);
+}
+
+.curo-landing .hero h1 {
+  font-size: clamp(52px, 8.6vw, 118px);
+  margin-top: 22px;
+  line-height: .98;
+}
+
+.curo-landing .hero h1 em {
+  font-style: italic;
+  color: var(--sage);
+}
+
+.curo-landing .w {
+  display: inline-block;
+  overflow: hidden;
+  vertical-align: top;
+  padding-bottom: .12em;
+  margin-bottom: -.12em;
+}
+
+.curo-landing .w > i {
+  display: inline-block;
+  font-style: inherit;
+  transform: translateY(110%);
+  transition: transform 1.2s var(--ease);
+  transition-delay: calc(var(--n) * 90ms + 200ms);
+}
+
+.curo-landing .go .w > i {
+  transform: none;
+}
+
+.curo-landing .hero .sub {
+  margin-top: 30px;
+  max-width: 50ch;
+  font-size: 19px;
+  color: #B7C4BB;
+}
+
+.curo-landing .cta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 36px;
+}
+
+.curo-landing .moments {
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 20px;
+  padding: 24px;
+  background: rgba(255, 255, 255, .04);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.curo-landing .moments small {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  color: #93A69A;
+  letter-spacing: .04em;
+}
+
+.curo-landing .moments small b {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--sage);
+  animation: pl 2s infinite;
+}
+
+@keyframes pl {
+  50% {
+    opacity: .3;
+    transform: scale(.7);
+  }
+}
+
+.curo-landing .mom {
+  position: relative;
+  min-height: 128px;
+  margin-top: 16px;
+}
+
+.curo-landing .mom p {
+  position: absolute;
+  inset: 0;
+  font: 400 23px/1.3 var(--serif);
+  letter-spacing: -.02em;
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity .8s var(--ease), transform .8s var(--ease);
+}
+
+.curo-landing .mom p.on {
+  opacity: 1;
+  transform: none;
+}
+
+.curo-landing .scroll {
+  position: absolute;
+  left: 50%;
+  bottom: 26px;
+  width: 1px;
+  height: 46px;
+  background: linear-gradient(var(--gold), transparent);
+  animation: sd 2.4s ease-in-out infinite;
+  transform-origin: top;
+}
+
+@keyframes sd {
+  0% { transform: scaleY(0); }
+  50% { transform: scaleY(1); }
+  100% { transform: scaleY(1); opacity: 0; }
+}
+
+.curo-landing .manifesto {
+  padding: 140px 0;
+}
+
+.curo-landing .manifesto p {
+  font: 400 clamp(28px, 4.2vw, 52px)/1.2 var(--serif);
+  letter-spacing: -.025em;
+  max-width: 26ch;
+}
+
+.curo-landing .mw {
+  transition: opacity .5s;
+  opacity: .2;
+}
+
+.curo-landing .mw.lit {
+  opacity: 1;
+}
+
+.curo-landing .manifesto p + p {
+  font: 400 18px/1.7 var(--sans);
+  letter-spacing: 0;
+  color: var(--mu);
+  max-width: 54ch;
+  margin-top: 36px;
+}
+
+.curo-landing .dark {
+  background: var(--night);
+  color: #F6F4EE;
+}
+
+.curo-landing .dark h2 {
+  color: #F6F4EE;
+}
+
+.curo-landing .dark .kick {
+  color: var(--gold);
+}
+
+.curo-landing .dark .lead {
+  color: #9FB0A5;
+}
+
+.curo-landing .steps {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 28px;
+  margin-top: 70px;
+}
+
+.curo-landing .steps::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: rgba(255, 255, 255, .14);
+}
+
+.curo-landing .steps::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 1px;
+  width: 100%;
+  background: linear-gradient(90deg, var(--sage), var(--gold));
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 2.6s var(--ease) .2s;
+}
+
+.curo-landing .steps.in::after {
+  transform: scaleX(1);
+}
+
+.curo-landing .step {
+  padding-top: 30px;
+  position: relative;
+}
+
+.curo-landing .step::before {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: 0;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--night);
+  border: 1.5px solid var(--gold);
+}
+
+.curo-landing .step span {
+  font: 400 14px var(--sans);
+  color: var(--gold);
+}
+
+.curo-landing .step h3 {
+  font-size: 30px;
+  margin: 10px 0 10px;
+}
+
+.curo-landing .step p {
+  color: #9FB0A5;
+  font-size: 15.5px;
+}
+
+.curo-landing .out {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 18px;
+  margin-top: 56px;
+}
+
+.curo-landing .card {
+  position: relative;
+  overflow: hidden;
+  padding: 34px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: var(--card);
+  transition: transform .5s var(--ease), box-shadow .5s, border-color .5s;
+}
+
+.curo-landing .card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(320px circle at var(--mx, 50%) var(--my, 0), rgba(200, 173, 126, .18), transparent 65%);
+  opacity: 0;
+  transition: opacity .5s;
+  pointer-events: none;
+}
+
+.curo-landing .card:hover {
+  transform: translateY(-6px);
+  border-color: rgba(200, 173, 126, .7);
+  box-shadow: 0 30px 60px -30px rgba(20, 32, 26, .25);
+}
+
+.curo-landing .card:hover::before {
+  opacity: 1;
+}
+
+.curo-landing .card h3 {
+  font-size: 28px;
+  margin-bottom: 10px;
+  position: relative;
+}
+
+.curo-landing .card p {
+  color: var(--mu);
+  position: relative;
+  max-width: 42ch;
+}
+
+.curo-landing .card svg {
+  width: 34px;
+  height: 34px;
+  stroke: var(--green);
+  fill: none;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  margin-bottom: 26px;
+  position: relative;
+  transition: transform .6s var(--ease);
+}
+
+.curo-landing .card:hover svg {
+  transform: translateY(-3px) rotate(-6deg);
+}
+
+.curo-landing .ind {
+  background: #ECEEE6;
+  border-block: 1px solid var(--line);
+}
+
+.curo-landing .ig {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-top: 52px;
+}
+
+.curo-landing .ig .card {
+  padding: 28px;
+  border-radius: 18px;
+}
+
+.curo-landing .ig h3 {
+  font-size: 25px;
+}
+
+.curo-landing .clients {
+  padding: 84px 0;
+  overflow: hidden;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+}
+
+.curo-landing .clients .kick {
+  text-align: center;
+  display: block;
+  margin-bottom: 34px;
+}
+
+.curo-landing .marquee {
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent);
+}
+
+.curo-landing .track {
+  display: flex;
+  gap: 70px;
+  width: max-content;
+  animation: curo-mq 70s linear infinite;
+  will-change: transform;
+}
+
+.curo-landing .marquee:hover .track {
+  animation-play-state: paused;
+}
+
+@keyframes curo-mq {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.curo-landing .lg {
+  white-space: nowrap;
+  font: 500 28px var(--serif);
+  letter-spacing: -.02em;
+  color: var(--ink);
+  opacity: .4;
+  filter: grayscale(1);
+  transition: opacity .3s, color .3s, transform .4s var(--ease);
+}
+
+.curo-landing .lg:hover {
+  opacity: 1;
+  color: var(--c);
+  transform: translateY(-2px);
+}
+
+.curo-landing .lg:nth-child(3n) {
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 23px;
+  letter-spacing: -.04em;
+}
+
+.curo-landing .lg:nth-child(4n+1) {
+  font-style: italic;
+}
+
+.curo-landing .tr {
+  display: grid;
+  grid-template-columns: .9fr 1.1fr;
+  gap: 80px;
+  align-items: start;
+}
+
+.curo-landing .ti {
+  padding: 26px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, .12);
+}
+
+.curo-landing .ti:first-child {
+  padding-top: 0;
+}
+
+.curo-landing .ti:last-child {
+  border: 0;
+}
+
+.curo-landing .ti h3 {
+  font-size: 25px;
+  margin-bottom: 6px;
+}
+
+.curo-landing .ti p {
+  color: #9FB0A5;
+  font-size: 15.5px;
+}
+
+.curo-landing .contact {
+  background: linear-gradient(180deg, var(--night2), var(--night));
+  color: #F6F4EE;
+  overflow: hidden;
+}
+
+.curo-landing .contact::before {
+  content: "";
+  position: absolute;
+  right: -220px;
+  top: -260px;
+  width: 620px;
+  height: 620px;
+  border-radius: 50%;
+  border: 1px solid rgba(200, 173, 126, .18);
+  pointer-events: none;
+  animation: curo-rot 60s linear infinite;
+}
+
+@keyframes curo-rot {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.curo-landing .cg {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr .85fr;
+  gap: 72px;
+  align-items: center;
+}
+
+.curo-landing .contact h2 {
+  color: #F6F4EE;
+}
+
+.curo-landing .cl {
+  list-style: none;
+  display: grid;
+  gap: 18px;
+  margin-top: 36px;
+}
+
+.curo-landing .cl small {
+  display: block;
+  font-size: 12.5px;
+  color: #8FA195;
+}
+
+.curo-landing .cl a {
+  font: 400 26px var(--serif);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(200, 173, 126, .4);
+  transition: border-color .3s;
+}
+
+.curo-landing .cl a:hover {
+  border-color: var(--gold);
+}
+
+.curo-landing form {
+  display: grid;
+  gap: 14px;
+  padding: 30px;
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, .04);
+}
+
+.curo-landing label {
+  display: grid;
+  gap: 6px;
+  font-size: 12.5px;
+  color: #B7C4BB;
+}
+
+.curo-landing input,
+.curo-landing select,
+.curo-landing textarea {
+  width: 100%;
+  font: inherit;
+  font-size: 15px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, .16);
+  background: rgba(0, 0, 0, .25);
+  color: #fff;
+  transition: border-color .25s, box-shadow .25s;
+}
+
+.curo-landing input:focus,
+.curo-landing select:focus,
+.curo-landing textarea:focus {
+  outline: 0;
+  border-color: var(--sage);
+  box-shadow: 0 0 0 3px rgba(156, 195, 169, .18);
+}
+
+.curo-landing select option {
+  background: var(--night);
+}
+
+.curo-landing textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
+.curo-landing ::placeholder {
+  color: #76877C;
+}
+
+.curo-landing form .btn {
+  justify-content: center;
+}
+
+.curo-landing .note {
+  font-size: 12px;
+  color: #8FA195;
+}
+
+.curo-landing footer {
+  background: #080F0B;
+  color: #8FA195;
+  padding: 30px 0;
+  font-size: 13.5px;
+}
+
+.curo-landing footer .wrap {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.curo-landing footer a {
+  text-decoration: none;
+  margin-left: 18px;
+}
+
+.curo-landing footer a:first-child {
+  margin: 0;
+}
+
+.curo-landing footer a:hover {
+  color: #fff;
+}
+
+.curo-console-pill {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 999;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: 99px;
+  background: rgba(12, 21, 17, 0.94);
+  border: 1px solid rgba(200, 173, 126, 0.4);
+  color: #F6F4EE;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  transition: transform .25s var(--ease), border-color .25s, box-shadow .25s;
+}
+
+.curo-console-pill:hover {
+  transform: translateY(-2px);
+  border-color: var(--gold);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.55);
+}
+
+.curo-console-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e40000;
+  box-shadow: 0 0 8px #e40000;
+}
+
+@media(max-width: 960px) {
+  .curo-landing .hero-grid,
+  .curo-landing .tr,
+  .curo-landing .cg {
+    grid-template-columns: 1fr;
+    gap: 44px;
+  }
+  .curo-landing .steps {
+    grid-template-columns: 1fr 1fr;
+    row-gap: 44px;
+  }
+  .curo-landing .ig {
+    grid-template-columns: 1fr 1fr;
+  }
+  .curo-landing nav ul {
+    display: none;
+  }
+  .curo-landing nav .btn {
+    margin-left: auto;
+  }
+}
+
+@media(max-width: 620px) {
+  .curo-landing section {
+    padding: 80px 0;
+  }
+  .curo-landing .manifesto {
+    padding: 90px 0;
+  }
+  .curo-landing .steps,
+  .curo-landing .out,
+  .curo-landing .ig {
+    grid-template-columns: 1fr;
+  }
+  .curo-landing .track {
+    gap: 46px;
+  }
+  .curo-landing .lg {
+    font-size: 23px;
+  }
+  .curo-landing .hero {
+    padding-top: 120px;
+  }
+}
+
+@media(prefers-reduced-motion: reduce) {
+  .curo-landing *,
+  .curo-landing *::before,
+  .curo-landing *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+  .curo-landing .rv,
+  .curo-landing .mw {
+    opacity: 1;
+    transform: none;
+  }
+  .curo-landing .w > i {
+    transform: none;
+  }
+  .curo-landing .steps::after {
+    transform: none;
+  }
+}

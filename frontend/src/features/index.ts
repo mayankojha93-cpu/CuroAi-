@@ -6,3 +6,4 @@ export * from './calls/CallDetailModal';
 export * from './calls/TestCallModal';
 export * from './retries/RetryQueue';
 export * from './sop/SopReference';
+export * from './landing/LandingPage';
