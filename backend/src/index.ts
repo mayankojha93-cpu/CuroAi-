@@ -11,6 +11,9 @@ import { internalRouter } from './routes/internal.js';
 import { webhooksRouter } from './routes/webhooks.js';
 import { callService } from './services/callService.js';
 import { downloadPendingRecordings } from './services/recordingDownloader.js';
+import { authRouter } from './routes/auth.js';
+import { requireAuth } from './middleware/auth.js';
+import { authService } from './services/authService.js';
 
 export const app = express();
 
@@ -41,7 +44,8 @@ app.use(express.text({ type: ['text/csv', 'text/plain'], limit: '10mb' }));
 
 // Register routes
 app.use(healthRouter);
-app.use(callsRouter);
+app.use(authRouter);
+app.use(requireAuth, callsRouter);
 app.use(internalRouter);
 
 // 404 handler
@@ -62,6 +66,11 @@ if (process.env.NODE_ENV !== 'test') {
     logger.info(`🚀 AI Calling Backend listening on port ${env.PORT} (${env.NODE_ENV})`);
     logger.info(`👉 Health check: http://localhost:${env.PORT}/health`);
     logger.info(`👉 Calls API:    http://localhost:${env.PORT}/calls`);
+
+    // Ensure default admin user is seeded
+    authService.ensureDefaultAdmin().catch((err: any) => {
+      logger.error({ err }, 'Error checking/seeding default admin');
+    });
 
     // Start stuck calls sweeper every 30 seconds
     sweeperInterval = setInterval(() => {
