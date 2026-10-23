@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { 
   BarChart3, Users, PhoneCall, PhoneOff, CalendarCheck, 
   CheckCircle2, Clock, ShieldAlert, HelpCircle, PhoneMissed, 
-  Filter, Search
+  Search
 } from 'lucide-react';
 import type { CampaignSummary } from '../../types';
 
@@ -336,11 +336,6 @@ export const CampaignOverview: React.FC<CampaignOverviewProps> = ({ summary, loa
           borderBottom: '1px solid var(--border-subtle)',
           marginBottom: 16,
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-muted)', fontSize: '0.78rem', marginRight: 4 }}>
-            <Filter size={13} />
-            <span>Filter Category:</span>
-          </div>
-
           <button
             onClick={() => setSelectedCategory('ALL')}
             style={{
