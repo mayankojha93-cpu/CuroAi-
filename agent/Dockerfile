@@ -15,10 +15,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Pre-download models and plugin weights
-RUN python -c "
-from livekit.plugins import silero, sarvam, groq
-silero.VAD.load()
-"
+RUN python -c "from livekit.plugins import silero; silero.VAD.load()"
 
 # Copy application source code
 COPY . .
