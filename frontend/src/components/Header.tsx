@@ -1,15 +1,13 @@
 import React from 'react';
-import { PhoneCall, Cpu, Activity, Database, RefreshCw, PlusCircle, UploadCloud, Globe, LogOut, User } from 'lucide-react';
+import { PhoneCall, Cpu, Activity, Database, RefreshCw, UploadCloud, LogOut, User } from 'lucide-react';
 import type { SystemHealth, AuthUser } from '../types';
 
 interface HeaderProps {
   health: SystemHealth | null;
   loading: boolean;
   onRefresh: () => void;
-  onSeedLead: () => void;
   onImportModalOpen?: () => void;
   onTestCallOpen?: () => void;
-  onBackToLanding?: () => void;
   user?: AuthUser | null;
   onLogout?: () => void;
 }
@@ -18,18 +16,17 @@ export const Header: React.FC<HeaderProps> = ({
   health, 
   loading, 
   onRefresh, 
-  onSeedLead,
   onImportModalOpen,
   onTestCallOpen,
-  onBackToLanding,
   user,
   onLogout
 }) => {
   return (
     <header style={{
       borderBottom: '1px solid var(--border-subtle)',
-      background: 'rgba(10, 14, 23, 0.85)',
-      backdropFilter: 'blur(16px)',
+      background: 'rgba(12, 18, 16, 0.88)',
+      backdropFilter: 'blur(20px)',
+      WebkitBackdropFilter: 'blur(20px)',
       position: 'sticky',
       top: 0,
       zIndex: 50,
@@ -47,31 +44,39 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Logo and Brand */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <div style={{
-            width: 44,
-            height: 44,
+            width: 42,
+            height: 42,
             borderRadius: 12,
-            background: 'linear-gradient(135deg, #e40000 0%, #8b0000 100%)',
+            background: 'linear-gradient(135deg, rgba(156, 195, 169, 0.2) 0%, rgba(49, 93, 75, 0.3) 100%)',
+            border: '1px solid rgba(156, 195, 169, 0.35)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            boxShadow: '0 0 20px rgba(228, 0, 0, 0.4)',
-            color: '#fff',
+            boxShadow: '0 0 20px rgba(156, 195, 169, 0.15)',
+            color: 'var(--curo-sage)',
           }}>
-            <PhoneCall size={22} />
+            <PhoneCall size={20} />
           </div>
 
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <h1 style={{ fontSize: '1.25rem', fontWeight: 800, color: '#fff', letterSpacing: '-0.02em' }}>
-                Airtel <span style={{ color: 'var(--airtel-red)' }}>Voice AI</span>
+              <h1 style={{
+                fontSize: '1.25rem',
+                fontFamily: 'var(--font-display)',
+                fontWeight: 500,
+                color: 'var(--text-primary)',
+                letterSpacing: '-0.025em',
+                lineHeight: 1.2,
+              }}>
+                Curo <span style={{ color: 'var(--curo-sage)' }}>Voice AI</span>
               </h1>
-              <span className="badge badge-red" style={{ fontSize: '0.68rem', padding: '2px 8px' }}>
-                <span className="pulse-indicator" style={{ background: '#ff4d4d', boxShadow: '0 0 8px #ff4d4d' }}></span>
-                Agent: Priya (AI)
+              <span className="badge badge-green" style={{ fontSize: '0.68rem', padding: '2px 8px' }}>
+                <span className="pulse-indicator"></span>
+                Agent: Priya
               </span>
             </div>
-            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-              Outbound Wi-Fi Router Pickup & Telecom Campaign Engine
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+              Enterprise Voice Care & Outbound Router Campaign Engine
             </p>
           </div>
         </div>
@@ -86,9 +91,9 @@ export const Header: React.FC<HeaderProps> = ({
             borderRadius: 20,
             fontSize: '0.78rem',
           }}>
-            <Cpu size={14} color="var(--accent-cyan)" />
+            <Cpu size={14} color="var(--curo-sage)" />
             <span style={{ color: 'var(--text-secondary)' }}>Groq Qwen + Sarvam</span>
-            <span style={{ color: 'var(--accent-green)', fontWeight: 600 }}>~₹2.4/min</span>
+            <span style={{ color: 'var(--curo-sage)', fontWeight: 600 }}>~₹2.4/min</span>
           </div>
 
           <div className="glass-panel" style={{
@@ -99,9 +104,9 @@ export const Header: React.FC<HeaderProps> = ({
             borderRadius: 20,
             fontSize: '0.78rem',
           }}>
-            <Activity size={14} color="var(--accent-blue)" />
-            <span style={{ color: 'var(--text-secondary)' }}>Exotel SIP (In & Out):</span>
-            <span style={{ color: 'var(--accent-green)', fontWeight: 600 }}>Active</span>
+            <Activity size={14} color="var(--curo-gold)" />
+            <span style={{ color: 'var(--text-secondary)' }}>Exotel SIP:</span>
+            <span style={{ color: 'var(--curo-sage)', fontWeight: 600 }}>Active</span>
           </div>
 
           <div className="glass-panel" style={{
@@ -112,10 +117,10 @@ export const Header: React.FC<HeaderProps> = ({
             borderRadius: 20,
             fontSize: '0.78rem',
           }}>
-            <Database size={14} color={health?.database.connected ? 'var(--accent-green)' : 'var(--accent-rose)'} />
+            <Database size={14} color={health?.database.connected ? 'var(--curo-sage)' : 'var(--accent-rose)'} />
             <span style={{ color: 'var(--text-secondary)' }}>Postgres:</span>
             <span style={{
-              color: health?.database.connected ? 'var(--accent-green)' : 'var(--accent-rose)',
+              color: health?.database.connected ? 'var(--curo-sage)' : 'var(--accent-rose)',
               fontWeight: 600
             }}>
               {health?.database.connected ? 'Online' : 'Offline'}
@@ -130,17 +135,18 @@ export const Header: React.FC<HeaderProps> = ({
                 display: 'flex',
                 alignItems: 'center',
                 gap: 6,
-                background: 'rgba(255, 255, 255, 0.08)',
+                background: 'rgba(255, 255, 255, 0.05)',
                 border: '1px solid var(--border-light)',
-                color: '#fff',
+                color: 'var(--text-primary)',
                 padding: '8px 14px',
                 borderRadius: 'var(--radius-md)',
                 fontSize: '0.82rem',
-                fontWeight: 600,
+                fontWeight: 500,
+                cursor: 'pointer',
               }}
               title="Import campaign leads batch"
             >
-              <UploadCloud size={15} color="var(--accent-blue)" />
+              <UploadCloud size={15} color="var(--curo-sage)" />
               Import Leads
             </button>
           )}
@@ -152,14 +158,14 @@ export const Header: React.FC<HeaderProps> = ({
                 display: 'flex',
                 alignItems: 'center',
                 gap: 6,
-                background: 'rgba(228, 0, 0, 0.12)',
-                border: '1px solid rgba(228, 0, 0, 0.45)',
-                color: '#ff4d4d',
+                background: 'var(--curo-sage)',
+                border: '1px solid var(--curo-sage)',
+                color: 'var(--curo-night)',
                 padding: '8px 14px',
                 borderRadius: 'var(--radius-md)',
                 fontSize: '0.82rem',
-                fontWeight: 700,
-                boxShadow: '0 0 12px rgba(228, 0, 0, 0.25)',
+                fontWeight: 600,
+                boxShadow: '0 2px 10px rgba(156, 195, 169, 0.25)',
                 cursor: 'pointer',
               }}
               title="Open Developer Test Call Console"
@@ -169,49 +175,6 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
           )}
 
-          {onBackToLanding && (
-            <button
-              onClick={onBackToLanding}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                background: 'rgba(200, 173, 126, 0.12)',
-                border: '1px solid rgba(200, 173, 126, 0.4)',
-                color: '#e4d3b6',
-                padding: '8px 14px',
-                borderRadius: 'var(--radius-md)',
-                fontSize: '0.82rem',
-                fontWeight: 600,
-                cursor: 'pointer',
-              }}
-              title="Return to Curo AI Landing Page"
-            >
-              <Globe size={15} />
-              Website
-            </button>
-          )}
-
-          <button
-            onClick={onSeedLead}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              background: 'rgba(255, 255, 255, 0.08)',
-              border: '1px solid var(--border-light)',
-              color: '#fff',
-              padding: '8px 14px',
-              borderRadius: 'var(--radius-md)',
-              fontSize: '0.82rem',
-              fontWeight: 600,
-            }}
-            title="Add a test lead to database"
-          >
-            <PlusCircle size={15} color="var(--accent-cyan)" />
-            Add Test Lead
-          </button>
-
           <button
             onClick={onRefresh}
             disabled={loading}
@@ -219,13 +182,14 @@ export const Header: React.FC<HeaderProps> = ({
               display: 'flex',
               alignItems: 'center',
               gap: 6,
-              background: 'linear-gradient(135deg, var(--airtel-red) 0%, var(--airtel-red-dark) 100%)',
-              color: '#fff',
+              background: 'rgba(255, 255, 255, 0.05)',
+              border: '1px solid var(--border-light)',
+              color: 'var(--text-primary)',
               padding: '8px 16px',
               borderRadius: 'var(--radius-md)',
               fontSize: '0.82rem',
-              fontWeight: 700,
-              boxShadow: '0 2px 10px rgba(228, 0, 0, 0.35)',
+              fontWeight: 500,
+              cursor: 'pointer',
             }}
           >
             <RefreshCw size={14} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} />
@@ -239,12 +203,12 @@ export const Header: React.FC<HeaderProps> = ({
               gap: 8,
               padding: '6px 12px',
               borderRadius: 'var(--radius-md)',
-              background: 'rgba(255, 255, 255, 0.05)',
-              border: '1px solid rgba(255, 255, 255, 0.1)',
+              background: 'rgba(156, 195, 169, 0.08)',
+              border: '1px solid var(--border-subtle)',
               fontSize: '0.8rem',
             }}>
-              <User size={14} color="var(--accent-cyan)" />
-              <span style={{ color: '#fff', fontWeight: 600 }}>{user.name}</span>
+              <User size={14} color="var(--curo-sage)" />
+              <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{user.name}</span>
               <span className="badge badge-neutral" style={{ fontSize: '0.68rem', padding: '1px 6px', textTransform: 'uppercase' }}>
                 {user.role}
               </span>
@@ -258,13 +222,13 @@ export const Header: React.FC<HeaderProps> = ({
                 display: 'flex',
                 alignItems: 'center',
                 gap: 6,
-                background: 'rgba(244, 63, 94, 0.1)',
-                border: '1px solid rgba(244, 63, 94, 0.3)',
-                color: '#fda4af',
+                background: 'rgba(229, 115, 115, 0.08)',
+                border: '1px solid rgba(229, 115, 115, 0.25)',
+                color: '#ff8a80',
                 padding: '8px 12px',
                 borderRadius: 'var(--radius-md)',
                 fontSize: '0.82rem',
-                fontWeight: 600,
+                fontWeight: 500,
                 cursor: 'pointer',
               }}
               title="Sign out of Operations Console"

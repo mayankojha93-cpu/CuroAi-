@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useDashboardData } from './hooks';
-import { Header, NavigationTabs, Toast } from './components';
+import { DashboardLayout, Toast } from './components';
 import { 
   CampaignOverview, 
   LeadDirectory, 
@@ -46,89 +46,58 @@ const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) => {
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isTestCallModalOpen, setIsTestCallModalOpen] = useState(false);
 
-  // Quick Seed Lead handler for demo testing
-  const handleSeedLead = async () => {
-    const randomSuffix = Math.floor(1000 + Math.random() * 9000);
-    const testLead = {
-      name: `Rajesh Sharma (${randomSuffix})`,
-      phone: `+919811${randomSuffix}22`,
-      account_no: `2002294${randomSuffix}`,
-      subs_del_no: `0112134${randomSuffix}_wifi`,
-      service_end_date: '2026-08-27',
-      address: `Flat ${randomSuffix % 500}, Pocket 4, Mayur Vihar Phase 1, New Delhi - 110091`,
-      language: 'hi',
-    };
-
-    const success = await handleImportLeads([testLead]);
-    if (success) {
-      showToast(`Added test lead: ${testLead.name}`, 'success');
-      setActiveTab('LEADS');
-    }
-  };
-
   return (
-    <div className="dashboard-shell" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-      {/* Top Application Header */}
-      <Header
-        health={health}
-        loading={loading}
-        onRefresh={loadAllData}
-        onSeedLead={handleSeedLead}
-        onImportModalOpen={() => setIsImportModalOpen(true)}
-        onTestCallOpen={() => setIsTestCallModalOpen(true)}
-        user={user}
-        onLogout={onLogout}
-      />
+    <DashboardLayout
+      activeTab={activeTab}
+      onTabChange={setActiveTab}
+      leadsCount={customers.length}
+      callsCount={recentCalls.length}
+      retriesCount={retries.length}
+      health={health}
+      loading={loading}
+      onRefresh={loadAllData}
+      onImportModalOpen={() => setIsImportModalOpen(true)}
+      onTestCallOpen={() => setIsTestCallModalOpen(true)}
+      user={user}
+      onLogout={onLogout}
+    >
+      {/* Tab View Routing */}
+      <div className="tab-content">
+        {activeTab === 'CAMPAIGN' && (
+          <CampaignOverview
+            summary={summary}
+            loading={loading}
+          />
+        )}
 
-      {/* Main Dashboard Body */}
-      <main style={{ flex: 1, maxWidth: 1440, width: '100%', margin: '0 auto', padding: '24px 28px' }}>
-        {/* Navigation Tabs */}
-        <NavigationTabs
-          activeTab={activeTab}
-          onTabChange={setActiveTab}
-          leadsCount={customers.length}
-          callsCount={recentCalls.length}
-          retriesCount={retries.length}
-        />
+        {activeTab === 'LEADS' && (
+          <LeadDirectory
+            customers={customers}
+            onDial={handleDialCustomer}
+            dialingId={dialingId}
+            onImportModalOpen={() => setIsImportModalOpen(true)}
+          />
+        )}
 
-        {/* Tab View Routing */}
-        <div className="tab-content" style={{ marginTop: 8 }}>
-          {activeTab === 'CAMPAIGN' && (
-            <CampaignOverview
-              summary={summary}
-              loading={loading}
-            />
-          )}
+        {activeTab === 'CALLS' && (
+          <RecentCalls
+            calls={recentCalls}
+            onSelectCall={setSelectedCall}
+          />
+        )}
 
-          {activeTab === 'LEADS' && (
-            <LeadDirectory
-              customers={customers}
-              onDial={handleDialCustomer}
-              dialingId={dialingId}
-              onImportModalOpen={() => setIsImportModalOpen(true)}
-            />
-          )}
+        {activeTab === 'RETRIES' && (
+          <RetryQueue
+            retries={retries}
+            onDial={handleDialCustomer}
+            dialingId={dialingId}
+          />
+        )}
 
-          {activeTab === 'CALLS' && (
-            <RecentCalls
-              calls={recentCalls}
-              onSelectCall={setSelectedCall}
-            />
-          )}
-
-          {activeTab === 'RETRIES' && (
-            <RetryQueue
-              retries={retries}
-              onDial={handleDialCustomer}
-              dialingId={dialingId}
-            />
-          )}
-
-          {activeTab === 'SOP' && (
-            <SopReference />
-          )}
-        </div>
-      </main>
+        {activeTab === 'SOP' && (
+          <SopReference />
+        )}
+      </div>
 
       {/* Turn-by-Turn Audio & Transcript Modal */}
       <CallDetailModal
@@ -158,7 +127,7 @@ const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) => {
           onClose={() => showToast('', 'success')}
         />
       )}
-    </div>
+    </DashboardLayout>
   );
 };
 
