@@ -219,10 +219,12 @@ callsRouter.get(
   }
 );
 
-// GET /calls - Get latest 20 calls
-callsRouter.get('/calls', async (_req: Request, res: Response, next: NextFunction) => {
+// GET /calls - Get latest calls across all campaigns with optional status filter
+callsRouter.get('/calls', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const calls = await callService.listRecentCalls(20);
+    const status = req.query.status as string | undefined;
+    const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 100;
+    const calls = await callService.listRecentCalls(limit, status);
     return res.json({ calls, count: calls.length });
   } catch (err) {
     return next(err);
