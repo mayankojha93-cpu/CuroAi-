@@ -31,4 +31,26 @@ export interface SystemHealth {
   };
 }
 
-export type TabKey = 'CAMPAIGN' | 'LEADS' | 'CALLS' | 'RETRIES' | 'SOP';
+export type TabKey = 'DASHBOARD' | 'CAMPAIGN' | 'LEADS' | 'CALLS' | 'RETRIES' | 'BILLING' | 'SETTINGS';
+
+export type CampaignStage = 'Running' | 'Paused' | 'Completed' | 'Stopped' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'STOPPED';
+
+export interface CampaignItem {
+  id: string;
+  name: string;
+  description: string;
+  status: CampaignStage;
+  service?: string;
+  progress_percent?: number;
+  total_contacts: number;
+  unique_called: number;
+  successful_calls: number;
+  failed_calls: number;
+  remaining_calls: number;
+  credits_used?: number;
+  total_credits?: number;
+  execution_date?: string;
+  contacts?: string[];
+  created_at?: string;
+  updated_at?: string;
+}
