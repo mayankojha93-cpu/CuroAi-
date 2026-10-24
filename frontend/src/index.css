@@ -1,34 +1,35 @@
 :root {
   --font-display: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-serif: 'Fraunces', Georgia, serif;
+  --font-serif: 'Inter', -apple-system, sans-serif;
 
-  /* Executive Obsidian & Emerald Palette */
-  --bg-primary: #080C0A;
-  --bg-secondary: #0D1411;
-  --bg-sidebar: #0A0F0D;
-  --bg-card: rgba(16, 24, 20, 0.72);
-  --bg-card-hover: rgba(23, 34, 28, 0.88);
-  --bg-glass: rgba(13, 20, 17, 0.85);
+  /* Sleek Curo Dark Obsidian & Midnight Palette */
+  --bg-primary: #07090E;
+  --bg-secondary: #0B0E17;
+  --bg-sidebar: #06080C;
+  --bg-card: #0E121B;
+  --bg-card-hover: #131825;
+  --bg-glass: rgba(14, 18, 27, 0.88);
 
   --border-subtle: rgba(255, 255, 255, 0.07);
-  --border-light: rgba(255, 255, 255, 0.14);
-  --border-accent: rgba(16, 185, 129, 0.35);
+  --border-light: rgba(255, 255, 255, 0.12);
+  --border-accent: rgba(59, 130, 246, 0.35);
 
+  --curo-blue: #2563EB;
+  --curo-blue-light: #38BDF8;
+  --curo-purple: #A855F7;
   --curo-emerald: #10B981;
   --curo-emerald-glow: rgba(16, 185, 129, 0.25);
-  --curo-sage: #9CC3A9;
-  --curo-gold: #E5B869;
-  --curo-forest: #1F382B;
+  --curo-gold: #F59E0B;
 
   /* Aliased brand colors for components */
-  --airtel-red: #10B981;
-  --airtel-red-glow: rgba(16, 185, 129, 0.2);
-  --airtel-red-dark: #059669;
+  --airtel-red: #38BDF8;
+  --airtel-red-glow: rgba(56, 189, 248, 0.2);
+  --airtel-red-dark: #2563EB;
 
   --text-primary: #FFFFFF;
-  --text-secondary: #94A89D;
-  --text-muted: #5D7266;
+  --text-secondary: #94A3B8;
+  --text-muted: #64748B;
 
   --accent-green: #10B981;
   --accent-green-bg: rgba(16, 185, 129, 0.12);
@@ -46,7 +47,7 @@
   --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.55);
   --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.7);
-  --shadow-glow: 0 0 24px rgba(16, 185, 129, 0.18);
+  --shadow-glow: 0 0 24px rgba(59, 130, 246, 0.18);
 
   --radius-sm: 6px;
   --radius-md: 10px;
@@ -68,10 +69,10 @@ body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   background-image: 
-    radial-gradient(at 0% 0%, rgba(16, 185, 129, 0.07) 0px, transparent 45%),
-    radial-gradient(at 100% 0%, rgba(56, 189, 248, 0.05) 0px, transparent 40%),
-    radial-gradient(at 50% 100%, rgba(245, 158, 11, 0.04) 0px, transparent 50%),
-    linear-gradient(180deg, #080C0A 0%, #060907 100%);
+    radial-gradient(at 0% 0%, rgba(37, 99, 235, 0.06) 0px, transparent 45%),
+    radial-gradient(at 100% 0%, rgba(147, 51, 234, 0.04) 0px, transparent 40%),
+    radial-gradient(at 50% 100%, rgba(56, 189, 248, 0.03) 0px, transparent 50%),
+    linear-gradient(180deg, #07090E 0%, #05070B 100%);
   background-attachment: fixed;
 }
 

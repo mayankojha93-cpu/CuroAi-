@@ -18,7 +18,7 @@ import type {
 } from '../types';
 
 export function useDashboardData() {
-  const [activeTab, setActiveTab] = useState<TabKey>('CAMPAIGN');
+  const [activeTab, setActiveTab] = useState<TabKey>('DASHBOARD');
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [summary, setSummary] = useState<CampaignSummary | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);

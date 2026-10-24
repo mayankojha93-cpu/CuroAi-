@@ -71,6 +71,20 @@ internalRouter.post(
   }
 );
 
+// GET /internal/calls/:callId - Lookup call and customer details
+internalRouter.get(
+  '/internal/calls/:callId',
+  requireInternalSecret,
+  async (req: Request<{ callId: string }>, res: Response, next: NextFunction) => {
+    try {
+      const call = await callService.getCall(req.params.callId);
+      return res.status(200).json({ success: true, call });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
 // GET /internal/customers/lookup - Lookup customer record by incoming phone number
 internalRouter.get(
   '/internal/customers/lookup',

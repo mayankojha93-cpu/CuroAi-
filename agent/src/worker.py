@@ -44,6 +44,9 @@ async def entrypoint(ctx: agents.JobContext):
             logger.warning(f"Could not parse job metadata: {e}")
 
     call_id = metadata.get("callId", "")
+    if not call_id and ctx.room.name.startswith("call-"):
+        call_id = ctx.room.name[5:]
+
     customer_name = metadata.get("customerName", "Customer")
     address = metadata.get("address", "Flat 402, Sunshine Heights, Koramangala 4th Block, Bengaluru")
     phone = metadata.get("phone", "")
@@ -56,8 +59,34 @@ async def entrypoint(ctx: agents.JobContext):
 
     # Detect inbound call direction (from metadata or room prefix)
     direction = metadata.get("direction", "outbound")
-    if ctx.room.name.startswith("inbound-") or not call_id:
+    if ctx.room.name.startswith("inbound-"):
         direction = "inbound"
+    elif ctx.room.name.startswith("call-"):
+        direction = "outbound"
+
+    # If outbound and phone/customer data is missing from metadata, fetch from backend
+    if direction == "outbound" and call_id and (not phone or customer_name == "Customer"):
+        try:
+            import requests
+            from src.config import BACKEND_URL, INTERNAL_SECRET
+            def _fetch_call_info():
+                return requests.get(
+                    f"{BACKEND_URL}/internal/calls/{call_id}",
+                    headers={"X-Internal-Secret": INTERNAL_SECRET},
+                    timeout=3.0,
+                )
+            c_res = await asyncio.to_thread(_fetch_call_info)
+            if c_res.status_code == 200:
+                c_data = c_res.json().get("call") or {}
+                customer_name = c_data.get("customer_name") or customer_name
+                phone = c_data.get("customer_phone") or phone
+                address = c_data.get("customer_address") or address
+                language = c_data.get("customer_language") or language
+                subs_del_no = c_data.get("subs_del_no") or subs_del_no
+                account_no = c_data.get("account_no") or account_no
+                logger.info(f"Loaded call details from backend for {call_id}: Customer={customer_name}, Phone={phone}")
+        except Exception as e:
+            logger.warning(f"Could not load call details from backend for {call_id}: {e}")
 
     if direction == "inbound":
         logger.info(f"Detected INBOUND call in room {ctx.room.name}. Registering session...")
@@ -438,6 +467,36 @@ async def entrypoint(ctx: agents.JobContext):
         async def _save_and_shutdown():
             await _save_outcome(force=True)  # force: transcript/duration are newer than any earlier post
             ctx.shutdown(reason="session closed")
+
+        asyncio.create_task(_save_and_shutdown())
+
+    # Customer disconnected / hung up phone
+    @ctx.room.on("participant_disconnected")
+    def on_participant_disconnected(participant):
+        timing_tracker["session_closed"] = True
+        _cancel_timers()
+        part_ident = getattr(participant, "identity", "caller")
+        logger.info(f"Customer phone leg ({part_ident}) disconnected / hung up.")
+        if state.is_completed:
+            return
+        state.is_completed = True
+        if not state.is_terminal():
+            has_dialogue = any(t.get("role") in ("customer", "assistant") for t in state.transcript)
+            if has_dialogue:
+                state.final_disposition = "DISCONNECTED"
+                state.customer_note = "Call dropped / customer hung up mid-conversation"
+            else:
+                state.final_disposition = "NO_ANSWER"
+                state.customer_note = "Customer hung up before dialogue began"
+        logger.info(f"Caller cut call. Saving outcome {state.final_disposition} (duration={state.get_duration_seconds()}s)...")
+
+        async def _save_and_shutdown():
+            await _save_outcome(force=True)
+            try:
+                await session.aclose()
+            except Exception:
+                pass
+            ctx.shutdown(reason="participant disconnected")
 
         asyncio.create_task(_save_and_shutdown())
 

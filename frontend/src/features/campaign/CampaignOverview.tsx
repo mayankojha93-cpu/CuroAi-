@@ -1,537 +1,671 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
-  BarChart3, Users, PhoneCall, PhoneOff, CalendarCheck, 
-  CheckCircle2, Clock, ShieldAlert, HelpCircle, PhoneMissed, 
-  Search
+  Plus, 
+  Search, 
+  Play, 
+  Pause, 
+  Square, 
+  Download, 
+  Users, 
+  PhoneCall, 
+  Check, 
+  X, 
+  Clock, 
+  ChevronDown,
+  RotateCcw
 } from 'lucide-react';
-import type { CampaignSummary } from '../../types';
+import type { CampaignSummary, CampaignItem, CampaignStage, CallRecord } from '../../types';
+import { fetchCampaigns, updateCampaignStatus } from '../../services';
+import { CampaignDetailView } from './CampaignDetailView';
 
 interface CampaignOverviewProps {
   summary: CampaignSummary | null;
   loading: boolean;
+  onImportModalOpen?: () => void;
+  onSelectCall?: (call: CallRecord) => void;
 }
 
-export const CampaignOverview: React.FC<CampaignOverviewProps> = ({ summary, loading }) => {
-  const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
-  const [searchTerm, setSearchTerm] = useState<string>('');
+export const CampaignOverview: React.FC<CampaignOverviewProps> = ({
+  summary: _summary,
+  loading: _loading,
+  onImportModalOpen,
+  onSelectCall,
+}) => {
+  const [campaigns, setCampaigns] = useState<CampaignItem[]>([]);
+  const [selectedCampaign, setSelectedCampaign] = useState<CampaignItem | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'STOPPED'>('ALL');
+  const [isUpdatingId, setIsUpdatingId] = useState<string | null>(null);
 
-  if (loading && !summary) {
+  // Load campaigns from backend PostgreSQL database
+  const loadCampaignsFromDb = useCallback(async () => {
+    try {
+      const data = await fetchCampaigns();
+      setCampaigns(data || []);
+    } catch {
+      // Keep existing state if network error
+    }
+  }, []);
+
+  useEffect(() => {
+    loadCampaignsFromDb();
+  }, [loadCampaignsFromDb]);
+
+  // Normalize status string (e.g., 'Running' -> 'RUNNING')
+  const normalizeStatus = (status: string): 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'STOPPED' => {
+    const s = (status || '').toUpperCase();
+    if (s.includes('RUN')) return 'RUNNING';
+    if (s.includes('PAUS')) return 'PAUSED';
+    if (s.includes('COMPLET')) return 'COMPLETED';
+    if (s.includes('STOP')) return 'STOPPED';
+    return 'RUNNING';
+  };
+
+  // Filter campaigns by search query and the 4 stages (Running, Paused, Completed, Stopped)
+  const filteredCampaigns = useMemo(() => {
+    return campaigns.filter((c) => {
+      const matchesSearch = c.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                            c.description.toLowerCase().includes(searchTerm.toLowerCase());
+      const normalized = normalizeStatus(c.status);
+      const matchesStatus = statusFilter === 'ALL' || normalized === statusFilter;
+      return matchesSearch && matchesStatus;
+    });
+  }, [campaigns, searchTerm, statusFilter]);
+
+  // Stage transition action (Running <-> Paused <-> Stopped <-> Completed)
+  const handleStageChange = async (id: string, newStage: CampaignStage) => {
+    setIsUpdatingId(id);
+    // Optimistic UI update
+    setCampaigns((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, status: newStage } : c))
+    );
+
+    try {
+      await updateCampaignStatus(id, newStage.toString().toUpperCase());
+    } catch (err) {
+      console.warn('Backend update failed, kept in local state:', err);
+    } finally {
+      setIsUpdatingId(null);
+    }
+  };
+
+  const handleDownloadCsv = (campaign: CampaignItem) => {
+    const csvRows = [
+      ['Campaign Name', campaign.name],
+      ['Status', normalizeStatus(campaign.status)],
+      ['Contacts', campaign.total_contacts.toString()],
+      ['Unique Called', campaign.unique_called.toString()],
+      ['Successful Calls', campaign.successful_calls.toString()],
+      ['Failed Calls', campaign.failed_calls.toString()],
+      ['Remaining Queue', campaign.remaining_calls.toString()],
+      ['Execution Date', campaign.execution_date || 'October 2026'],
+      ['Exported At', new Date().toISOString()],
+    ];
+
+    const csvContent = 'data:text/csv;charset=utf-8,' + csvRows.map((e) => e.join(',')).join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', `${campaign.name.replace(/\s+/g, '_')}_Report.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const getProgressBarColor = (status: string, idx: number) => {
+    const norm = normalizeStatus(status);
+    if (norm === 'RUNNING') return '#10B981'; // Green
+    if (norm === 'PAUSED') return '#F59E0B';  // Amber
+    if (norm === 'STOPPED') return '#FB7185'; // Red
+    // COMPLETED
+    const colors = ['#F59E0B', '#A855F7', '#38BDF8', '#10B981'];
+    return colors[idx % colors.length];
+  };
+
+  // If a campaign is selected (e.g. by clicking the right-most play button on its card), show detail view matching user's screenshot
+  if (selectedCampaign) {
     return (
-      <div style={{ padding: '60px 0', textAlign: 'center', color: 'var(--text-muted)' }}>
-        Loading Campaign MIS Overview...
-      </div>
+      <CampaignDetailView
+        campaign={selectedCampaign}
+        onBack={() => {
+          setSelectedCampaign(null);
+          loadCampaignsFromDb();
+        }}
+        onSelectCall={onSelectCall}
+      />
     );
   }
 
-  const overview = summary?.overview || {
-    sourceRows: 0,
-    uniqueContacts: 0,
-    connectedCalls: 0,
-    totalAttempts: 0,
-    dispositionedContacts: 0,
-  };
-
-  const categories = summary?.categories || [];
-
-  const connectedPercent = overview.sourceRows > 0
-    ? Math.round((overview.connectedCalls / overview.sourceRows) * 100)
-    : 0;
-
-  const disconnectedCount = Math.max(0, overview.sourceRows - overview.connectedCalls);
-  const disconnectedPercent = overview.sourceRows > 0
-    ? Math.round((disconnectedCount / overview.sourceRows) * 100)
-    : 0;
-
-  // Flatten all dispositions for the detailed MIS table
-  const allDispositions = categories.flatMap((cat) =>
-    cat.dispositions.map((disp) => {
-      const categoryTotal = cat.dispositions.reduce((acc, d) => acc + d.count, 0);
-      const categoryShare = categoryTotal > 0 ? Math.round((disp.count / categoryTotal) * 100) : 0;
-      const baseShare = overview.sourceRows > 0 ? ((disp.count / overview.sourceRows) * 100).toFixed(1) : '0.0';
-
-      return {
-        category: cat.category,
-        name: disp.name,
-        count: disp.count,
-        categoryTotal,
-        categoryShare,
-        baseShare,
-      };
-    })
-  );
-
-  // Filter dispositions based on search and selected category
-  const filteredDispositions = allDispositions.filter((item) => {
-    const matchesCategory = selectedCategory === 'ALL' || item.category === selectedCategory;
-    const matchesSearch = item.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                          item.category.toLowerCase().includes(searchTerm.toLowerCase());
-    return matchesCategory && matchesSearch;
-  });
-
-  const getCategoryMeta = (categoryName: string) => {
-    const lower = categoryName.toLowerCase();
-    if (lower.includes('ready') || lower.includes('pickup')) {
-      return {
-        color: 'var(--accent-green)',
-        badgeClass: 'badge-green',
-        icon: <CheckCircle2 size={16} color="var(--accent-green)" />,
-        actionTag: 'Field Technician Dispatched',
-        tagClass: 'badge-green',
-      };
-    }
-    if (lower.includes('callback')) {
-      return {
-        color: 'var(--accent-blue)',
-        badgeClass: 'badge-blue',
-        icon: <Clock size={16} color="var(--accent-blue)" />,
-        actionTag: 'Callback Scheduled in CRM',
-        tagClass: 'badge-blue',
-      };
-    }
-    if (lower.includes('will not return') || lower.includes('refus')) {
-      return {
-        color: 'var(--accent-rose)',
-        badgeClass: 'badge-red',
-        icon: <ShieldAlert size={16} color="var(--accent-rose)" />,
-        actionTag: 'Closed / Terminal Exception',
-        tagClass: 'badge-red',
-      };
-    }
-    if (lower.includes('other')) {
-      return {
-        color: 'var(--accent-purple)',
-        badgeClass: 'badge-purple',
-        icon: <HelpCircle size={16} color="var(--accent-purple)" />,
-        actionTag: 'Airtel 121 / DND Registry',
-        tagClass: 'badge-purple',
-      };
-    }
-    // Unconnected / Multiple attempts
-    return {
-      color: 'var(--accent-amber)',
-      badgeClass: 'badge-amber',
-      icon: <PhoneMissed size={16} color="var(--accent-amber)" />,
-      actionTag: '3-Hour Cooldown Retry Queue',
-      tagClass: 'badge-amber',
-    };
-  };
-
-  const getDispositionAction = (name: string, category: string) => {
-    const n = name.toLowerCase();
-    if (n.includes('confirmed for pickup')) return { label: 'Technician Assigned', variant: 'badge-green' };
-    if (n.includes('willing to pickup')) return { label: 'Awaiting Date Selection', variant: 'badge-blue' };
-    if (n.includes('callback')) return { label: 'Queued for Re-contact', variant: 'badge-blue' };
-    if (n.includes('already returned')) return { label: 'Inventory Reconciled', variant: 'badge-slate' };
-    if (n.includes('refused')) return { label: 'Customer Refusal Logged', variant: 'badge-red' };
-    if (n.includes('damaged') || n.includes('lost')) return { label: 'Hardware Write-Off', variant: 'badge-red' };
-    if (n.includes('recharged') || n.includes('recharge')) return { label: 'Retention Verified', variant: 'badge-green' };
-    if (n.includes('refund')) return { label: 'Escalated to 121 Billing', variant: 'badge-amber' };
-    if (n.includes('wrong number')) return { label: 'Lead Invalidated', variant: 'badge-slate' };
-    if (n.includes('do not call')) return { label: 'DND Flagged', variant: 'badge-red' };
-    if (n.includes('language')) return { label: 'Regional Queue Routing', variant: 'badge-purple' };
-    if (n.includes('disconnected')) return { label: 'Auto-Retry (3h Cooldown)', variant: 'badge-amber' };
-    if (n.includes('no answer') || n.includes('voicemail')) return { label: 'Slot 2/3 Retry Scheduled', variant: 'badge-amber' };
-    if (n.includes('not reached')) return { label: 'Max Attempts Exhausted', variant: 'badge-slate' };
-    return { label: getCategoryMeta(category).actionTag, variant: getCategoryMeta(category).tagClass };
-  };
-
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      {/* 5 Audited KPI Cards in One Line */}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 28, paddingBottom: 32 }}>
+      {/* Top Header matching screenshot */}
       <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
-        gap: 12,
+        display: 'flex',
+        alignItems: 'flex-start',
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
+        gap: 16,
       }}>
-        {/* Total Base Uploaded */}
-        <div className="glass-panel" style={{ padding: '16px 14px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-            <span style={{ fontSize: '0.70rem', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
-              Total Base Uploaded
-            </span>
-            <div style={{
-              width: 30,
-              height: 30,
-              borderRadius: 8,
-              background: 'rgba(59, 130, 246, 0.15)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'var(--accent-blue)',
-              flexShrink: 0,
-            }}>
-              <Users size={16} />
-            </div>
+        <div>
+          <div style={{
+            fontSize: '0.72rem',
+            fontWeight: 800,
+            letterSpacing: '0.08em',
+            color: '#38BDF8',
+            marginBottom: 6,
+            textTransform: 'uppercase',
+          }}>
+            CAMPAIGNS
           </div>
-          <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#fff', lineHeight: 1.1 }}>
-            {overview.sourceRows.toLocaleString()}
-          </div>
-          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            Unique Contacts: <strong style={{ color: '#fff' }}>{overview.uniqueContacts}</strong>
-          </div>
+
+          <h1 style={{
+            fontSize: '1.95rem',
+            fontWeight: 700,
+            color: '#FFFFFF',
+            letterSpacing: '-0.025em',
+            lineHeight: 1.2,
+          }}>
+            Voice campaigns
+          </h1>
+
+          <p style={{
+            fontSize: '0.9rem',
+            color: '#94A3B8',
+            marginTop: 6,
+          }}>
+            Manage and monitor every CuroAI outreach campaign.
+          </p>
         </div>
 
-        {/* Connected Calls (Ring Done) */}
-        <div className="glass-panel" style={{ padding: '16px 14px', borderColor: 'rgba(16, 185, 129, 0.25)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-            <span style={{ fontSize: '0.70rem', fontWeight: 700, color: 'var(--accent-green)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
-              Connected (Ring Done)
-            </span>
-            <div style={{
-              width: 30,
-              height: 30,
-              borderRadius: 8,
-              background: 'rgba(16, 185, 129, 0.15)',
+        {/* Action Button: + Create campaign */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button
+            onClick={onImportModalOpen}
+            style={{
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'center',
-              color: 'var(--accent-green)',
-              flexShrink: 0,
-            }}>
-              <PhoneCall size={16} />
-            </div>
-          </div>
-          <div style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--accent-green)', lineHeight: 1.1 }}>
-            {overview.connectedCalls.toLocaleString()}
-          </div>
-          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            Connection Rate: <strong style={{ color: 'var(--accent-green)' }}>{connectedPercent}%</strong>
-          </div>
-        </div>
-
-        {/* Disconnected / Ring No Answer */}
-        <div className="glass-panel" style={{ padding: '16px 14px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-            <span style={{ fontSize: '0.70rem', fontWeight: 700, color: 'var(--accent-amber)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
-              Disconnected / RNA
-            </span>
-            <div style={{
-              width: 30,
-              height: 30,
-              borderRadius: 8,
-              background: 'rgba(245, 158, 11, 0.15)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'var(--accent-amber)',
-              flexShrink: 0,
-            }}>
-              <PhoneOff size={16} />
-            </div>
-          </div>
-          <div style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--accent-amber)', lineHeight: 1.1 }}>
-            {disconnectedCount > 0 ? disconnectedCount.toLocaleString() : 0}
-          </div>
-          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            Retry: {disconnectedPercent}%
-          </div>
-        </div>
-
-        {/* Total Call Attempts */}
-        <div className="glass-panel" style={{ padding: '16px 14px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-            <span style={{ fontSize: '0.70rem', fontWeight: 700, color: 'var(--accent-cyan)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
-              Total Dial Attempts
-            </span>
-            <div style={{
-              width: 30,
-              height: 30,
-              borderRadius: 8,
-              background: 'rgba(6, 182, 212, 0.15)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'var(--accent-cyan)',
-              flexShrink: 0,
-            }}>
-              <BarChart3 size={16} />
-            </div>
-          </div>
-          <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#fff', lineHeight: 1.1 }}>
-            {overview.totalAttempts.toLocaleString()}
-          </div>
-          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            Max 3 attempts/sub
-          </div>
-        </div>
-
-        {/* Closed / Upgraded Conversions */}
-        <div className="glass-panel" style={{ padding: '16px 14px', borderColor: 'rgba(16, 185, 129, 0.3)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-            <span style={{ fontSize: '0.70rem', fontWeight: 700, color: 'var(--accent-green)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
-              Pickup Scheduled
-            </span>
-            <div style={{
-              width: 30,
-              height: 30,
-              borderRadius: 8,
-              background: 'rgba(16, 185, 129, 0.15)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'var(--accent-green)',
-              flexShrink: 0,
-            }}>
-              <CalendarCheck size={16} />
-            </div>
-          </div>
-          <div style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--accent-green)', lineHeight: 1.1 }}>
-            {overview.dispositionedContacts.toLocaleString()}
-          </div>
-          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            Technician confirmed
-          </div>
+              gap: 8,
+              background: '#2563EB',
+              border: '1px solid rgba(59, 130, 246, 0.4)',
+              color: '#FFFFFF',
+              padding: '10px 20px',
+              borderRadius: 10,
+              fontSize: '0.88rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              boxShadow: '0 4px 16px rgba(37, 99, 235, 0.35)',
+              transition: 'all 0.18s ease',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = '#1D4ED8';
+              e.currentTarget.style.transform = 'translateY(-1px)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = '#2563EB';
+              e.currentTarget.style.transform = 'translateY(0)';
+            }}
+          >
+            <Plus size={16} strokeWidth={2.5} />
+            Create campaign
+          </button>
         </div>
       </div>
 
-      {/* Categorical Breakdown Container */}
-      <div className="glass-panel" style={{ padding: 24, borderRadius: 'var(--radius-lg)' }}>
-        {/* Section Title & Search */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          flexWrap: 'wrap',
-          gap: 16,
-          marginBottom: 20,
-        }}>
-          <div>
-            <h3 style={{ fontSize: '1.15rem', fontWeight: 800, color: '#fff', letterSpacing: '-0.01em' }}>
-              Audited Category Dispositions Breakdown
-            </h3>
-            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-              Comprehensive telecom auditing matrix with sub-disposition volume, category share, and pipeline action
-            </p>
-          </div>
-
-          {/* Search Box */}
-          <div style={{ position: 'relative', width: 260 }}>
-            <Search size={15} color="var(--text-muted)" style={{ position: 'absolute', left: 12, top: 10 }} />
-            <input
-              type="text"
-              placeholder="Search dispositions..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              style={{
-                width: '100%',
-                padding: '7px 12px 7px 34px',
-                borderRadius: 'var(--radius-md)',
-                background: 'rgba(15, 23, 42, 0.8)',
-                border: '1px solid var(--border-light)',
-                color: '#fff',
-                fontSize: '0.82rem',
-                outline: 'none',
-              }}
-            />
-          </div>
+      {/* Filter and Search Bar with 4 stages matching user screenshot */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
+        gap: 16,
+      }}>
+        {/* Search input with magnifying glass */}
+        <div style={{ position: 'relative', width: 340, maxWidth: '100%' }}>
+          <Search size={16} style={{
+            position: 'absolute',
+            left: 14,
+            top: '50%',
+            transform: 'translateY(-50%)',
+            color: '#64748B',
+            pointerEvents: 'none',
+          }} />
+          <input
+            type="text"
+            placeholder="Search..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '10px 14px 10px 38px',
+              borderRadius: 10,
+              background: '#0E121B',
+              border: '1px solid rgba(255, 255, 255, 0.08)',
+              color: '#FFFFFF',
+              fontSize: '0.86rem',
+              outline: 'none',
+              transition: 'border-color 0.15s ease',
+            }}
+            onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.5)')}
+            onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.08)')}
+          />
         </div>
 
-        {/* Category Filter Pills */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          flexWrap: 'wrap',
-          paddingBottom: 16,
-          borderBottom: '1px solid var(--border-subtle)',
-          marginBottom: 16,
-        }}>
-          <button
-            onClick={() => setSelectedCategory('ALL')}
+        {/* Dropdown Filter matching screenshot: All campaigns, Running, Paused, Completed, Stopped */}
+        <div style={{ position: 'relative' }}>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as any)}
             style={{
-              padding: '6px 14px',
-              borderRadius: 20,
-              fontSize: '0.78rem',
+              padding: '10px 38px 10px 16px',
+              borderRadius: 10,
+              background: '#0E121B',
+              border: '1px solid rgba(255, 255, 255, 0.14)',
+              color: '#FFFFFF',
+              fontSize: '0.86rem',
               fontWeight: 600,
-              background: selectedCategory === 'ALL' ? 'var(--airtel-red)' : 'rgba(255, 255, 255, 0.05)',
-              color: selectedCategory === 'ALL' ? '#fff' : 'var(--text-secondary)',
-              border: selectedCategory === 'ALL' ? '1px solid var(--airtel-red)' : '1px solid var(--border-subtle)',
+              appearance: 'none',
+              WebkitAppearance: 'none',
               cursor: 'pointer',
-              transition: 'all 0.15s ease',
+              outline: 'none',
+              boxShadow: '0 4px 14px rgba(0, 0, 0, 0.4)',
             }}
           >
-            All Categories ({allDispositions.length})
-          </button>
+            <option value="ALL">All campaigns</option>
+            <option value="RUNNING">Running</option>
+            <option value="PAUSED">Paused</option>
+            <option value="COMPLETED">Completed</option>
+            <option value="STOPPED">Stopped</option>
+          </select>
+          <ChevronDown size={14} style={{
+            position: 'absolute',
+            right: 14,
+            top: '50%',
+            transform: 'translateY(-50%)',
+            color: '#94A3B8',
+            pointerEvents: 'none',
+          }} />
+        </div>
+      </div>
 
-          {categories.map((cat, idx) => {
-            const meta = getCategoryMeta(cat.category);
-            const isSelected = selectedCategory === cat.category;
-            const catTotal = cat.dispositions.reduce((acc, d) => acc + d.count, 0);
+      {/* Grid of Campaign Cards (3 Columns) */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(350px, 1fr))',
+        gap: 20,
+      }}>
+        {filteredCampaigns.map((camp, idx) => {
+          const normStatus = normalizeStatus(camp.status);
+          const barColor = getProgressBarColor(normStatus, idx);
+          const progress = camp.progress_percent ?? (normStatus === 'COMPLETED' ? 100 : 75);
+          const isLoadingThis = isUpdatingId === camp.id;
 
-            return (
-              <button
-                key={idx}
-                onClick={() => setSelectedCategory(cat.category)}
-                style={{
+          return (
+            <div
+              key={camp.id}
+              onClick={() => setSelectedCampaign(camp)}
+              style={{
+                background: '#0E121B',
+                border: '1px solid rgba(255, 255, 255, 0.08)',
+                borderRadius: 14,
+                padding: '22px 24px',
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'space-between',
+                gap: 16,
+                transition: 'border-color 0.2s ease, transform 0.2s ease',
+                opacity: isLoadingThis ? 0.7 : 1,
+                cursor: 'pointer',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+                e.currentTarget.style.transform = 'translateY(-2px)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.08)';
+                e.currentTarget.style.transform = 'translateY(0)';
+              }}
+            >
+              {/* Card Header: Title + Action Buttons */}
+              <div>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                  marginBottom: 10,
+                }}>
+                  <h3 style={{
+                    fontSize: '0.98rem',
+                    fontWeight: 700,
+                    color: '#FFFFFF',
+                    lineHeight: 1.35,
+                    flex: 1,
+                  }}>
+                    {camp.name}
+                  </h3>
+
+                  {/* Play & Stage controls */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                    {/* Right-most Play Button: opens campaign details overview matching screenshot */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedCampaign(camp);
+                      }}
+                      title="Open Campaign Overview & Calls"
+                      aria-label="Open Campaign"
+                      style={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: 6,
+                        background: 'rgba(56, 189, 248, 0.12)',
+                        border: '1px solid rgba(56, 189, 248, 0.35)',
+                        color: '#38BDF8',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: 'pointer',
+                        transition: 'all 0.15s ease',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'rgba(56, 189, 248, 0.25)';
+                        e.currentTarget.style.borderColor = 'rgba(56, 189, 248, 0.6)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'rgba(56, 189, 248, 0.12)';
+                        e.currentTarget.style.borderColor = 'rgba(56, 189, 248, 0.35)';
+                      }}
+                    >
+                      <Play size={13} fill="currentColor" />
+                    </button>
+
+                    {/* Stage Toggle (Pause / Resume) */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (normStatus === 'RUNNING') {
+                          handleStageChange(camp.id, 'PAUSED');
+                        } else {
+                          handleStageChange(camp.id, 'RUNNING');
+                        }
+                      }}
+                      title={normStatus === 'RUNNING' ? 'Pause Campaign' : 'Start / Resume Campaign'}
+                      style={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: 6,
+                        background: 'rgba(255, 255, 255, 0.04)',
+                        border: '1px solid rgba(255, 255, 255, 0.1)',
+                        color: normStatus === 'RUNNING' ? '#10B981' : '#94A3B8',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: 'pointer',
+                        transition: 'all 0.15s ease',
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)')}
+                    >
+                      {normStatus === 'RUNNING' ? <Pause size={13} /> : <Play size={13} fill="currentColor" />}
+                    </button>
+
+                    {/* Stop / Reactivate Button */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (normStatus === 'STOPPED') {
+                          handleStageChange(camp.id, 'RUNNING');
+                        } else {
+                          handleStageChange(camp.id, 'STOPPED');
+                        }
+                      }}
+                      title={normStatus === 'STOPPED' ? 'Reactivate Campaign' : 'Stop Campaign'}
+                      style={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: 6,
+                        background: 'rgba(255, 255, 255, 0.04)',
+                        border: '1px solid rgba(255, 255, 255, 0.1)',
+                        color: normStatus === 'STOPPED' ? '#FB7185' : '#64748B',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: 'pointer',
+                        transition: 'all 0.15s ease',
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(251, 113, 133, 0.15)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)')}
+                    >
+                      {normStatus === 'STOPPED' ? <RotateCcw size={12} /> : <Square size={12} fill="currentColor" />}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Status Badge for all 4 stages: RUNNING, PAUSED, COMPLETED, STOPPED */}
+                <div style={{ marginBottom: 12 }}>
+                  {normStatus === 'RUNNING' && (
+                    <span style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 5,
+                      padding: '2px 8px',
+                      borderRadius: 4,
+                      background: 'rgba(16, 185, 129, 0.12)',
+                      border: '1px solid rgba(16, 185, 129, 0.35)',
+                      color: '#10B981',
+                      fontSize: '0.68rem',
+                      fontWeight: 700,
+                      letterSpacing: '0.04em',
+                    }}>
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10B981', display: 'inline-block' }} />
+                      RUNNING
+                    </span>
+                  )}
+
+                  {normStatus === 'PAUSED' && (
+                    <span style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 5,
+                      padding: '2px 8px',
+                      borderRadius: 4,
+                      background: 'rgba(245, 158, 11, 0.12)',
+                      border: '1px solid rgba(245, 158, 11, 0.35)',
+                      color: '#F59E0B',
+                      fontSize: '0.68rem',
+                      fontWeight: 700,
+                      letterSpacing: '0.04em',
+                    }}>
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#F59E0B', display: 'inline-block' }} />
+                      PAUSED
+                    </span>
+                  )}
+
+                  {normStatus === 'COMPLETED' && (
+                    <span style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 5,
+                      padding: '2px 8px',
+                      borderRadius: 4,
+                      background: 'rgba(168, 85, 247, 0.12)',
+                      border: '1px solid rgba(168, 85, 247, 0.35)',
+                      color: '#C084FC',
+                      fontSize: '0.68rem',
+                      fontWeight: 700,
+                      letterSpacing: '0.04em',
+                    }}>
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#C084FC', display: 'inline-block' }} />
+                      COMPLETED
+                    </span>
+                  )}
+
+                  {normStatus === 'STOPPED' && (
+                    <span style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 5,
+                      padding: '2px 8px',
+                      borderRadius: 4,
+                      background: 'rgba(239, 68, 68, 0.12)',
+                      border: '1px solid rgba(239, 68, 68, 0.35)',
+                      color: '#EF4444',
+                      fontSize: '0.68rem',
+                      fontWeight: 700,
+                      letterSpacing: '0.04em',
+                    }}>
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#EF4444', display: 'inline-block' }} />
+                      STOPPED
+                    </span>
+                  )}
+                </div>
+
+                {/* Description */}
+                <p style={{
+                  fontSize: '0.82rem',
+                  color: '#94A3B8',
+                  lineHeight: 1.5,
+                  minHeight: 48,
+                  marginBottom: 14,
+                }}>
+                  {camp.description}
+                </p>
+
+                {/* Contacts Meta Row */}
+                <div style={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: 6,
-                  padding: '6px 14px',
-                  borderRadius: 20,
+                  gap: 16,
                   fontSize: '0.78rem',
-                  fontWeight: 600,
-                  background: isSelected ? 'rgba(255, 255, 255, 0.12)' : 'rgba(255, 255, 255, 0.04)',
-                  color: isSelected ? '#fff' : 'var(--text-secondary)',
-                  border: isSelected ? `1px solid ${meta.color}` : '1px solid var(--border-subtle)',
-                  cursor: 'pointer',
-                  transition: 'all 0.15s ease',
-                }}
-              >
-                {meta.icon}
-                <span>{cat.category}</span>
-                <span style={{
-                  background: 'rgba(0, 0, 0, 0.3)',
-                  padding: '1px 6px',
-                  borderRadius: 10,
-                  fontSize: '0.7rem',
-                  color: isSelected ? meta.color : 'var(--text-muted)',
+                  color: '#64748B',
+                  marginBottom: 18,
+                  flexWrap: 'wrap',
                 }}>
-                  {catTotal}
-                </span>
-              </button>
-            );
-          })}
-        </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <Users size={14} color="#94A3B8" />
+                    <span style={{ color: '#E2E8F0', fontWeight: 500 }}>
+                      {camp.total_contacts.toLocaleString()} contacts
+                    </span>
+                  </div>
 
-        {/* Executive MIS Structured Table */}
-        <div style={{ overflowX: 'auto', borderRadius: 'var(--radius-md)' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.86rem' }}>
-            <thead>
-              <tr style={{
-                background: 'rgba(255, 255, 255, 0.03)',
-                borderBottom: '1px solid var(--border-subtle)',
-                color: 'var(--text-muted)',
-                fontSize: '0.74rem',
-                textTransform: 'uppercase',
-                letterSpacing: '0.04em',
-              }}>
-                <th style={{ padding: '12px 16px', width: '22%' }}>Category Group</th>
-                <th style={{ padding: '12px 16px', width: '26%' }}>Audited Sub-Disposition</th>
-                <th style={{ padding: '12px 16px', textAlign: 'center', width: '12%' }}>Volume (Count)</th>
-                <th style={{ padding: '12px 16px', width: '18%' }}>Category Share (%)</th>
-                <th style={{ padding: '12px 16px', textAlign: 'center', width: '10%' }}>% of Base</th>
-                <th style={{ padding: '12px 16px', textAlign: 'right', width: '12%' }}>Pipeline Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredDispositions.length === 0 ? (
-                <tr>
-                  <td colSpan={6} style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>
-                    No dispositions found matching criteria.
-                  </td>
-                </tr>
-              ) : (
-                filteredDispositions.map((disp, idx) => {
-                  const meta = getCategoryMeta(disp.category);
-                  const action = getDispositionAction(disp.name, disp.category);
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <PhoneCall size={14} color="#94A3B8" />
+                    <span style={{ color: '#E2E8F0', fontWeight: 500 }}>
+                      {camp.unique_called.toLocaleString()} unique called
+                    </span>
+                  </div>
 
-                  return (
-                    <tr
-                      key={idx}
-                      style={{
-                        borderBottom: '1px solid var(--border-subtle)',
-                        transition: 'background 0.15s ease',
-                      }}
-                      onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)')}
-                      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                    >
-                      {/* Category */}
-                      <td style={{ padding: '14px 16px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          {meta.icon}
-                          <span style={{ fontWeight: 600, color: '#fff', fontSize: '0.84rem' }}>
-                            {disp.category}
-                          </span>
-                        </div>
-                      </td>
+                  <div style={{ color: '#64748B' }}>
+                    {camp.service || 'curoai_service'}
+                  </div>
+                </div>
 
-                      {/* Sub-disposition Name */}
-                      <td style={{ padding: '14px 16px' }}>
-                        <div style={{ fontWeight: 600, color: 'var(--text-primary, #f1f5f9)', fontSize: '0.86rem' }}>
-                          {disp.name}
-                        </div>
-                      </td>
+                {/* Progress Bar & Telephony Breakdown */}
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    fontSize: '0.76rem',
+                    marginBottom: 6,
+                  }}>
+                    <span style={{ color: '#94A3B8', fontWeight: 500 }}>Progress</span>
+                    <span style={{ color: '#FFFFFF', fontWeight: 700 }}>{progress}%</span>
+                  </div>
 
-                      {/* Volume Count */}
-                      <td style={{ padding: '14px 16px', textAlign: 'center' }}>
-                        <span style={{
-                          display: 'inline-block',
-                          padding: '3px 10px',
-                          borderRadius: 6,
-                          background: disp.count > 0 ? 'rgba(255, 255, 255, 0.06)' : 'transparent',
-                          color: disp.count > 0 ? '#fff' : 'var(--text-muted)',
-                          fontWeight: 700,
-                          fontSize: '0.88rem',
-                        }}>
-                          {disp.count.toLocaleString()}
-                        </span>
-                      </td>
+                  {/* Bar */}
+                  <div style={{
+                    height: 5,
+                    width: '100%',
+                    background: 'rgba(255, 255, 255, 0.08)',
+                    borderRadius: 3,
+                    overflow: 'hidden',
+                    marginBottom: 10,
+                  }}>
+                    <div style={{
+                      height: '100%',
+                      width: `${progress}%`,
+                      background: barColor,
+                      borderRadius: 3,
+                      transition: 'width 0.4s ease',
+                    }} />
+                  </div>
 
-                      {/* Category Share with Progress Bar */}
-                      <td style={{ padding: '14px 16px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                          <div style={{
-                            flex: 1,
-                            height: 6,
-                            background: 'rgba(255, 255, 255, 0.08)',
-                            borderRadius: 3,
-                            overflow: 'hidden',
-                          }}>
-                            <div style={{
-                              width: `${Math.min(disp.categoryShare, 100)}%`,
-                              height: '100%',
-                              background: meta.color,
-                              borderRadius: 3,
-                              transition: 'width 0.4s ease',
-                            }} />
-                          </div>
-                          <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', width: 36, textAlign: 'right', fontWeight: 600 }}>
-                            {disp.categoryShare}%
-                          </span>
-                        </div>
-                      </td>
+                  {/* Outcomes Row */}
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 16,
+                    fontSize: '0.78rem',
+                  }}>
+                    <span style={{ color: '#10B981', display: 'flex', alignItems: 'center', gap: 4, fontWeight: 500 }}>
+                      <Check size={13} strokeWidth={2.5} /> {camp.successful_calls.toLocaleString()} successful
+                    </span>
+                    <span style={{ color: '#EF4444', display: 'flex', alignItems: 'center', gap: 4, fontWeight: 500 }}>
+                      <X size={13} strokeWidth={2.5} /> {camp.failed_calls.toLocaleString()} failed
+                    </span>
+                    <span style={{ color: '#F59E0B', display: 'flex', alignItems: 'center', gap: 4, fontWeight: 500 }}>
+                      <Clock size={13} /> {camp.remaining_calls.toLocaleString()} remaining
+                    </span>
+                  </div>
+                </div>
+              </div>
 
-                      {/* Base Share */}
-                      <td style={{ padding: '14px 16px', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.82rem', fontWeight: 600 }}>
-                        {disp.baseShare}%
-                      </td>
+              {/* Card Footer: Credits, Date & Download CSV Button */}
+              <div>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  paddingTop: 12,
+                  borderTop: '1px solid rgba(255, 255, 255, 0.05)',
+                  marginBottom: 12,
+                }}>
+                  <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#38BDF8' }}>
+                    {camp.credits_used ?? 0} / {(camp.total_credits || camp.total_contacts).toLocaleString()} credits
+                  </div>
+                  <div style={{ fontSize: '0.78rem', color: '#64748B' }}>
+                    {camp.execution_date || 'October 2026'}
+                  </div>
+                </div>
 
-                      {/* Action Tag */}
-                      <td style={{ padding: '14px 16px', textAlign: 'right' }}>
-                        <span className={`badge ${action.variant}`} style={{ fontSize: '0.72rem', whiteSpace: 'nowrap' }}>
-                          {action.label}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Table Summary Footer */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          flexWrap: 'wrap',
-          gap: 12,
-          marginTop: 18,
-          paddingTop: 16,
-          borderTop: '1px solid var(--border-subtle)',
-          fontSize: '0.8rem',
-          color: 'var(--text-muted)',
-        }}>
-          <div>
-            Showing <strong style={{ color: '#fff' }}>{filteredDispositions.length}</strong> audited dispositions across{' '}
-            <strong style={{ color: '#fff' }}>{categories.length}</strong> campaign categories
-          </div>
-          <div style={{ display: 'flex', gap: 16 }}>
-            <span>Base Penetration: <strong style={{ color: 'var(--accent-cyan)' }}>{overview.sourceRows > 0 ? Math.round((overview.totalAttempts / overview.sourceRows) * 100) : 0}%</strong></span>
-            <span>Audited Closures: <strong style={{ color: 'var(--accent-green)' }}>{overview.dispositionedContacts}</strong></span>
-          </div>
-        </div>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDownloadCsv(camp);
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '9px 14px',
+                    borderRadius: 8,
+                    background: 'rgba(255, 255, 255, 0.03)',
+                    border: '1px solid rgba(255, 255, 255, 0.08)',
+                    color: '#E2E8F0',
+                    fontSize: '0.82rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 8,
+                    transition: 'all 0.15s ease',
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)';
+                    e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.03)';
+                    e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.08)';
+                  }}
+                >
+                  <Download size={14} color="#94A3B8" />
+                  Download report (CSV)
+                </button>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

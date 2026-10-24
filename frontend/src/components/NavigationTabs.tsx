@@ -1,5 +1,5 @@
 import React from 'react';
-import { BarChart3, Users, PhoneCall, RotateCcw, BookOpen } from 'lucide-react';
+import { BarChart3, Users, PhoneCall, RotateCcw } from 'lucide-react';
 import type { TabKey } from '../types';
 
 interface NavigationTabsProps {
@@ -44,13 +44,6 @@ export const NavigationTabs: React.FC<NavigationTabsProps> = ({
       icon: <RotateCcw size={16} />,
       badge: retriesCount > 0 ? retriesCount : null,
       badgeColor: 'badge-amber',
-    },
-    {
-      id: 'SOP' as TabKey,
-      label: '17 FAQ & SOP Scenarios',
-      icon: <BookOpen size={16} />,
-      badge: '17 SOP',
-      badgeColor: 'badge-neutral',
     },
   ];
 
