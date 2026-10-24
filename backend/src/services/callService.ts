@@ -499,7 +499,11 @@ export class CallService {
    */
   private async evaluateRetry(customerId: string, disposition: string, _date: string | null) {
     const custRes = await query(
-      'SELECT id, total_attempts, max_attempts, is_closed, current_disposition FROM customers WHERE id = $1',
+      `SELECT c.id, c.total_attempts, c.max_attempts, c.is_closed, c.current_disposition, c.campaign_id,
+              cam.retry_attempts, cam.retry_delay_minutes
+       FROM customers c
+       LEFT JOIN campaigns cam ON c.campaign_id = cam.id
+       WHERE c.id = $1`,
       [customerId]
     );
     if (custRes.rows.length === 0) return;
@@ -523,47 +527,51 @@ export class CallService {
       return;
     }
 
-    // "Willing, no date": allow exactly ONE more follow-up call. Only grant it the first time,
-    // otherwise a customer who keeps saying "willing" would be called forever.
+    // Determine effective max attempts and retry delay
+    const maxAttempts = (cust.retry_attempts !== null && cust.retry_attempts !== undefined)
+      ? cust.retry_attempts
+      : (cust.max_attempts || 3);
+
+    const retryDelayMinutes = (cust.retry_delay_minutes !== null && cust.retry_delay_minutes !== undefined)
+      ? cust.retry_delay_minutes
+      : 180;
+
+    // "Willing, no date": allow exactly ONE more follow-up call.
     if (disposition === 'WILLING_TO_PICKUP' && cust.current_disposition !== 'WILLING_TO_PICKUP') {
       const newMax = cust.total_attempts + 1;
       await query(
         `UPDATE customers
          SET current_disposition = $1,
              max_attempts = $2,
-             next_attempt_time = NOW() + INTERVAL '3 hours'
-         WHERE id = $3`,
-        [disposition, newMax, customerId]
+             next_attempt_time = NOW() + ($3 || ' minutes')::interval
+         WHERE id = $4`,
+        [disposition, newMax, retryDelayMinutes, customerId]
       );
-      logger.info({ customerId, disposition, newMax }, 'WILLING_TO_PICKUP: scheduled one follow-up call');
+      logger.info({ customerId, disposition, newMax, retryDelayMinutes }, 'WILLING_TO_PICKUP: scheduled one follow-up call');
       return;
     }
 
-    if (cust.total_attempts >= cust.max_attempts) {
+    if (cust.total_attempts >= maxAttempts) {
       await query(
         `UPDATE customers
          SET current_disposition = 'NOT_REACHED', is_closed = TRUE, next_attempt_time = NULL
          WHERE id = $1`,
         [customerId]
       );
-      logger.info({ customerId, attempts: cust.total_attempts }, 'Max attempts reached. Closed customer as NOT_REACHED');
+      logger.info({ customerId, attempts: cust.total_attempts, maxAttempts }, 'Max attempts reached. Closed customer as NOT_REACHED');
       return;
     }
 
-    const nextAttemptSql =
-      cust.total_attempts === 1
-        ? "NOW() + INTERVAL '3 hours'"
-        : "(DATE_TRUNC('day', NOW() + INTERVAL '1 day') + INTERVAL '10 hours 30 minutes')";
-
+    // Retries apply to every not-connected result, including no answer, busy, and failed or unreachable calls.
     await query(
       `UPDATE customers
        SET current_disposition = $1,
-           next_attempt_time = ${nextAttemptSql}
-       WHERE id = $2`,
-      [disposition, customerId]
+           next_attempt_time = NOW() + ($2 || ' minutes')::interval
+       WHERE id = $3`,
+      [disposition, retryDelayMinutes, customerId]
     );
 
-    logger.info({ customerId, disposition, attempt: cust.total_attempts }, 'Scheduled next retry attempt for customer');
+    logger.info({ customerId, disposition, attempt: cust.total_attempts, maxAttempts, retryDelayMinutes }, 'Scheduled next retry attempt for customer');
   }
 
   /**
@@ -578,6 +586,15 @@ export class CallService {
       throw new AppError(`Call not found: ${callId}`, 404);
     }
     const call = callRes.rows[0];
+
+    // Ensure campaign_id is linked if customer belongs to a campaign
+    if (!call.campaign_id && call.customer_id) {
+      const custCampRes = await query('SELECT campaign_id FROM customers WHERE id = $1', [call.customer_id]);
+      if (custCampRes.rows[0]?.campaign_id) {
+        call.campaign_id = custCampRes.rows[0].campaign_id;
+        await query('UPDATE calls SET campaign_id = $1 WHERE id = $2', [call.campaign_id, callId]);
+      }
+    }
 
     const transcriptJson = data.transcript ? JSON.stringify(data.transcript) : null;
     const baseOutcome = data.outcome || finalDisp.toLowerCase();

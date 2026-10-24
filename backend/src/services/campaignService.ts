@@ -1,5 +1,6 @@
 import { pool } from '../db/index.js';
 import { logger } from '../config/logger.js';
+import { callService } from './callService.js';
 
 export type CampaignStatus = 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'STOPPED' | 'Running' | 'Paused' | 'Completed' | 'Stopped';
 
@@ -18,6 +19,20 @@ export interface CampaignDbRow {
   credits_used: number;
   total_credits: number;
   execution_date: string;
+  script?: string;
+  language?: string;
+  voice_pipeline?: string;
+  schedule_start_time?: string;
+  schedule_end_time?: string;
+  operating_days?: string[];
+  max_concurrent_calls?: number;
+  calls_per_minute?: number;
+  retry_attempts?: number;
+  retry_delay_minutes?: number;
+  max_call_duration_minutes?: number;
+  expected_dispositions?: string[];
+  total_talk_time_seconds?: number;
+  avg_duration_seconds?: number;
   created_at: string;
   updated_at: string;
 }
@@ -44,26 +59,38 @@ export class CampaignService {
    */
   async listCampaigns(status?: string, search?: string): Promise<CampaignDbRow[]> {
     let query = `
-      SELECT id, name, description, status, service, progress_percent,
-             total_contacts, unique_called, successful_calls, failed_calls,
-             remaining_calls, credits_used, total_credits, execution_date,
-             created_at, updated_at
-      FROM campaigns
+      SELECT 
+        c.*,
+        COALESCE(cs.total_talk_time_seconds, 0)::INT as total_talk_time_seconds,
+        COALESCE(cs.avg_duration_seconds, 0)::INT as avg_duration_seconds
+      FROM campaigns c
+      LEFT JOIN (
+        SELECT 
+          campaign_id,
+          SUM(COALESCE(duration_seconds, 0))::INT as total_talk_time_seconds,
+          CASE 
+            WHEN COUNT(CASE WHEN duration_seconds > 0 THEN 1 END) > 0 
+            THEN ROUND(SUM(COALESCE(duration_seconds, 0))::DECIMAL / COUNT(CASE WHEN duration_seconds > 0 THEN 1 END))::INT
+            ELSE 0 
+          END as avg_duration_seconds
+        FROM calls
+        GROUP BY campaign_id
+      ) cs ON c.id = cs.campaign_id
       WHERE 1=1
     `;
     const params: any[] = [];
 
     if (status && status !== 'ALL') {
       params.push(status.toUpperCase());
-      query += ` AND UPPER(status) = $${params.length}`;
+      query += ` AND UPPER(c.status) = $${params.length}`;
     }
 
     if (search && search.trim()) {
       params.push(`%${search.trim().toLowerCase()}%`);
-      query += ` AND (LOWER(name) LIKE $${params.length} OR LOWER(description) LIKE $${params.length})`;
+      query += ` AND (LOWER(c.name) LIKE $${params.length} OR LOWER(c.description) LIKE $${params.length})`;
     }
 
-    query += ` ORDER BY created_at DESC`;
+    query += ` ORDER BY c.created_at DESC`;
 
     const res = await pool.query(query, params);
     return res.rows;
@@ -73,7 +100,27 @@ export class CampaignService {
    * Get single campaign by ID
    */
   async getCampaign(id: string): Promise<CampaignDbRow | null> {
-    const res = await pool.query('SELECT * FROM campaigns WHERE id = $1', [id]);
+    const query = `
+      SELECT 
+        c.*,
+        COALESCE(cs.total_talk_time_seconds, 0)::INT as total_talk_time_seconds,
+        COALESCE(cs.avg_duration_seconds, 0)::INT as avg_duration_seconds
+      FROM campaigns c
+      LEFT JOIN (
+        SELECT 
+          campaign_id,
+          SUM(COALESCE(duration_seconds, 0))::INT as total_talk_time_seconds,
+          CASE 
+            WHEN COUNT(CASE WHEN duration_seconds > 0 THEN 1 END) > 0 
+            THEN ROUND(SUM(COALESCE(duration_seconds, 0))::DECIMAL / COUNT(CASE WHEN duration_seconds > 0 THEN 1 END))::INT
+            ELSE 0 
+          END as avg_duration_seconds
+        FROM calls
+        GROUP BY campaign_id
+      ) cs ON c.id = cs.campaign_id
+      WHERE c.id = $1
+    `;
+    const res = await pool.query(query, [id]);
     return res.rows[0] || null;
   }
 
@@ -84,6 +131,18 @@ export class CampaignService {
     name: string;
     description?: string;
     status?: string;
+    script?: string;
+    language?: string;
+    voice_pipeline?: string;
+    schedule_start_time?: string;
+    schedule_end_time?: string;
+    operating_days?: string[];
+    max_concurrent_calls?: number;
+    calls_per_minute?: number;
+    retry_attempts?: number;
+    retry_delay_minutes?: number;
+    max_call_duration_minutes?: number;
+    expected_dispositions?: string[];
     total_contacts?: number;
     total_credits?: number;
     contacts?: string[];
@@ -104,34 +163,66 @@ export class CampaignService {
     }
 
     const totalContacts = uniquePhones.length > 0 ? uniquePhones.length : (data.total_contacts || 0);
-    const totalCredits = data.total_credits || totalContacts;
+    const totalCredits = data.total_credits !== undefined && data.total_credits !== null ? Number(data.total_credits) : totalContacts;
+    const retryAttempts = data.retry_attempts !== undefined && data.retry_attempts !== null ? Number(data.retry_attempts) : 3;
+    const retryDelayMinutes = data.retry_delay_minutes !== undefined && data.retry_delay_minutes !== null ? Number(data.retry_delay_minutes) : 180;
+    const maxConcurrent = data.max_concurrent_calls !== undefined && data.max_concurrent_calls !== null ? Number(data.max_concurrent_calls) : 5;
+    const callsPerMin = data.calls_per_minute !== undefined && data.calls_per_minute !== null ? Number(data.calls_per_minute) : 30;
+    const maxDuration = data.max_call_duration_minutes !== undefined && data.max_call_duration_minutes !== null ? Number(data.max_call_duration_minutes) : 5;
 
     const query = `
-      INSERT INTO campaigns (name, description, status, total_contacts, total_credits, remaining_calls)
-      VALUES ($1, $2, $3, $4, $5, $4)
+      INSERT INTO campaigns (
+        name, description, status, total_contacts, total_credits, remaining_calls,
+        script, language, voice_pipeline, schedule_start_time, schedule_end_time,
+        operating_days, max_concurrent_calls, calls_per_minute, retry_attempts,
+        retry_delay_minutes, max_call_duration_minutes, expected_dispositions
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
       RETURNING *
     `;
     const res = await pool.query(query, [
-      data.name,
-      data.description || 'Voice outreach campaign dispatched via CuroAI.',
+      data.name.trim(),
+      data.description?.trim() || null,
       status,
       totalContacts,
       totalCredits,
+      totalContacts, // initial remaining_calls
+      data.script || 'Airtel Delhi Wi-Fi (Routine Pickup)',
+      data.language || 'hi-IN',
+      data.voice_pipeline || 'Sarvam AI (Priya - hi-IN)',
+      data.schedule_start_time || '09:00',
+      data.schedule_end_time || '20:00',
+      JSON.stringify(data.operating_days || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']),
+      maxConcurrent,
+      callsPerMin,
+      retryAttempts,
+      retryDelayMinutes,
+      maxDuration,
+      JSON.stringify(data.expected_dispositions || [
+        'CONFIRMED_PICKUP',
+        'NEEDS_AIRTEL_SUPPORT',
+        'SCHEDULE_CALLBACK',
+        'REFUSED',
+        'WRONG_PERSON',
+        'BUSY',
+        'NO_ANSWER',
+      ]),
     ]);
     const campaign = res.rows[0];
 
     // Insert deduplicated contacts linked to this campaign
     if (uniquePhones.length > 0) {
+      const custLang = data.language ? data.language.slice(0, 2).toLowerCase() : 'hi';
       for (const phone of uniquePhones) {
         try {
           await pool.query(
             `INSERT INTO customers (
                name, phone, address, language, total_attempts, max_attempts, next_attempt_time, campaign_id
              )
-             VALUES ($1, $2, 'Address On Record', 'hi', 0, 3, NOW(), $3)
+             VALUES ($1, $2, 'Address On Record', $3, 0, $4, NOW(), $5)
              ON CONFLICT (phone)
-             DO UPDATE SET campaign_id = EXCLUDED.campaign_id`,
-            [`Contact ${phone.slice(-4)}`, phone, campaign.id]
+             DO UPDATE SET campaign_id = EXCLUDED.campaign_id, max_attempts = EXCLUDED.max_attempts`,
+            [`Contact ${phone.slice(-4)}`, phone, custLang, retryAttempts, campaign.id]
           );
         } catch (err) {
           logger.warn({ phone, err }, 'Failed to insert customer lead for campaign');
@@ -167,6 +258,95 @@ export class CampaignService {
   }
 
   /**
+   * Update campaign retry settings (attempts and delay) and sync customer contacts
+   */
+  async updateCampaignRetry(
+    campaignId: string,
+    retryAttempts: number,
+    retryDelayMinutes?: number
+  ): Promise<{ campaign: CampaignDbRow; eligibleForRetryCount: number }> {
+    const campaign = await this.getCampaign(campaignId);
+    if (!campaign) {
+      throw new Error(`Campaign not found: ${campaignId}`);
+    }
+
+    const attempts = Math.max(1, Math.min(10, Math.floor(retryAttempts)));
+    const delay = retryDelayMinutes && retryDelayMinutes > 0 ? Math.floor(retryDelayMinutes) : (campaign.retry_delay_minutes || 180);
+
+    const updRes = await pool.query(
+      `UPDATE campaigns
+       SET retry_attempts = $1,
+           retry_delay_minutes = $2,
+           updated_at = NOW()
+       WHERE id = $3
+       RETURNING *`,
+      [attempts, delay, campaignId]
+    );
+
+    // Terminal dispositions that should remain closed
+    const terminalList = [
+      'CONFIRMED_FOR_PICKUP', 'PICKUP_CONFIRMED', 'PICKUP_CONFIRMED_NEW_DATE',
+      'REFUSED_TO_RETURN', 'PICKUP_DECLINED', 'ALREADY_RETURNED', 'ALREADY_PICKED_UP',
+      'REFUND_REQUEST', 'REFUND_OR_OWNERSHIP_QUERY', 'RECHARGED_DEVICE', 'ALREADY_RECHARGED',
+      'DAMAGED_DEVICE', 'LOST_DEVICE', 'WRONG_NUMBER', 'WRONG_NUMBER_OR_IDENTITY_NOT_CONFIRMED',
+      'DO_NOT_CALL', 'COMPLAINT_ESCALATION', 'NEEDS_AIRTEL_SUPPORT', 'SHIFTED_DEVICE_WITH_CUSTOMER',
+      'Goal completed', 'CONFIRMED_PICKUP'
+    ];
+
+    // Update customer contacts belonging to this campaign:
+    // Update max_attempts, reopen contacts if total_attempts < new attempts and not terminal
+    const reopenRes = await pool.query(
+      `UPDATE customers
+       SET max_attempts = $1,
+           is_closed = CASE
+             WHEN current_disposition = ANY($2::text[]) THEN TRUE
+             WHEN total_attempts >= $1 THEN TRUE
+             ELSE FALSE
+           END,
+           next_attempt_time = CASE
+             WHEN total_attempts < $1 AND (current_disposition IS NULL OR NOT (current_disposition = ANY($2::text[])))
+             THEN NOW()
+             ELSE next_attempt_time
+           END
+       WHERE campaign_id = $3
+          OR id IN (SELECT customer_id FROM calls WHERE campaign_id = $3)
+       RETURNING id, is_closed, total_attempts`,
+      [attempts, terminalList, campaignId]
+    );
+
+    const eligibleForRetryCount = reopenRes.rows.filter(
+      (r) => !r.is_closed && Number(r.total_attempts) < attempts
+    ).length;
+
+    // Recalculate remaining calls on campaign
+    await pool.query(
+      `UPDATE campaigns
+       SET remaining_calls = (
+         SELECT COUNT(*)::int
+         FROM customers
+         WHERE (campaign_id = $1 OR id IN (SELECT customer_id FROM calls WHERE campaign_id = $1))
+           AND is_closed = FALSE
+           AND total_attempts < $2
+       ),
+       updated_at = NOW()
+       WHERE id = $1`,
+      [campaignId, attempts]
+    );
+
+    const finalCampRes = await pool.query('SELECT * FROM campaigns WHERE id = $1', [campaignId]);
+
+    logger.info(
+      { campaignId, retryAttempts: attempts, retryDelayMinutes: delay, eligibleForRetryCount },
+      'Updated campaign retry settings and synced contacts'
+    );
+
+    return {
+      campaign: finalCampRes.rows[0],
+      eligibleForRetryCount,
+    };
+  }
+
+  /**
    * Delete or archive a campaign
    */
   async deleteCampaign(id: string): Promise<boolean> {
@@ -192,17 +372,288 @@ export class CampaignService {
          cu.subs_del_no as contact_ref,
          cu.language as customer_language,
          co.outcome as call_outcome,
-         co.final_disposition as call_result,
+         COALESCE(co.final_disposition, c.call_status, cu.current_disposition, c.status) as call_result,
          co.transcript
        FROM calls c
        LEFT JOIN customers cu ON c.customer_id = cu.id
        LEFT JOIN call_outcomes co ON c.id = co.call_id
-       WHERE c.campaign_id = $1
+       WHERE c.campaign_id = $1 OR cu.campaign_id = $1
        ORDER BY c.created_at DESC
        LIMIT 100`,
       [campaignId]
     );
     return res.rows;
+  }
+
+  /**
+   * Get all target audience contacts for a campaign with their attempts, latest call status, duration, disposition, and timestamp
+   */
+  async getCampaignContacts(campaignId: string): Promise<any[]> {
+    const query = `
+      SELECT 
+        cu.id as contact_id,
+        cu.name as contact_name,
+        cu.phone as contact_phone,
+        cu.subs_del_no as contact_ref,
+        cu.language,
+        COALESCE(GREATEST(cu.total_attempts, call_counts.count), 0)::INT as attempts,
+        cu.max_attempts,
+        cu.current_disposition,
+        cu.created_at as contact_created_at,
+        latest_call.id as last_call_id,
+        latest_call.status as call_status,
+        latest_call.duration_seconds,
+        latest_call.created_at as last_called_at,
+        latest_call.recording_url,
+        latest_call.final_disposition,
+        latest_call.call_outcome
+      FROM customers cu
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::INT as count 
+        FROM calls 
+        WHERE customer_id = cu.id
+      ) call_counts ON true
+      LEFT JOIN LATERAL (
+        SELECT 
+          c.id,
+          c.status,
+          c.duration_seconds,
+          c.created_at,
+          c.recording_url,
+          co.outcome as call_outcome,
+          co.final_disposition
+        FROM calls c
+        LEFT JOIN call_outcomes co ON c.id = co.call_id
+        WHERE c.customer_id = cu.id
+        ORDER BY c.created_at DESC
+        LIMIT 1
+      ) latest_call ON true
+      WHERE cu.campaign_id = $1 
+         OR cu.id IN (SELECT customer_id FROM calls WHERE campaign_id = $1)
+      ORDER BY COALESCE(latest_call.created_at, cu.created_at) DESC
+      LIMIT 500
+    `;
+    const res = await pool.query(query, [campaignId]);
+    return res.rows;
+  }
+
+  /**
+   * Start campaign and dispatch pending calls according to rate limits and schedule.
+   */
+  async startCampaign(campaignId: string): Promise<{ campaign: CampaignDbRow; dispatchedCount: number }> {
+    const campaign = await this.updateCampaignStatus(campaignId, 'RUNNING');
+    const maxConcurrent = campaign.max_concurrent_calls || 5;
+
+    // Check currently active calls for this campaign
+    const activeRes = await pool.query(
+      `SELECT COUNT(*)::int as active_count
+       FROM calls
+       WHERE campaign_id = $1
+         AND status IN ('initiated', 'dialing', 'answered')
+         AND created_at > NOW() - INTERVAL '10 minutes'`,
+      [campaignId]
+    );
+    const activeCount = activeRes.rows[0]?.active_count || 0;
+    const availableSlots = Math.max(0, maxConcurrent - activeCount);
+
+    let dispatchedCount = 0;
+    if (availableSlots > 0) {
+      const pendingCustomers = await pool.query(
+        `SELECT * FROM customers
+         WHERE campaign_id = $1
+           AND is_closed = FALSE
+           AND (next_attempt_time IS NULL OR next_attempt_time <= NOW())
+         ORDER BY total_attempts ASC, created_at ASC
+         LIMIT $2`,
+        [campaignId, availableSlots]
+      );
+
+      for (const cust of pendingCustomers.rows) {
+        try {
+          await callService.initiateCall(cust.id);
+          dispatchedCount++;
+        } catch (err) {
+          logger.warn({ customerId: cust.id, err }, 'Failed to initiate campaign call for customer');
+        }
+      }
+    }
+
+    logger.info({ campaignId, dispatchedCount, activeCount, maxConcurrent }, 'Campaign start triggered');
+    return { campaign, dispatchedCount };
+  }
+
+  /**
+   * Add contacts to an existing campaign from CSV upload.
+   */
+  async addContactsToCampaign(
+    campaignId: string,
+    contacts: (string | { phone: string; name?: string; email?: string })[]
+  ): Promise<{ campaign: CampaignDbRow; addedCount: number; duplicatesCount: number; invalidCount: number }> {
+    const campaign = await this.getCampaign(campaignId);
+    if (!campaign) {
+      throw new Error(`Campaign not found: ${campaignId}`);
+    }
+
+    const validPhones: { phone: string; name?: string }[] = [];
+    const seen = new Set<string>();
+    let invalidCount = 0;
+    let duplicatesCount = 0;
+
+    for (const item of contacts) {
+      const rawPhone = typeof item === 'string' ? item : item.phone;
+      const rawName = typeof item === 'object' ? item.name : undefined;
+      const norm = normalizePhoneNumber(rawPhone);
+
+      if (!norm) {
+        invalidCount++;
+        continue;
+      }
+      if (seen.has(norm)) {
+        duplicatesCount++;
+        continue;
+      }
+      seen.add(norm);
+      validPhones.push({ phone: norm, name: rawName });
+    }
+
+    const retryAttempts = campaign.retry_attempts || 3;
+    const custLang = campaign.language ? campaign.language.slice(0, 2).toLowerCase() : 'hi';
+    let addedCount = 0;
+
+    for (const entry of validPhones) {
+      try {
+        const ins = await pool.query(
+          `INSERT INTO customers (
+             name, phone, address, language, total_attempts, max_attempts, next_attempt_time, campaign_id
+           )
+           VALUES ($1, $2, 'Address On Record', $3, 0, $4, NOW(), $5)
+           ON CONFLICT (phone)
+           DO UPDATE SET campaign_id = EXCLUDED.campaign_id, max_attempts = EXCLUDED.max_attempts
+           RETURNING id`,
+          [entry.name || `Contact ${entry.phone.slice(-4)}`, entry.phone, custLang, retryAttempts, campaignId]
+        );
+        if (ins.rows.length > 0) {
+          addedCount++;
+        }
+      } catch (err) {
+        logger.warn({ phone: entry.phone, err }, 'Failed to insert customer lead for campaign');
+      }
+    }
+
+    const upd = await pool.query(
+      `UPDATE campaigns
+       SET total_contacts = total_contacts + $1,
+           remaining_calls = remaining_calls + $1,
+           total_credits = total_credits + $1,
+           updated_at = NOW()
+       WHERE id = $2
+       RETURNING *`,
+      [addedCount, campaignId]
+    );
+
+    logger.info({ campaignId, addedCount, duplicatesCount, invalidCount }, 'Added contacts to campaign');
+    return {
+      campaign: upd.rows[0],
+      addedCount,
+      duplicatesCount,
+      invalidCount,
+    };
+  }
+
+  /**
+   * Get disposition breakdown for a campaign
+   */
+  async getCampaignDispositions(campaignId: string): Promise<{
+    expected: string[];
+    dispositions: { name: string; count: number; percentage: number }[];
+    totalCalls: number;
+  }> {
+    const campaign = await this.getCampaign(campaignId);
+    if (!campaign) {
+      throw new Error(`Campaign not found: ${campaignId}`);
+    }
+
+    const query = `
+      WITH call_disps AS (
+        SELECT 
+          COALESCE(
+            NULLIF(TRIM(co.final_disposition), ''),
+            NULLIF(TRIM(c.call_status), ''),
+            NULLIF(TRIM(cu.current_disposition), ''),
+            NULLIF(TRIM(c.status), '')
+          ) as disposition
+        FROM calls c
+        LEFT JOIN customers cu ON c.customer_id = cu.id
+        LEFT JOIN call_outcomes co ON c.id = co.call_id
+        WHERE c.campaign_id = $1 OR cu.campaign_id = $1
+      ),
+      cust_disps AS (
+        SELECT 
+          NULLIF(TRIM(cu.current_disposition), '') as disposition
+        FROM customers cu
+        WHERE cu.campaign_id = $1
+          AND cu.current_disposition IS NOT NULL
+          AND cu.id NOT IN (
+            SELECT DISTINCT customer_id FROM calls WHERE customer_id IS NOT NULL AND (campaign_id = $1 OR customer_id IN (SELECT id FROM customers WHERE campaign_id = $1))
+          )
+      ),
+      all_disps AS (
+        SELECT disposition FROM call_disps WHERE disposition IS NOT NULL
+        UNION ALL
+        SELECT disposition FROM cust_disps WHERE disposition IS NOT NULL
+      )
+      SELECT disposition, COUNT(*)::int as count
+      FROM all_disps
+      GROUP BY 1
+      ORDER BY count DESC
+    `;
+
+    const res = await pool.query(query, [campaignId]);
+
+    const totalRes = await pool.query(
+      `SELECT COUNT(*)::int as total 
+       FROM calls c
+       LEFT JOIN customers cu ON c.customer_id = cu.id
+       WHERE c.campaign_id = $1 OR cu.campaign_id = $1`,
+      [campaignId]
+    );
+    let totalCalls = totalRes.rows[0]?.total || 0;
+
+    const expected: string[] = Array.isArray(campaign.expected_dispositions)
+      ? campaign.expected_dispositions
+      : [];
+
+    const dispMap = new Map<string, number>();
+
+    // Seed expected dispositions with 0
+    expected.forEach((d) => dispMap.set(d.toUpperCase(), 0));
+
+    // Fill with actual call counts
+    res.rows.forEach((row) => {
+      const name = (row.disposition || 'UNKNOWN').toUpperCase();
+      dispMap.set(name, (dispMap.get(name) || 0) + Number(row.count));
+    });
+
+    const totalDispositionsCount = Array.from(dispMap.values()).reduce((sum, c) => sum + c, 0);
+    const denominator = totalCalls > 0 ? totalCalls : totalDispositionsCount;
+
+    const dispositions = Array.from(dispMap.entries())
+      .filter(([name, count]) => count > 0 || expected.map(e => e.toUpperCase()).includes(name))
+      .map(([name, count]) => ({
+        name,
+        count,
+        percentage: denominator > 0 ? Math.round((count / denominator) * 100) : 0,
+      }))
+      .sort((a, b) => {
+        if (b.count !== a.count) return b.count - a.count;
+        return a.name.localeCompare(b.name);
+      });
+
+    return {
+      expected,
+      dispositions,
+      totalCalls: Math.max(totalCalls, totalDispositionsCount),
+    };
   }
 }
 

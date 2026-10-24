@@ -188,6 +188,29 @@ export async function updateCampaignStatus(id: string, status: string): Promise<
 }
 
 /**
+ * Updates campaign retry settings (attempts and delay)
+ */
+export async function updateCampaignRetry(
+  id: string,
+  retryAttempts: number,
+  retryDelayMinutes?: number
+): Promise<{ campaign: CampaignItem; eligibleForRetryCount: number }> {
+  const res = await authFetch(`${API_BASE}/api/campaigns/${id}/retry`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      retry_attempts: retryAttempts,
+      retry_delay_minutes: retryDelayMinutes,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to update retry settings: ${res.statusText}`);
+  }
+  return await res.json();
+}
+
+/**
  * Creates a new campaign
  */
 export async function createCampaign(data: Partial<CampaignItem>): Promise<CampaignItem> {
@@ -239,5 +262,108 @@ export async function addBillingCredits(amount: number): Promise<{ success: bool
     throw new Error(err.error || `Failed to add credits: ${res.statusText}`);
   }
   return res.json();
+}
+
+/**
+ * Starts campaign outbound calling dispatch according to rate limits
+ */
+export async function startCampaignCalls(campaignId: string): Promise<{
+  success: boolean;
+  message: string;
+  campaign: CampaignItem;
+  dispatchedCount: number;
+}> {
+  const res = await authFetch(`${API_BASE}/api/campaigns/${campaignId}/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to start campaign: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+/**
+ * Uploads audience contacts CSV/array to an existing campaign
+ */
+export async function uploadCampaignContacts(
+  campaignId: string,
+  contacts: (string | { phone: string; name?: string; email?: string })[]
+): Promise<{
+  success: boolean;
+  message: string;
+  campaign: CampaignItem;
+  addedCount: number;
+  duplicatesCount: number;
+  invalidCount: number;
+}> {
+  const res = await authFetch(`${API_BASE}/api/campaigns/${campaignId}/contacts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ contacts }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to upload contacts: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export interface DispositionBreakdownItem {
+  name: string;
+  count: number;
+  percentage: number;
+}
+
+/**
+ * Fetches call disposition breakdown for a campaign
+ */
+export async function fetchCampaignDispositions(campaignId: string): Promise<{
+  expected: string[];
+  dispositions: DispositionBreakdownItem[];
+  totalCalls: number;
+}> {
+  const res = await authFetch(`${API_BASE}/api/campaigns/${campaignId}/dispositions`);
+  if (!res.ok) {
+    return { expected: [], dispositions: [], totalCalls: 0 };
+  }
+  const data = await res.json();
+  return {
+    expected: data.expected || [],
+    dispositions: data.dispositions || [],
+    totalCalls: data.totalCalls || 0,
+  };
+}
+
+export interface CampaignContactRecord {
+  contact_id: string;
+  contact_name: string;
+  contact_phone: string;
+  contact_ref?: string;
+  language?: string;
+  attempts: number;
+  max_attempts?: number;
+  current_disposition?: string;
+  contact_created_at: string;
+  last_call_id?: string;
+  call_status?: string;
+  duration_seconds?: number;
+  last_called_at?: string;
+  recording_url?: string;
+  final_disposition?: string;
+  call_outcome?: string;
+}
+
+/**
+ * Fetches all target audience contacts for a campaign
+ */
+export async function fetchCampaignContacts(campaignId: string): Promise<CampaignContactRecord[]> {
+  const res = await authFetch(`${API_BASE}/api/campaigns/${campaignId}/contacts`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch campaign contacts: ${res.statusText}`);
+  }
+  const data = await res.json();
+  return data.contacts || [];
 }
 
