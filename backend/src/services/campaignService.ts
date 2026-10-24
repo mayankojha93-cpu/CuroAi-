@@ -125,7 +125,12 @@ export class CampaignService {
     }
 
     const totalContacts = uniquePhones.length > 0 ? uniquePhones.length : (data.total_contacts || 0);
-    const totalCredits = data.total_credits || totalContacts;
+    const totalCredits = data.total_credits !== undefined && data.total_credits !== null ? Number(data.total_credits) : totalContacts;
+    const retryAttempts = data.retry_attempts !== undefined && data.retry_attempts !== null ? Number(data.retry_attempts) : 3;
+    const retryDelayMinutes = data.retry_delay_minutes !== undefined && data.retry_delay_minutes !== null ? Number(data.retry_delay_minutes) : 180;
+    const maxConcurrent = data.max_concurrent_calls !== undefined && data.max_concurrent_calls !== null ? Number(data.max_concurrent_calls) : 5;
+    const callsPerMin = data.calls_per_minute !== undefined && data.calls_per_minute !== null ? Number(data.calls_per_minute) : 30;
+    const maxDuration = data.max_call_duration_minutes !== undefined && data.max_call_duration_minutes !== null ? Number(data.max_call_duration_minutes) : 5;
 
     const query = `
       INSERT INTO campaigns (
@@ -134,48 +139,52 @@ export class CampaignService {
         operating_days, max_concurrent_calls, calls_per_minute, retry_attempts,
         retry_delay_minutes, max_call_duration_minutes, expected_dispositions
       )
-      VALUES ($1, $2, $3, $4, $5, $4, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
       RETURNING *
     `;
     const res = await pool.query(query, [
-      data.name,
-      data.description || null,
+      data.name.trim(),
+      data.description?.trim() || null,
       status,
       totalContacts,
       totalCredits,
-      data.script || 'नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं आपसे बात कर सकती हूँ?',
+      totalContacts, // initial remaining_calls
+      data.script || 'Airtel Delhi Wi-Fi (Routine Pickup)',
       data.language || 'hi-IN',
       data.voice_pipeline || 'Sarvam AI (Priya - hi-IN)',
       data.schedule_start_time || '09:00',
       data.schedule_end_time || '20:00',
       JSON.stringify(data.operating_days || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']),
-      data.max_concurrent_calls || 5,
-      data.calls_per_minute || 30,
-      data.retry_attempts || 3,
-      data.retry_delay_minutes || 180,
-      data.max_call_duration_minutes || 5,
+      maxConcurrent,
+      callsPerMin,
+      retryAttempts,
+      retryDelayMinutes,
+      maxDuration,
       JSON.stringify(data.expected_dispositions || [
         'CONFIRMED_PICKUP',
         'NEEDS_AIRTEL_SUPPORT',
         'SCHEDULE_CALLBACK',
         'REFUSED',
         'WRONG_PERSON',
+        'BUSY',
+        'NO_ANSWER',
       ]),
     ]);
     const campaign = res.rows[0];
 
     // Insert deduplicated contacts linked to this campaign
     if (uniquePhones.length > 0) {
+      const custLang = data.language ? data.language.slice(0, 2).toLowerCase() : 'hi';
       for (const phone of uniquePhones) {
         try {
           await pool.query(
             `INSERT INTO customers (
                name, phone, address, language, total_attempts, max_attempts, next_attempt_time, campaign_id
              )
-             VALUES ($1, $2, 'Address On Record', 'hi', 0, 3, NOW(), $3)
+             VALUES ($1, $2, 'Address On Record', $3, 0, $4, NOW(), $5)
              ON CONFLICT (phone)
-             DO UPDATE SET campaign_id = EXCLUDED.campaign_id`,
-            [`Contact ${phone.slice(-4)}`, phone, campaign.id]
+             DO UPDATE SET campaign_id = EXCLUDED.campaign_id, max_attempts = EXCLUDED.max_attempts`,
+            [`Contact ${phone.slice(-4)}`, phone, custLang, retryAttempts, campaign.id]
           );
         } catch (err) {
           logger.warn({ phone, err }, 'Failed to insert customer lead for campaign');
