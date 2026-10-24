@@ -39,8 +39,6 @@ interface FlaggedIssue {
 export interface ScriptPresetOption {
   id: string;
   title: string;
-  tag: string;
-  description: string;
   prompt: string;
 }
 
@@ -48,36 +46,26 @@ export const SCRIPT_PRESETS: ScriptPresetOption[] = [
   {
     id: 'delhi-routine',
     title: 'Airtel Delhi Wi-Fi (Routine Pickup)',
-    tag: 'Spreadsheet Sample',
-    description: 'Routine Wi-Fi router return after service end date in Sant Nagar, Delhi',
     prompt: 'नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं आपसे बात कर सकती हूँ? आपके एयरटेल वाई-फाई अकाउंट के संबंध में रूटीन पिकअप शेड्यूल करना है।',
   },
   {
     id: 'bengaluru-relocated',
     title: 'Airtel Fiber Bengaluru (Shifted Address)',
-    tag: 'Relocation Scenario',
-    description: 'Customer moved to a new flat in Koramangala; needs new address confirmation',
     prompt: 'नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। आपने नए पते पर शिफ्ट होने की जानकारी दी थी, क्या हम आपके नए पते से वाई-फाई राउटर पिकअप शेड्यूल कर लें?',
   },
   {
     id: 'noida-refund-query',
     title: 'Airtel Wi-Fi Noida (Dispute / 121 Query)',
-    tag: 'Dispute Scenario',
-    description: 'Customer claims router deposit refund; agent Priya clarifies policy and logs escalation',
     prompt: 'नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। आपके राउटर डिपॉजिट रिफंड और डिवाइस रिटर्न पॉलिसी की जानकारी देने के लिए कॉल किया है। क्या मैं आपसे बात कर सकती हूँ?',
   },
   {
     id: 'airtel-general-pickup',
     title: 'Airtel Standard Outbound Pickup',
-    tag: 'Default Script',
-    description: 'Standard polite identity confirmation and device pickup date negotiation',
     prompt: 'नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं आपसे बात कर सकती हूँ? आपके एयरटेल वाई-फाई अकाउंट के सस्पेंशन के बाद राउटर पिकअप शेड्यूल करना है।',
   },
   {
     id: 'custom',
     title: 'Custom Script (Manual Input)',
-    tag: 'Custom',
-    description: 'Provide custom script instructions or custom opening prompt for the voice agent',
     prompt: '',
   },
 ];
@@ -589,24 +577,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
 
             {/* Script Dropdown Field */}
             <div>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>
-                <label style={{ ...labelStyle, marginBottom: 0 }}>Script (Voice Scenario) *</label>
-                {selectedPreset.tag && (
-                  <span
-                    style={{
-                      fontSize: '0.68rem',
-                      padding: '1px 7px',
-                      borderRadius: 4,
-                      background: 'rgba(56, 189, 248, 0.12)',
-                      border: '1px solid rgba(56, 189, 248, 0.3)',
-                      color: '#38BDF8',
-                      fontWeight: 600,
-                    }}
-                  >
-                    {selectedPreset.tag}
-                  </span>
-                )}
-              </div>
+              <label style={labelStyle}>Script *</label>
               <select
                 value={selectedScriptId}
                 onChange={(e) => handleScriptChange(e.target.value)}
@@ -623,50 +594,29 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
                 ))}
               </select>
 
-              {/* Scenario Context & Prompt Box */}
-              <div
-                style={{
-                  marginTop: 8,
-                  padding: '10px 12px',
-                  borderRadius: 8,
-                  background: '#04060A',
-                  border: '1px solid rgba(255, 255, 255, 0.06)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 6,
-                }}
-              >
-                <div style={{ fontSize: '0.74rem', color: '#94A3B8', lineHeight: 1.4 }}>
-                  <span style={{ color: '#E2E8F0', fontWeight: 600 }}>Scenario: </span>
-                  {selectedPreset.description}
-                </div>
-
-                <div>
-                  <label style={{ ...labelStyle, fontSize: '0.72rem', marginBottom: 4, color: '#64748B' }}>
-                    {selectedScriptId === 'custom' ? 'Custom Script Prompt:' : 'Spoken Voice Script:'}
-                  </label>
-                  <textarea
-                    rows={2}
-                    value={scriptText}
-                    onChange={(e) => setScriptText(e.target.value)}
-                    placeholder={
-                      selectedScriptId === 'custom'
-                        ? 'Enter custom script or opening line for the voice agent...'
-                        : 'Spoken line...'
-                    }
-                    style={{
-                      ...inputStyle,
-                      fontSize: '0.8rem',
-                      fontFamily: 'inherit',
-                      resize: 'vertical',
-                      minHeight: 46,
-                      lineHeight: 1.4,
-                      background: '#080A10',
-                    }}
-                    onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.5)')}
-                    onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)')}
-                  />
-                </div>
+              {/* Script Prompt Textarea */}
+              <div style={{ marginTop: 8 }}>
+                <textarea
+                  rows={2}
+                  value={scriptText}
+                  onChange={(e) => setScriptText(e.target.value)}
+                  placeholder={
+                    selectedScriptId === 'custom'
+                      ? 'Enter custom script or opening line for the voice agent...'
+                      : 'Spoken line...'
+                  }
+                  style={{
+                    ...inputStyle,
+                    fontSize: '0.8rem',
+                    fontFamily: 'inherit',
+                    resize: 'vertical',
+                    minHeight: 46,
+                    lineHeight: 1.4,
+                    background: '#080A10',
+                  }}
+                  onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.5)')}
+                  onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)')}
+                />
               </div>
             </div>
 
