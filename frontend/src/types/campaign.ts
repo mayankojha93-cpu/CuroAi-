@@ -50,6 +50,18 @@ export interface CampaignItem {
   credits_used?: number;
   total_credits?: number;
   execution_date?: string;
+  script?: string;
+  language?: string;
+  voice_pipeline?: string;
+  schedule_start_time?: string;
+  schedule_end_time?: string;
+  operating_days?: string[];
+  max_concurrent_calls?: number;
+  calls_per_minute?: number;
+  retry_attempts?: number;
+  retry_delay_minutes?: number;
+  max_call_duration_minutes?: number;
+  expected_dispositions?: string[];
   contacts?: string[];
   created_at?: string;
   updated_at?: string;
