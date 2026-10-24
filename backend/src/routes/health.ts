@@ -3,7 +3,7 @@ import { checkDbHealth } from '../db/index.js';
 
 export const healthRouter = Router();
 
-healthRouter.get('/health', async (_req: Request, res: Response) => {
+healthRouter.get(['/health', '/api/health'], async (_req: Request, res: Response) => {
   const dbHealth = await checkDbHealth();
   const uptime = process.uptime();
   const memoryUsage = process.memoryUsage();
