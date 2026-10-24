@@ -49,6 +49,8 @@ export interface CampaignItem {
   remaining_calls: number;
   credits_used?: number;
   total_credits?: number;
+  total_talk_time_seconds?: number;
+  avg_duration_seconds?: number;
   execution_date?: string;
   script?: string;
   language?: string;
