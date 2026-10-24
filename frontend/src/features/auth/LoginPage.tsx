@@ -280,48 +280,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
               'Login'
             )}
           </button>
-
-          {/* Quick Demo Access Button */}
-          <button
-            type="button"
-            onClick={() => {
-              const demoUser = {
-                id: 'admin-curo',
-                name: 'CuroAI Admin',
-                email: 'admin@curoai.in',
-                role: 'Administrator',
-              };
-              localStorage.setItem('curo_auth_token', 'demo-curo-token-session');
-              localStorage.setItem('curo_auth_user', JSON.stringify(demoUser));
-              onSuccess();
-            }}
-            style={{
-              width: '100%',
-              padding: '11px',
-              borderRadius: 'var(--radius-md)',
-              background: 'rgba(56, 189, 248, 0.1)',
-              border: '1px solid rgba(56, 189, 248, 0.3)',
-              color: '#38BDF8',
-              fontSize: '0.86rem',
-              fontWeight: 600,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 8,
-              transition: 'all 0.15s ease',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'rgba(56, 189, 248, 0.18)';
-              e.currentTarget.style.borderColor = 'rgba(56, 189, 248, 0.5)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)';
-              e.currentTarget.style.borderColor = 'rgba(56, 189, 248, 0.3)';
-            }}
-          >
-            Enter Dashboard (CuroAI Admin Demo)
-          </button>
         </form>
       </div>
     </div>
