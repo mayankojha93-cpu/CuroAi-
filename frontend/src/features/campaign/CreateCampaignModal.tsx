@@ -39,34 +39,24 @@ interface FlaggedIssue {
 export interface ScriptPresetOption {
   id: string;
   title: string;
-  prompt: string;
 }
 
 export const SCRIPT_PRESETS: ScriptPresetOption[] = [
   {
     id: 'delhi-routine',
     title: 'Airtel Delhi Wi-Fi (Routine Pickup)',
-    prompt: 'नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं आपसे बात कर सकती हूँ? आपके एयरटेल वाई-फाई अकाउंट के संबंध में रूटीन पिकअप शेड्यूल करना है।',
   },
   {
     id: 'bengaluru-relocated',
     title: 'Airtel Fiber Bengaluru (Shifted Address)',
-    prompt: 'नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। आपने नए पते पर शिफ्ट होने की जानकारी दी थी, क्या हम आपके नए पते से वाई-फाई राउटर पिकअप शेड्यूल कर लें?',
   },
   {
     id: 'noida-refund-query',
     title: 'Airtel Wi-Fi Noida (Dispute / 121 Query)',
-    prompt: 'नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। आपके राउटर डिपॉजिट रिफंड और डिवाइस रिटर्न पॉलिसी की जानकारी देने के लिए कॉल किया है। क्या मैं आपसे बात कर सकती हूँ?',
   },
   {
     id: 'airtel-general-pickup',
     title: 'Airtel Standard Outbound Pickup',
-    prompt: 'नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं आपसे बात कर सकती हूँ? आपके एयरटेल वाई-फाई अकाउंट के सस्पेंशन के बाद राउटर पिकअप शेड्यूल करना है।',
-  },
-  {
-    id: 'custom',
-    title: 'Custom Script (Manual Input)',
-    prompt: '',
   },
 ];
 
@@ -91,7 +81,6 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [selectedScriptId, setSelectedScriptId] = useState<string>('delhi-routine');
-  const [scriptText, setScriptText] = useState<string>(SCRIPT_PRESETS[0].prompt);
   const [language, setLanguage] = useState('hi-IN');
   const [voicePipeline, setVoicePipeline] = useState('Sarvam AI (Priya - hi-IN)');
 
@@ -113,8 +102,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
   const [expectedDispositions, setExpectedDispositions] = useState<string[]>(DEFAULT_DISPOSITIONS);
   const [newDispositionInput, setNewDispositionInput] = useState('');
 
-  // Audience & Validation
-  const [contactsText, setContactsText] = useState('');
+  // Audience & Validation (CSV Upload)
   const [fileName, setFileName] = useState('');
   const [fileRawLines, setFileRawLines] = useState<string[]>([]);
   const [showFlaggedDetails, setShowFlaggedDetails] = useState(false);
@@ -122,21 +110,6 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
   const [error, setError] = useState<string | null>(null);
 
   const fileInputId = useId();
-
-  const selectedPreset = useMemo(
-    () => SCRIPT_PRESETS.find((p) => p.id === selectedScriptId) || SCRIPT_PRESETS[0],
-    [selectedScriptId]
-  );
-
-  const handleScriptChange = (id: string) => {
-    setSelectedScriptId(id);
-    const preset = SCRIPT_PRESETS.find((p) => p.id === id);
-    if (preset && id !== 'custom') {
-      setScriptText(preset.prompt);
-    } else if (id === 'custom' && scriptText === selectedPreset.prompt) {
-      setScriptText('');
-    }
-  };
 
   // Day toggle handler
   const toggleDay = (day: string) => {
@@ -158,7 +131,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
     }
   };
 
-  // Parse CSV and textarea contacts with duplicates and <10 digits flagging
+  // Parse CSV contacts with duplicates and <10 digits flagging
   const { validContacts, flaggedDuplicates, flaggedShortNumbers } = useMemo(() => {
     const valid: ValidContact[] = [];
     const duplicates: FlaggedIssue[] = [];
@@ -251,17 +224,6 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
       });
     };
 
-    // Process textarea contacts
-    const textLines = contactsText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    for (const line of textLines) {
-      if (line.includes(',')) {
-        const parts = line.split(',').map((p) => p.trim());
-        processEntry(parts[0], parts[1], parts[2]);
-      } else {
-        processEntry(line);
-      }
-    }
-
     // Process file lines
     for (let i = dataStartIndex; i < fileRawLines.length; i++) {
       const line = fileRawLines[i].trim();
@@ -274,7 +236,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
     }
 
     return { validContacts: valid, flaggedDuplicates: duplicates, flaggedShortNumbers: shortNumbers };
-  }, [contactsText, fileRawLines]);
+  }, [fileRawLines]);
 
   const contactCount = validContacts.length;
   const totalFlagged = flaggedDuplicates.length + flaggedShortNumbers.length;
@@ -319,22 +281,18 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
     }
 
     if (contactCount === 0) {
-      setError('Please provide at least one valid phone number (10+ digits).');
+      setError('Please upload a CSV file with at least one valid phone number (10+ digits).');
       return;
     }
 
-    const finalScript = selectedScriptId === 'custom'
-      ? (scriptText.trim() || 'Custom Script')
-      : (scriptText.trim() && scriptText.trim() !== selectedPreset.prompt
-          ? `${selectedPreset.title}: ${scriptText.trim()}`
-          : selectedPreset.title);
+    const selectedPreset = SCRIPT_PRESETS.find((p) => p.id === selectedScriptId) || SCRIPT_PRESETS[0];
 
     setIsSubmitting(true);
     try {
       const created = await createCampaign({
         name: name.trim(),
         description: description.trim() || undefined,
-        script: finalScript,
+        script: selectedPreset.title,
         language,
         voice_pipeline: voicePipeline,
         schedule_start_time: scheduleStartTime,
@@ -359,8 +317,6 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
       setName('');
       setDescription('');
       setSelectedScriptId('delhi-routine');
-      setScriptText(SCRIPT_PRESETS[0].prompt);
-      setContactsText('');
       setFileName('');
       setFileRawLines([]);
       onClose();
@@ -580,7 +536,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
               <label style={labelStyle}>Script *</label>
               <select
                 value={selectedScriptId}
-                onChange={(e) => handleScriptChange(e.target.value)}
+                onChange={(e) => setSelectedScriptId(e.target.value)}
                 style={{
                   ...inputStyle,
                   cursor: 'pointer',
@@ -593,31 +549,6 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
                   </option>
                 ))}
               </select>
-
-              {/* Script Prompt Textarea */}
-              <div style={{ marginTop: 8 }}>
-                <textarea
-                  rows={2}
-                  value={scriptText}
-                  onChange={(e) => setScriptText(e.target.value)}
-                  placeholder={
-                    selectedScriptId === 'custom'
-                      ? 'Enter custom script or opening line for the voice agent...'
-                      : 'Spoken line...'
-                  }
-                  style={{
-                    ...inputStyle,
-                    fontSize: '0.8rem',
-                    fontFamily: 'inherit',
-                    resize: 'vertical',
-                    minHeight: 46,
-                    lineHeight: 1.4,
-                    background: '#080A10',
-                  }}
-                  onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.5)')}
-                  onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)')}
-                />
-              </div>
             </div>
 
             {/* Language & Voice Pipeline */}
@@ -957,7 +888,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
           >
             <div style={sectionHeadingStyle}>
               <Upload size={15} color="#38BDF8" />
-              <span>Target Audience (CSV or Manual Input)</span>
+              <span>Target Audience (CSV Upload)</span>
             </div>
 
             {/* CSV File Upload */}
@@ -1019,25 +950,6 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
                   {fileName || 'No file selected (or drag & drop here)'}
                 </span>
               </div>
-            </div>
-
-            {/* Manual Contacts Textarea */}
-            <div>
-              <label style={labelStyle}>Or paste phone numbers manually</label>
-              <textarea
-                rows={2}
-                value={contactsText}
-                onChange={(e) => setContactsText(e.target.value)}
-                placeholder="+919876543210, John Doe&#10;+919876543211, Jane Smith"
-                style={{
-                  ...inputStyle,
-                  fontFamily: 'inherit',
-                  resize: 'vertical',
-                  minHeight: 56,
-                }}
-                onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.5)')}
-                onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)')}
-              />
             </div>
 
             {/* Validation Breakdown Panel */}
