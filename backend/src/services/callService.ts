@@ -587,6 +587,15 @@ export class CallService {
     }
     const call = callRes.rows[0];
 
+    // Ensure campaign_id is linked if customer belongs to a campaign
+    if (!call.campaign_id && call.customer_id) {
+      const custCampRes = await query('SELECT campaign_id FROM customers WHERE id = $1', [call.customer_id]);
+      if (custCampRes.rows[0]?.campaign_id) {
+        call.campaign_id = custCampRes.rows[0].campaign_id;
+        await query('UPDATE calls SET campaign_id = $1 WHERE id = $2', [call.campaign_id, callId]);
+      }
+    }
+
     const transcriptJson = data.transcript ? JSON.stringify(data.transcript) : null;
     const baseOutcome = data.outcome || finalDisp.toLowerCase();
 
