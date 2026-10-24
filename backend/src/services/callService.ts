@@ -225,10 +225,10 @@ export class CallService {
       );
 
       const insertRes = await client.query(
-        `INSERT INTO calls (id, customer_id, status, call_status, attempt_number, room_name, direction)
-         VALUES ($1, $2, 'initiated', 'initiated', $3, $4, 'outbound')
+        `INSERT INTO calls (id, customer_id, campaign_id, status, call_status, attempt_number, room_name, direction)
+         VALUES ($1, $2, $3, 'initiated', 'initiated', $4, $5, 'outbound')
          RETURNING *`,
-        [callId, customerId, currentAttempt, roomName]
+        [callId, customerId, customer.campaign_id || null, currentAttempt, roomName]
       );
       call = insertRes.rows[0];
       await client.query('COMMIT');
@@ -573,7 +573,7 @@ export class CallService {
     const finalDisp = data.final_disposition || data.outcome || 'DISCONNECTED';
     logger.info({ callId, finalDisposition: finalDisp }, 'Saving call outcome (idempotent)');
 
-    const callRes = await query('SELECT id, customer_id, status FROM calls WHERE id = $1', [callId]);
+    const callRes = await query('SELECT id, customer_id, campaign_id, status FROM calls WHERE id = $1', [callId]);
     if (callRes.rows.length === 0) {
       throw new AppError(`Call not found: ${callId}`, 404);
     }
@@ -634,18 +634,85 @@ export class CallService {
     const medianLatency = data.median_latency_ms || null;
     const costEstimate = data.cost_estimate_inr || (duration > 0 ? (duration / 60) * 2.4 : 0.04);
 
+    // Map into the 3 standard statuses: 'completed' (Successful), 'failed' (Failed), 'no_answer' (No Answer)
+    let mappedStatus = 'completed';
+    const upper = (finalDisp || '').toUpperCase();
+    if (
+      upper.includes('NO ANSWER') ||
+      upper.includes('NO_ANSWER') ||
+      upper.includes('NO_RESPONSE') ||
+      upper.includes('VOICEMAIL') ||
+      upper.includes('TIMEOUT') ||
+      upper.includes('RINGING')
+    ) {
+      mappedStatus = 'no_answer';
+    } else if (
+      upper.includes('FAILED') ||
+      upper.includes('DROPPED') ||
+      upper.includes('BARRIER') ||
+      upper.includes('WRONG NUMBER') ||
+      upper.includes('WRONG_NUMBER') ||
+      upper.includes('BUSY') ||
+      upper.includes('DISCONNECTED') ||
+      upper.includes('DECLINED') ||
+      upper.includes('REFUSED') ||
+      data.escalation_required
+    ) {
+      mappedStatus = 'failed';
+    } else {
+      mappedStatus = 'completed';
+    }
+
     await query(
       `UPDATE calls
-       SET status = 'COMPLETED',
-           call_status = $1,
-           duration_seconds = $2,
-           median_latency_ms = $3,
-           cost_estimate_inr = $4,
-           recording_url = COALESCE($5, recording_url),
+       SET status = $1,
+           call_status = $2,
+           duration_seconds = $3,
+           median_latency_ms = $4,
+           cost_estimate_inr = $5,
+           recording_url = COALESCE($6, recording_url),
+           answered_at = COALESCE(answered_at, CASE WHEN $3 > 0 THEN NOW() - ($3 || ' seconds')::interval ELSE NOW() END),
            ended_at = COALESCE(ended_at, NOW())
-       WHERE id = $6`,
-      [finalDisp, duration, medianLatency, costEstimate, data.recording_url || null, callId]
+       WHERE id = $7`,
+      [mappedStatus, finalDisp, duration, medianLatency, costEstimate, data.recording_url || null, callId]
     );
+
+    // Update campaign counters if call is associated with a campaign
+    if (call.campaign_id) {
+      if (mappedStatus === 'completed') {
+        await query(
+          `UPDATE campaigns
+           SET successful_calls = successful_calls + 1,
+               remaining_calls = GREATEST(0, remaining_calls - 1),
+               unique_called = unique_called + 1,
+               credits_used = credits_used + 1,
+               progress_percent = LEAST(100, ROUND(((unique_called + 1)::numeric / GREATEST(total_contacts, 1)::numeric) * 100)),
+               updated_at = NOW()
+           WHERE id = $1`,
+          [call.campaign_id]
+        );
+      } else if (mappedStatus === 'failed') {
+        await query(
+          `UPDATE campaigns
+           SET failed_calls = failed_calls + 1,
+               remaining_calls = GREATEST(0, remaining_calls - 1),
+               unique_called = unique_called + 1,
+               progress_percent = LEAST(100, ROUND(((unique_called + 1)::numeric / GREATEST(total_contacts, 1)::numeric) * 100)),
+               updated_at = NOW()
+           WHERE id = $1`,
+          [call.campaign_id]
+        );
+      } else {
+        await query(
+          `UPDATE campaigns
+           SET unique_called = unique_called + 1,
+               progress_percent = LEAST(100, ROUND(((unique_called + 1)::numeric / GREATEST(total_contacts, 1)::numeric) * 100)),
+               updated_at = NOW()
+           WHERE id = $1`,
+          [call.campaign_id]
+        );
+      }
+    }
 
     if (call.customer_id) {
       await this.evaluateRetry(call.customer_id, finalDisp, data.confirmed_date || null);
@@ -867,6 +934,7 @@ export class CallService {
       await query(
         `UPDATE calls
          SET status = CASE WHEN status = 'answered' THEN 'completed' ELSE status END,
+             duration_seconds = CASE WHEN (duration_seconds IS NULL OR duration_seconds = 0) AND answered_at IS NOT NULL THEN GREATEST(1, ROUND(EXTRACT(EPOCH FROM (NOW() - answered_at)))::int) ELSE duration_seconds END,
              ended_at = COALESCE(ended_at, NOW())
          WHERE id = $1`,
         [callId]
@@ -908,10 +976,12 @@ export class CallService {
       `SELECT c.*,
               cust.name as customer_name, cust.phone as customer_phone, cust.address as customer_address,
               cust.account_no, cust.subs_del_no, cust.service_end_date, cust.total_attempts,
+              camp.id as campaign_id, camp.name as campaign_name,
               co.outcome, co.final_disposition, co.pickup_date, co.confirmed_date,
               co.address_confirmed, co.new_address, co.transcript, co.customer_note
        FROM calls c
        LEFT JOIN customers cust ON c.customer_id = cust.id
+       LEFT JOIN campaigns camp ON c.campaign_id = camp.id
        LEFT JOIN call_outcomes co ON c.id = co.call_id
        WHERE c.id = $1`,
       [callId]
@@ -929,19 +999,32 @@ export class CallService {
     return res.rows.map((r: any) => serializeCustomer(r));
   }
 
-  async listRecentCalls(limit = 20) {
-    const res = await query(
-      `SELECT c.*,
-              cust.name as customer_name, cust.phone as customer_phone,
-              co.final_disposition, co.confirmed_date, co.pickup_date
+  async listRecentCalls(limit = 100, status?: string) {
+    let q = `
+      SELECT c.*,
+              cust.name as customer_name, cust.phone as customer_phone, cust.subs_del_no, cust.language as customer_language,
+              camp.id as campaign_id, camp.name as campaign_name,
+              co.final_disposition, co.confirmed_date, co.pickup_date, co.transcript
        FROM calls c
        LEFT JOIN customers cust ON c.customer_id = cust.id
+       LEFT JOIN campaigns camp ON c.campaign_id = camp.id
        LEFT JOIN call_outcomes co ON c.id = co.call_id
-       ORDER BY c.created_at DESC
-       LIMIT $1`,
-      [limit]
-    );
+    `;
+    const params: any[] = [];
+    if (status && status !== 'ALL') {
+      const s = status.toUpperCase();
+      if (s === 'SUCCESSFUL') {
+        q += ` WHERE (UPPER(c.status) IN ('COMPLETED', 'ANSWERED', 'SUCCESSFUL'))`;
+      } else if (s === 'FAILED') {
+        q += ` WHERE (UPPER(c.status) IN ('FAILED', 'BUSY', 'DISCONNECTED'))`;
+      } else if (s === 'NO_ANSWER' || s === 'NO ANSWER') {
+        q += ` WHERE (UPPER(c.status) IN ('NO_ANSWER', 'NO ANSWER', 'NO_RESPONSE', 'VOICEMAIL'))`;
+      }
+    }
+    q += ` ORDER BY c.created_at DESC LIMIT $${params.length + 1}`;
+    params.push(limit);
 
+    const res = await query(q, params);
     return res.rows;
   }
 }
