@@ -36,6 +36,52 @@ interface FlaggedIssue {
   reason: string;
 }
 
+export interface ScriptPresetOption {
+  id: string;
+  title: string;
+  tag: string;
+  description: string;
+  prompt: string;
+}
+
+export const SCRIPT_PRESETS: ScriptPresetOption[] = [
+  {
+    id: 'delhi-routine',
+    title: 'Airtel Delhi Wi-Fi (Routine Pickup)',
+    tag: 'Spreadsheet Sample',
+    description: 'Routine Wi-Fi router return after service end date in Sant Nagar, Delhi',
+    prompt: 'नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं आपसे बात कर सकती हूँ? आपके एयरटेल वाई-फाई अकाउंट के संबंध में रूटीन पिकअप शेड्यूल करना है।',
+  },
+  {
+    id: 'bengaluru-relocated',
+    title: 'Airtel Fiber Bengaluru (Shifted Address)',
+    tag: 'Relocation Scenario',
+    description: 'Customer moved to a new flat in Koramangala; needs new address confirmation',
+    prompt: 'नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। आपने नए पते पर शिफ्ट होने की जानकारी दी थी, क्या हम आपके नए पते से वाई-फाई राउटर पिकअप शेड्यूल कर लें?',
+  },
+  {
+    id: 'noida-refund-query',
+    title: 'Airtel Wi-Fi Noida (Dispute / 121 Query)',
+    tag: 'Dispute Scenario',
+    description: 'Customer claims router deposit refund; agent Priya clarifies policy and logs escalation',
+    prompt: 'नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। आपके राउटर डिपॉजिट रिफंड और डिवाइस रिटर्न पॉलिसी की जानकारी देने के लिए कॉल किया है। क्या मैं आपसे बात कर सकती हूँ?',
+  },
+  {
+    id: 'airtel-general-pickup',
+    title: 'Airtel Standard Outbound Pickup',
+    tag: 'Default Script',
+    description: 'Standard polite identity confirmation and device pickup date negotiation',
+    prompt: 'नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं आपसे बात कर सकती हूँ? आपके एयरटेल वाई-फाई अकाउंट के सस्पेंशन के बाद राउटर पिकअप शेड्यूल करना है।',
+  },
+  {
+    id: 'custom',
+    title: 'Custom Script (Manual Input)',
+    tag: 'Custom',
+    description: 'Provide custom script instructions or custom opening prompt for the voice agent',
+    prompt: '',
+  },
+];
+
 const ALL_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 const DEFAULT_DISPOSITIONS = [
@@ -56,9 +102,8 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
   // Campaign Details
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [script, setScript] = useState(
-    'नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं आपसे बात कर सकती हूँ?'
-  );
+  const [selectedScriptId, setSelectedScriptId] = useState<string>('delhi-routine');
+  const [scriptText, setScriptText] = useState<string>(SCRIPT_PRESETS[0].prompt);
   const [language, setLanguage] = useState('hi-IN');
   const [voicePipeline, setVoicePipeline] = useState('Sarvam AI (Priya - hi-IN)');
 
@@ -89,6 +134,21 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
   const [error, setError] = useState<string | null>(null);
 
   const fileInputId = useId();
+
+  const selectedPreset = useMemo(
+    () => SCRIPT_PRESETS.find((p) => p.id === selectedScriptId) || SCRIPT_PRESETS[0],
+    [selectedScriptId]
+  );
+
+  const handleScriptChange = (id: string) => {
+    setSelectedScriptId(id);
+    const preset = SCRIPT_PRESETS.find((p) => p.id === id);
+    if (preset && id !== 'custom') {
+      setScriptText(preset.prompt);
+    } else if (id === 'custom' && scriptText === selectedPreset.prompt) {
+      setScriptText('');
+    }
+  };
 
   // Day toggle handler
   const toggleDay = (day: string) => {
@@ -275,12 +335,18 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
       return;
     }
 
+    const finalScript = selectedScriptId === 'custom'
+      ? (scriptText.trim() || 'Custom Script')
+      : (scriptText.trim() && scriptText.trim() !== selectedPreset.prompt
+          ? `${selectedPreset.title}: ${scriptText.trim()}`
+          : selectedPreset.title);
+
     setIsSubmitting(true);
     try {
       const created = await createCampaign({
         name: name.trim(),
         description: description.trim() || undefined,
-        script: script.trim(),
+        script: finalScript,
         language,
         voice_pipeline: voicePipeline,
         schedule_start_time: scheduleStartTime,
@@ -304,6 +370,8 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
       // Reset and close
       setName('');
       setDescription('');
+      setSelectedScriptId('delhi-routine');
+      setScriptText(SCRIPT_PRESETS[0].prompt);
       setContactsText('');
       setFileName('');
       setFileRawLines([]);
@@ -519,24 +587,87 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
               </div>
             </div>
 
-            {/* Script Field */}
+            {/* Script Dropdown Field */}
             <div>
-              <label style={labelStyle}>Agent Script / Opening Prompt *</label>
-              <textarea
-                rows={2}
-                value={script}
-                onChange={(e) => setScript(e.target.value)}
-                placeholder="Initial greeting and context for the voice pipeline..."
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>
+                <label style={{ ...labelStyle, marginBottom: 0 }}>Script (Voice Scenario) *</label>
+                {selectedPreset.tag && (
+                  <span
+                    style={{
+                      fontSize: '0.68rem',
+                      padding: '1px 7px',
+                      borderRadius: 4,
+                      background: 'rgba(56, 189, 248, 0.12)',
+                      border: '1px solid rgba(56, 189, 248, 0.3)',
+                      color: '#38BDF8',
+                      fontWeight: 600,
+                    }}
+                  >
+                    {selectedPreset.tag}
+                  </span>
+                )}
+              </div>
+              <select
+                value={selectedScriptId}
+                onChange={(e) => handleScriptChange(e.target.value)}
                 style={{
                   ...inputStyle,
-                  fontFamily: 'inherit',
-                  resize: 'vertical',
-                  minHeight: 56,
-                  lineHeight: 1.4,
+                  cursor: 'pointer',
+                  borderColor: 'rgba(59, 130, 246, 0.4)',
                 }}
-                onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.5)')}
-                onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)')}
-              />
+              >
+                {SCRIPT_PRESETS.map((preset) => (
+                  <option key={preset.id} value={preset.id} style={{ background: '#0B0F17' }}>
+                    {preset.title}
+                  </option>
+                ))}
+              </select>
+
+              {/* Scenario Context & Prompt Box */}
+              <div
+                style={{
+                  marginTop: 8,
+                  padding: '10px 12px',
+                  borderRadius: 8,
+                  background: '#04060A',
+                  border: '1px solid rgba(255, 255, 255, 0.06)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 6,
+                }}
+              >
+                <div style={{ fontSize: '0.74rem', color: '#94A3B8', lineHeight: 1.4 }}>
+                  <span style={{ color: '#E2E8F0', fontWeight: 600 }}>Scenario: </span>
+                  {selectedPreset.description}
+                </div>
+
+                <div>
+                  <label style={{ ...labelStyle, fontSize: '0.72rem', marginBottom: 4, color: '#64748B' }}>
+                    {selectedScriptId === 'custom' ? 'Custom Script Prompt:' : 'Spoken Voice Script:'}
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={scriptText}
+                    onChange={(e) => setScriptText(e.target.value)}
+                    placeholder={
+                      selectedScriptId === 'custom'
+                        ? 'Enter custom script or opening line for the voice agent...'
+                        : 'Spoken line...'
+                    }
+                    style={{
+                      ...inputStyle,
+                      fontSize: '0.8rem',
+                      fontFamily: 'inherit',
+                      resize: 'vertical',
+                      minHeight: 46,
+                      lineHeight: 1.4,
+                      background: '#080A10',
+                    }}
+                    onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.5)')}
+                    onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)')}
+                  />
+                </div>
+              </div>
             </div>
 
             {/* Language & Voice Pipeline */}
