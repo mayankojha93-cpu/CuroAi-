@@ -12,6 +12,8 @@ import { webhooksRouter } from './routes/webhooks.js';
 import { callService } from './services/callService.js';
 import { downloadPendingRecordings } from './services/recordingDownloader.js';
 import { authRouter } from './routes/auth.js';
+import { campaignsRouter } from './routes/campaigns.js';
+import { billingRouter } from './routes/billing.js';
 import { requireAuth } from './middleware/auth.js';
 import { authService } from './services/authService.js';
 
@@ -46,6 +48,8 @@ app.use(express.text({ type: ['text/csv', 'text/plain'], limit: '10mb' }));
 app.use(healthRouter);
 app.use(authRouter);
 app.use(requireAuth, callsRouter);
+app.use(requireAuth, campaignsRouter);
+app.use(requireAuth, billingRouter);
 app.use(internalRouter);
 
 // 404 handler
