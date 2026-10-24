@@ -39,24 +39,29 @@ interface FlaggedIssue {
 export interface ScriptPresetOption {
   id: string;
   title: string;
+  prompt: string;
 }
 
 export const SCRIPT_PRESETS: ScriptPresetOption[] = [
   {
     id: 'delhi-routine',
     title: 'Airtel Delhi Wi-Fi (Routine Pickup)',
+    prompt: 'नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं आपसे बात कर सकती हूँ? आपके एयरटेल वाई-फाई अकाउंट के संबंध में रूटीन पिकअप शेड्यूल करना है।',
   },
   {
     id: 'bengaluru-relocated',
     title: 'Airtel Fiber Bengaluru (Shifted Address)',
+    prompt: 'नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। आपने नए पते पर शिफ्ट होने की जानकारी दी थी, क्या हम आपके नए पते से वाई-फाई राउटर पिकअप शेड्यूल कर लें?',
   },
   {
     id: 'noida-refund-query',
     title: 'Airtel Wi-Fi Noida (Dispute / 121 Query)',
+    prompt: 'नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। आपके राउटर डिपॉजिट रिफंड और डिवाइस रिटर्न पॉलिसी की जानकारी देने के लिए कॉल किया है। क्या मैं आपसे बात कर सकती हूँ?',
   },
   {
     id: 'airtel-general-pickup',
     title: 'Airtel Standard Outbound Pickup',
+    prompt: 'नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं आपसे बात कर सकती हूँ? आपके एयरटेल वाई-फाई अकाउंट के सस्पेंशन के बाद राउटर पिकअप शेड्यूल करना है।',
   },
 ];
 
@@ -292,7 +297,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
       const created = await createCampaign({
         name: name.trim(),
         description: description.trim() || undefined,
-        script: selectedPreset.title,
+        script: selectedPreset.prompt,
         language,
         voice_pipeline: voicePipeline,
         schedule_start_time: scheduleStartTime,
