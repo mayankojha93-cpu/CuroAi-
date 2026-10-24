@@ -627,7 +627,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLogin }) => {
                 <textarea name="message" placeholder="Tell us about the people and the process" />
               </label>
               <button className="btn light" type="submit">
-                Start the conversation <span aria-hidden="true">&nearr;</span>
+                Start the conversation
               </button>
               <p className="note">Submitting opens your email app to send your enquiry to Curo.</p>
             </form>
