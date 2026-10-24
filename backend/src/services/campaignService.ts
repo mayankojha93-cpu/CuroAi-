@@ -18,6 +18,18 @@ export interface CampaignDbRow {
   credits_used: number;
   total_credits: number;
   execution_date: string;
+  script?: string;
+  language?: string;
+  voice_pipeline?: string;
+  schedule_start_time?: string;
+  schedule_end_time?: string;
+  operating_days?: string[];
+  max_concurrent_calls?: number;
+  calls_per_minute?: number;
+  retry_attempts?: number;
+  retry_delay_minutes?: number;
+  max_call_duration_minutes?: number;
+  expected_dispositions?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -44,10 +56,7 @@ export class CampaignService {
    */
   async listCampaigns(status?: string, search?: string): Promise<CampaignDbRow[]> {
     let query = `
-      SELECT id, name, description, status, service, progress_percent,
-             total_contacts, unique_called, successful_calls, failed_calls,
-             remaining_calls, credits_used, total_credits, execution_date,
-             created_at, updated_at
+      SELECT *
       FROM campaigns
       WHERE 1=1
     `;
@@ -84,6 +93,18 @@ export class CampaignService {
     name: string;
     description?: string;
     status?: string;
+    script?: string;
+    language?: string;
+    voice_pipeline?: string;
+    schedule_start_time?: string;
+    schedule_end_time?: string;
+    operating_days?: string[];
+    max_concurrent_calls?: number;
+    calls_per_minute?: number;
+    retry_attempts?: number;
+    retry_delay_minutes?: number;
+    max_call_duration_minutes?: number;
+    expected_dispositions?: string[];
     total_contacts?: number;
     total_credits?: number;
     contacts?: string[];
@@ -107,16 +128,39 @@ export class CampaignService {
     const totalCredits = data.total_credits || totalContacts;
 
     const query = `
-      INSERT INTO campaigns (name, description, status, total_contacts, total_credits, remaining_calls)
-      VALUES ($1, $2, $3, $4, $5, $4)
+      INSERT INTO campaigns (
+        name, description, status, total_contacts, total_credits, remaining_calls,
+        script, language, voice_pipeline, schedule_start_time, schedule_end_time,
+        operating_days, max_concurrent_calls, calls_per_minute, retry_attempts,
+        retry_delay_minutes, max_call_duration_minutes, expected_dispositions
+      )
+      VALUES ($1, $2, $3, $4, $5, $4, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
       RETURNING *
     `;
     const res = await pool.query(query, [
       data.name,
-      data.description || 'Voice outreach campaign dispatched via CuroAI.',
+      data.description || null,
       status,
       totalContacts,
       totalCredits,
+      data.script || 'नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं आपसे बात कर सकती हूँ?',
+      data.language || 'hi-IN',
+      data.voice_pipeline || 'Sarvam AI (Priya - hi-IN)',
+      data.schedule_start_time || '09:00',
+      data.schedule_end_time || '20:00',
+      JSON.stringify(data.operating_days || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']),
+      data.max_concurrent_calls || 5,
+      data.calls_per_minute || 30,
+      data.retry_attempts || 3,
+      data.retry_delay_minutes || 180,
+      data.max_call_duration_minutes || 5,
+      JSON.stringify(data.expected_dispositions || [
+        'CONFIRMED_PICKUP',
+        'NEEDS_AIRTEL_SUPPORT',
+        'SCHEDULE_CALLBACK',
+        'REFUSED',
+        'WRONG_PERSON',
+      ]),
     ]);
     const campaign = res.rows[0];
 
