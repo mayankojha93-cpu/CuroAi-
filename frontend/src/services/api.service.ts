@@ -26,7 +26,7 @@ async function authFetch(input: RequestInfo | URL, init: RequestInit = {}): Prom
  * Checks system and database connectivity health (public)
  */
 export async function fetchHealth(): Promise<SystemHealth> {
-  const res = await fetch(`${API_BASE}/health`);
+  const res = await fetch(`${API_BASE}/api/health`);
   if (!res.ok) throw new Error(`Health check failed: ${res.statusText}`);
   return res.json();
 }
@@ -45,7 +45,7 @@ export async function fetchCampaignSummary(): Promise<CampaignSummary> {
  * Fetches recent call history with latency and recording details
  */
 export async function fetchRecentCalls(): Promise<CallRecord[]> {
-  const res = await authFetch(`${API_BASE}/calls`);
+  const res = await authFetch(`${API_BASE}/api/calls`);
   if (!res.ok) throw new Error(`Failed to fetch calls: ${res.statusText}`);
   const data = await res.json();
   return data.calls || [];
@@ -55,7 +55,7 @@ export async function fetchRecentCalls(): Promise<CallRecord[]> {
  * Fetches full details and turn-by-turn transcript for a specific call
  */
 export async function fetchCallDetail(callId: string): Promise<CallRecord> {
-  const res = await authFetch(`${API_BASE}/calls/${callId}`);
+  const res = await authFetch(`${API_BASE}/api/calls/${callId}`);
   if (!res.ok) throw new Error(`Failed to fetch call details: ${res.statusText}`);
   const data = await res.json();
   return data.call;
@@ -85,7 +85,7 @@ export async function fetchPendingRetries(): Promise<Customer[]> {
  * Triggers outbound SIP call dispatched to agent Priya
  */
 export async function initiateCall(customerId: string): Promise<{ id: string; status: string; roomName: string }> {
-  const res = await authFetch(`${API_BASE}/calls`, {
+  const res = await authFetch(`${API_BASE}/api/calls`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ customerId }),
