@@ -1,59 +1,170 @@
-import React from 'react';
-import { X, Phone, User, Bot, MessageSquare } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { X, Phone, User, Bot, MessageSquare, Volume2, ShieldAlert } from 'lucide-react';
 import type { CallRecord } from '../../types';
+import { fetchCallDetail } from '../../services/api.service';
 
 interface CallDetailModalProps {
   call: CallRecord | null;
   onClose: () => void;
 }
 
+interface TranscriptTurn {
+  role?: string;
+  speaker?: string;
+  message?: string;
+  text?: string;
+  content?: string;
+  timestamp?: number;
+}
+
 export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose }) => {
-  if (!call) return null;
+  const [activeCall, setActiveCall] = useState<CallRecord | null>(call);
+
+  // Sync activeCall when prop changes and fetch full record from DB
+  useEffect(() => {
+    setActiveCall(call);
+    if (call?.id) {
+      fetchCallDetail(call.id)
+        .then((freshCall) => {
+          if (freshCall) {
+            setActiveCall(freshCall);
+          }
+        })
+        .catch(() => {
+          // If fetch fails, keep current call prop
+        });
+    }
+  }, [call]);
+
+  const transcriptList: TranscriptTurn[] = useMemo(() => {
+    if (!activeCall) return [];
+    const t = (activeCall as any).transcript;
+    if (!t) return [];
+    if (Array.isArray(t)) return t;
+    if (typeof t === 'string') {
+      try {
+        const parsed = JSON.parse(t);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  }, [activeCall]);
+
+  if (!call || !activeCall) return null;
+
+  const rawStatus = (activeCall.status || '').toLowerCase();
+  const rawDisp = ((activeCall as any).final_disposition || (activeCall as any).call_result || activeCall.call_status || '').toLowerCase();
+
+  let canonicalStatus: 'SUCCESSFUL' | 'FAILED' | 'NO_ANSWER' = 'SUCCESSFUL';
+  if (rawStatus === 'no_answer' || rawStatus === 'no answer' || rawDisp.includes('no answer') || rawDisp.includes('timeout') || rawDisp.includes('ringing')) {
+    canonicalStatus = 'NO_ANSWER';
+  } else if (rawStatus === 'failed' || rawDisp.includes('dropped') || rawDisp.includes('barrier') || rawDisp.includes('wrong number')) {
+    canonicalStatus = 'FAILED';
+  } else {
+    canonicalStatus = 'SUCCESSFUL';
+  }
+
+  const getStatusBadge = () => {
+    if (canonicalStatus === 'SUCCESSFUL') {
+      return (
+        <span style={{
+          background: 'rgba(16, 185, 129, 0.15)',
+          border: '1px solid rgba(16, 185, 129, 0.3)',
+          color: '#34D399',
+          padding: '4px 10px',
+          borderRadius: 6,
+          fontSize: '0.74rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+        }}>
+          SUCCESSFUL
+        </span>
+      );
+    }
+    if (canonicalStatus === 'NO_ANSWER') {
+      return (
+        <span style={{
+          background: 'rgba(245, 158, 11, 0.15)',
+          border: '1px solid rgba(245, 158, 11, 0.3)',
+          color: '#F59E0B',
+          padding: '4px 10px',
+          borderRadius: 6,
+          fontSize: '0.74rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+        }}>
+          NO ANSWER
+        </span>
+      );
+    }
+    return (
+      <span style={{
+        background: 'rgba(244, 63, 94, 0.15)',
+        border: '1px solid rgba(244, 63, 94, 0.3)',
+        color: '#FB7185',
+        padding: '4px 10px',
+        borderRadius: 6,
+        fontSize: '0.74rem',
+        fontWeight: 700,
+        letterSpacing: '0.04em',
+      }}>
+        FAILED
+      </span>
+    );
+  };
+
+  const phoneDisplay = activeCall.customer_phone || (activeCall as any).phone || '—';
+  const campaignName = (activeCall as any).campaign_name || 'Campaign';
 
   return (
-    <div style={{
-      position: 'fixed',
-      inset: 0,
-      background: 'rgba(0, 0, 0, 0.75)',
-      backdropFilter: 'blur(8px)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      zIndex: 100,
-      padding: 20,
-    }} onClick={onClose}>
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0, 0, 0, 0.8)',
+        backdropFilter: 'blur(10px)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 100,
+        padding: 20,
+      }}
+      onClick={onClose}
+    >
       <div
-        className="glass-panel"
         style={{
           width: '100%',
           maxWidth: 780,
           maxHeight: '90vh',
           display: 'flex',
           flexDirection: 'column',
-          background: 'var(--bg-secondary)',
-          border: '1px solid var(--border-light)',
-          borderRadius: 'var(--radius-xl)',
+          background: '#0B0F19',
+          border: '1px solid rgba(255, 255, 255, 0.1)',
+          borderRadius: 16,
           overflow: 'hidden',
-          boxShadow: 'var(--shadow-lg)',
+          boxShadow: '0 20px 50px rgba(0, 0, 0, 0.6)',
         }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div style={{
           padding: '20px 24px',
-          borderBottom: '1px solid var(--border-subtle)',
+          borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
           background: 'rgba(255, 255, 255, 0.02)',
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
             <div style={{
-              width: 38,
-              height: 38,
+              width: 40,
+              height: 40,
               borderRadius: 10,
-              background: 'var(--accent-red-glow)',
-              color: 'var(--airtel-red)',
+              background: 'rgba(56, 189, 248, 0.12)',
+              border: '1px solid rgba(56, 189, 248, 0.25)',
+              color: '#38BDF8',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -61,11 +172,14 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
               <Phone size={20} />
             </div>
             <div>
-              <h3 style={{ fontSize: '1.15rem', fontWeight: 800, color: '#fff' }}>
-                Call Audit & Transcript
-              </h3>
-              <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                Room: {call.room_name} | Call ID: {call.id.slice(0, 8)}...
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <h3 style={{ fontSize: '1.15rem', fontWeight: 700, color: '#FFFFFF', margin: 0 }}>
+                  Call Audit & Transcript
+                </h3>
+                {getStatusBadge()}
+              </div>
+              <p style={{ fontSize: '0.8rem', color: '#94A3B8', marginTop: 3, marginBottom: 0 }}>
+                {campaignName} • Call ID: {activeCall.id ? activeCall.id.slice(0, 8) : '—'}
               </p>
             </div>
           </div>
@@ -73,8 +187,8 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
           <button
             onClick={onClose}
             style={{
-              background: 'rgba(255, 255, 255, 0.08)',
-              color: 'var(--text-secondary)',
+              background: 'rgba(255, 255, 255, 0.06)',
+              color: '#94A3B8',
               border: 'none',
               width: 32,
               height: 32,
@@ -83,6 +197,15 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
               alignItems: 'center',
               justifyContent: 'center',
               cursor: 'pointer',
+              transition: 'all 0.15s ease',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.12)';
+              e.currentTarget.style.color = '#FFFFFF';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.06)';
+              e.currentTarget.style.color = '#94A3B8';
             }}
           >
             <X size={18} />
@@ -90,87 +213,130 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
         </div>
 
         {/* Scrollable Content */}
-        <div style={{ padding: 24, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 20 }}>
+        <div style={{ padding: 24, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 18 }}>
           {/* Key Outcome Highlights */}
           <div style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
             gap: 12,
           }}>
-            <div className="glass-panel" style={{ padding: 14 }}>
-              <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>
+            <div style={{
+              background: '#0F1524',
+              border: '1px solid rgba(255, 255, 255, 0.06)',
+              borderRadius: 10,
+              padding: '12px 14px',
+            }}>
+              <span style={{ fontSize: '0.72rem', color: '#64748B', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.04em' }}>
                 Final Disposition
               </span>
-              <div style={{ marginTop: 4 }}>
-                <span className="badge badge-green" style={{ fontSize: '0.8rem', padding: '4px 10px' }}>
-                  {call.final_disposition || call.outcome || 'IN_PROGRESS'}
-                </span>
+              <div style={{ fontSize: '0.88rem', fontWeight: 600, color: '#FFFFFF', marginTop: 4 }}>
+                {(activeCall as any).final_disposition || (activeCall as any).call_result || (activeCall as any).disposition || activeCall.call_status || '—'}
               </div>
             </div>
 
-            <div className="glass-panel" style={{ padding: 14 }}>
-              <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>
-                Confirmed Pickup Date
+            <div style={{
+              background: '#0F1524',
+              border: '1px solid rgba(255, 255, 255, 0.06)',
+              borderRadius: 10,
+              padding: '12px 14px',
+            }}>
+              <span style={{ fontSize: '0.72rem', color: '#64748B', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.04em' }}>
+                Confirmed Date
               </span>
-              <div style={{ fontSize: '1rem', fontWeight: 700, color: '#fff', marginTop: 4 }}>
-                {call.confirmed_date || call.pickup_date || 'Not Scheduled'}
+              <div style={{ fontSize: '0.88rem', fontWeight: 600, color: '#38BDF8', marginTop: 4 }}>
+                {(activeCall as any).confirmed_date || (activeCall as any).pickup_date || '—'}
               </div>
             </div>
 
-            <div className="glass-panel" style={{ padding: 14 }}>
-              <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>
+            <div style={{
+              background: '#0F1524',
+              border: '1px solid rgba(255, 255, 255, 0.06)',
+              borderRadius: 10,
+              padding: '12px 14px',
+            }}>
+              <span style={{ fontSize: '0.72rem', color: '#64748B', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.04em' }}>
                 Duration & Latency
               </span>
-              <div style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--accent-cyan)', marginTop: 4 }}>
-                {call.duration_seconds || 0}s | ~{call.median_latency_ms || 220}ms TTFT
+              <div style={{ fontSize: '0.88rem', fontWeight: 600, color: '#34D399', marginTop: 4 }}>
+                {activeCall.duration_seconds || 0}s {activeCall.median_latency_ms ? `| ~${activeCall.median_latency_ms}ms` : ''}
               </div>
             </div>
 
-            <div className="glass-panel" style={{ padding: 14 }}>
-              <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>
-                AI Telephony Cost
+            <div style={{
+              background: '#0F1524',
+              border: '1px solid rgba(255, 255, 255, 0.06)',
+              borderRadius: 10,
+              padding: '12px 14px',
+            }}>
+              <span style={{ fontSize: '0.72rem', color: '#64748B', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.04em' }}>
+                Telephony Cost
               </span>
-              <div style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--accent-green)', marginTop: 4 }}>
-                ₹{call.cost_estimate_inr || '0.04'}
+              <div style={{ fontSize: '0.88rem', fontWeight: 600, color: '#F59E0B', marginTop: 4 }}>
+                ₹{activeCall.cost_estimate_inr !== undefined && activeCall.cost_estimate_inr !== null ? activeCall.cost_estimate_inr : '0.00'}
               </div>
             </div>
           </div>
 
           {/* Customer & Address Details */}
-          <div className="glass-panel" style={{ padding: 16 }}>
-            <h4 style={{ fontSize: '0.85rem', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 12, letterSpacing: '0.04em' }}>
+          <div style={{
+            background: '#0F1524',
+            border: '1px solid rgba(255, 255, 255, 0.06)',
+            borderRadius: 12,
+            padding: 16,
+          }}>
+            <h4 style={{ fontSize: '0.76rem', color: '#64748B', textTransform: 'uppercase', marginBottom: 12, fontWeight: 700, letterSpacing: '0.05em' }}>
               Customer Verification & Destination
             </h4>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, fontSize: '0.86rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, fontSize: '0.84rem' }}>
               <div>
-                <span style={{ color: 'var(--text-muted)' }}>Customer: </span>
-                <strong style={{ color: '#fff' }}>{call.customer_name || 'Customer'}</strong> ({call.customer_phone})
+                <span style={{ color: '#94A3B8' }}>Customer: </span>
+                <strong style={{ color: '#FFFFFF' }}>{activeCall.customer_name || '—'}</strong> ({phoneDisplay})
               </div>
               <div>
-                <span style={{ color: 'var(--text-muted)' }}>Address Status: </span>
-                <strong style={{ color: call.address_confirmed ? 'var(--accent-green)' : 'var(--accent-amber)' }}>
-                  {call.address_confirmed ? 'Registered Address Confirmed' : 'Updated / Pending'}
-                </strong>
+                <span style={{ color: '#94A3B8' }}>Contact Ref: </span>
+                <span style={{ color: '#38BDF8', fontWeight: 600 }}>{(activeCall as any).subs_del_no || (activeCall as any).contact_ref || '—'}</span>
               </div>
               <div style={{ gridColumn: '1 / -1' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Pickup Location: </span>
-                <span style={{ color: '#fff' }}>{call.new_address || call.customer_address || 'Registered Address'}</span>
+                <span style={{ color: '#94A3B8' }}>Address: </span>
+                <span style={{ color: '#E2E8F0' }}>{(activeCall as any).new_address || activeCall.customer_address || '—'}</span>
               </div>
-              {call.customer_note && (
-                <div style={{ gridColumn: '1 / -1', background: 'rgba(255, 255, 255, 0.04)', padding: 10, borderRadius: 8 }}>
-                  <span style={{ color: 'var(--accent-amber)', fontWeight: 600 }}>Note: </span>
-                  <span style={{ color: 'var(--text-secondary)' }}>{call.customer_note}</span>
+              {(activeCall as any).customer_note && (
+                <div style={{ gridColumn: '1 / -1', background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.2)', padding: 10, borderRadius: 8 }}>
+                  <span style={{ color: '#F59E0B', fontWeight: 600 }}>Note: </span>
+                  <span style={{ color: '#E2E8F0' }}>{(activeCall as any).customer_note}</span>
                 </div>
               )}
             </div>
           </div>
 
-          {/* Turn-by-Turn Conversational Transcript */}
+          {/* Audio Recording Player if available */}
+          {activeCall.recording_url && (
+            <div style={{
+              background: '#0F1524',
+              border: '1px solid rgba(56, 189, 248, 0.2)',
+              borderRadius: 12,
+              padding: 14,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <Volume2 size={16} color="#38BDF8" />
+                <span style={{ fontSize: '0.84rem', fontWeight: 600, color: '#FFFFFF' }}>
+                  Call Audio Recording
+                </span>
+              </div>
+              <audio
+                controls
+                src={activeCall.recording_url}
+                style={{ width: '100%', height: 36, outline: 'none' }}
+              />
+            </div>
+          )}
+
+          {/* Turn-by-Turn Transcript */}
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-              <MessageSquare size={16} color="var(--accent-purple)" />
-              <h4 style={{ fontSize: '0.92rem', fontWeight: 700, color: '#fff' }}>
-                Full Turn-by-Turn Hindi/Hinglish Transcript
+              <MessageSquare size={16} color="#C084FC" />
+              <h4 style={{ fontSize: '0.9rem', fontWeight: 700, color: '#FFFFFF', margin: 0 }}>
+                Full Turn-by-Turn Voice Transcript
               </h4>
             </div>
 
@@ -180,18 +346,46 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
               gap: 12,
               maxHeight: 280,
               overflowY: 'auto',
-              padding: 12,
-              background: 'rgba(10, 14, 23, 0.5)',
-              borderRadius: 'var(--radius-md)',
-              border: '1px solid var(--border-subtle)',
+              padding: 14,
+              background: '#090D16',
+              borderRadius: 12,
+              border: '1px solid rgba(255, 255, 255, 0.06)',
             }}>
-              {!call.transcript || call.transcript.length === 0 ? (
-                <p style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 20, fontSize: '0.85rem' }}>
+              {transcriptList.length === 0 ? (
+                <p style={{ textAlign: 'center', color: '#64748B', padding: '24px 0', fontSize: '0.85rem', margin: 0 }}>
                   No turn-by-turn dialogue captured for this call.
                 </p>
               ) : (
-                call.transcript.map((item, idx) => {
-                  const isBot = item.role === 'assistant';
+                transcriptList.map((item, idx) => {
+                  const roleStr = (item.role || '').toLowerCase();
+                  const speakerStr = (item.speaker || '').toLowerCase();
+                  const isBot = roleStr === 'assistant' || speakerStr === 'agent' || speakerStr === 'assistant';
+                  const isSystem = roleStr === 'system';
+                  const text = item.message || item.text || item.content || '';
+
+                  if (isSystem) {
+                    return (
+                      <div
+                        key={idx}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: 6,
+                          padding: '6px 12px',
+                          background: 'rgba(255, 255, 255, 0.04)',
+                          borderRadius: 6,
+                          fontSize: '0.75rem',
+                          color: '#94A3B8',
+                          margin: '4px 0',
+                        }}
+                      >
+                        <ShieldAlert size={12} color="#F59E0B" />
+                        <span>{text}</span>
+                      </div>
+                    );
+                  }
+
                   return (
                     <div
                       key={idx}
@@ -206,18 +400,18 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
                         alignItems: 'center',
                         gap: 6,
                         fontSize: '0.72rem',
-                        color: 'var(--text-muted)',
-                        marginBottom: 3,
+                        color: '#64748B',
+                        marginBottom: 4,
                       }}>
                         {isBot ? (
                           <>
-                            <Bot size={12} color="var(--airtel-red)" />
-                            <span style={{ color: '#ff6666', fontWeight: 600 }}>Priya (AI Voice)</span>
+                            <Bot size={13} color="#38BDF8" />
+                            <span style={{ color: '#38BDF8', fontWeight: 600 }}>CuroAI Voice Agent</span>
                           </>
                         ) : (
                           <>
-                            <User size={12} color="var(--accent-cyan)" />
-                            <span style={{ color: 'var(--accent-cyan)', fontWeight: 600 }}>Customer</span>
+                            <User size={13} color="#10B981" />
+                            <span style={{ color: '#10B981', fontWeight: 600 }}>Customer</span>
                           </>
                         )}
                       </div>
@@ -226,13 +420,13 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
                         maxWidth: '82%',
                         padding: '10px 14px',
                         borderRadius: isBot ? '4px 14px 14px 14px' : '14px 4px 14px 14px',
-                        background: isBot ? 'rgba(228, 0, 0, 0.12)' : 'rgba(59, 130, 246, 0.12)',
-                        border: isBot ? '1px solid rgba(228, 0, 0, 0.25)' : '1px solid rgba(59, 130, 246, 0.25)',
-                        color: '#fff',
-                        fontSize: '0.86rem',
+                        background: isBot ? 'rgba(56, 189, 248, 0.1)' : 'rgba(16, 185, 129, 0.1)',
+                        border: isBot ? '1px solid rgba(56, 189, 248, 0.22)' : '1px solid rgba(16, 185, 129, 0.22)',
+                        color: '#FFFFFF',
+                        fontSize: '0.85rem',
                         lineHeight: 1.45,
                       }}>
-                        {item.message}
+                        {text}
                       </div>
                     </div>
                   );
@@ -245,7 +439,7 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
         {/* Footer */}
         <div style={{
           padding: '14px 24px',
-          borderTop: '1px solid var(--border-subtle)',
+          borderTop: '1px solid rgba(255, 255, 255, 0.08)',
           display: 'flex',
           justifyContent: 'flex-end',
           background: 'rgba(255, 255, 255, 0.02)',
@@ -253,14 +447,18 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
           <button
             onClick={onClose}
             style={{
-              padding: '8px 18px',
-              borderRadius: 'var(--radius-sm)',
-              background: 'rgba(255, 255, 255, 0.08)',
-              color: '#fff',
+              padding: '8px 20px',
+              borderRadius: 8,
+              background: '#1E293B',
+              border: '1px solid rgba(255, 255, 255, 0.12)',
+              color: '#FFFFFF',
               fontWeight: 600,
-              fontSize: '0.85rem',
+              fontSize: '0.84rem',
               cursor: 'pointer',
+              transition: 'background 0.15s ease',
             }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = '#334155')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = '#1E293B')}
           >
             Close Details
           </button>
