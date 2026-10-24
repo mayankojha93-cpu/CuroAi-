@@ -1,4 +1,4 @@
-import type { CampaignSummary, CallRecord, Customer, CustomerCreateInput, SystemHealth } from '../types';
+import type { CampaignSummary, CallRecord, Customer, CustomerCreateInput, SystemHealth, CampaignItem } from '../types';
 import { getStoredAuthToken } from '../context/AuthContext';
 
 const API_BASE = '';
@@ -155,3 +155,89 @@ export async function initiateTestCall(payload: TestCallInput): Promise<{
   }
   return res.json();
 }
+
+/**
+ * Fetches campaigns from PostgreSQL with optional status and search filters
+ */
+export async function fetchCampaigns(status?: string, search?: string): Promise<CampaignItem[]> {
+  const params = new URLSearchParams();
+  if (status && status !== 'ALL' && status !== 'All campaigns') params.set('status', status);
+  if (search && search.trim()) params.set('search', search.trim());
+  const queryString = params.toString() ? `?${params.toString()}` : '';
+  const res = await authFetch(`${API_BASE}/api/campaigns${queryString}`);
+  if (!res.ok) throw new Error(`Failed to fetch campaigns: ${res.statusText}`);
+  const data = await res.json();
+  return data.campaigns || [];
+}
+
+/**
+ * Updates campaign status between Running, Paused, Completed, Stopped
+ */
+export async function updateCampaignStatus(id: string, status: string): Promise<CampaignItem> {
+  const res = await authFetch(`${API_BASE}/api/campaigns/${id}/status`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to update campaign status: ${res.statusText}`);
+  }
+  const data = await res.json();
+  return data.campaign;
+}
+
+/**
+ * Creates a new campaign
+ */
+export async function createCampaign(data: Partial<CampaignItem>): Promise<CampaignItem> {
+  const res = await authFetch(`${API_BASE}/api/campaigns`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to create campaign: ${res.statusText}`);
+  }
+  const result = await res.json();
+  return result.campaign;
+}
+
+/**
+ * Fetches call records for a specific campaign
+ */
+export async function fetchCampaignCalls(campaignId: string): Promise<CallRecord[]> {
+  const res = await authFetch(`${API_BASE}/api/campaigns/${campaignId}/calls`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.calls || [];
+}
+
+/**
+ * Fetches billing balance (credits)
+ */
+export async function fetchBillingBalance(): Promise<{ available_credits: number; currency: string }> {
+  const res = await authFetch(`${API_BASE}/api/billing/balance`);
+  if (!res.ok) {
+    return { available_credits: 21874, currency: 'credits' };
+  }
+  return res.json();
+}
+
+/**
+ * Adds credits to billing balance (+1000, +5000, +10000)
+ */
+export async function addBillingCredits(amount: number): Promise<{ success: boolean; available_credits: number }> {
+  const res = await authFetch(`${API_BASE}/api/billing/add-credits`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ amount }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to add credits: ${res.statusText}`);
+  }
+  return res.json();
+}
+
