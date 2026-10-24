@@ -23,6 +23,7 @@ interface CampaignOverviewProps {
   loading: boolean;
   onImportModalOpen?: () => void;
   onSelectCall?: (call: CallRecord) => void;
+  refreshTrigger?: number;
 }
 
 export const CampaignOverview: React.FC<CampaignOverviewProps> = ({
@@ -30,6 +31,7 @@ export const CampaignOverview: React.FC<CampaignOverviewProps> = ({
   loading: _loading,
   onImportModalOpen,
   onSelectCall,
+  refreshTrigger,
 }) => {
   const [campaigns, setCampaigns] = useState<CampaignItem[]>([]);
   const [selectedCampaign, setSelectedCampaign] = useState<CampaignItem | null>(null);
@@ -49,7 +51,9 @@ export const CampaignOverview: React.FC<CampaignOverviewProps> = ({
 
   useEffect(() => {
     loadCampaignsFromDb();
-  }, [loadCampaignsFromDb]);
+    const interval = setInterval(loadCampaignsFromDb, 8000);
+    return () => clearInterval(interval);
+  }, [loadCampaignsFromDb, refreshTrigger]);
 
   // Normalize status string (e.g., 'Running' -> 'RUNNING')
   const normalizeStatus = (status: string): 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'STOPPED' => {

@@ -42,9 +42,9 @@ const importLeadsSchema = {
   }),
 };
 
-// POST /calls - Initiate call to customer
+// POST /calls or /api/calls - Initiate call to customer
 callsRouter.post(
-  '/calls',
+  ['/calls', '/api/calls'],
   validateRequest(initiateCallSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -205,9 +205,9 @@ callsRouter.get('/api/customers', async (_req: Request, res: Response, next: Nex
   }
 });
 
-// GET /calls/:id - Get specific call outcome and details
+// GET /calls/:id or /api/calls/:id - Get specific call outcome and details
 callsRouter.get(
-  '/calls/:id',
+  ['/calls/:id', '/api/calls/:id'],
   validateRequest(getCallSchema),
   async (req: Request<{ id: string }>, res: Response, next: NextFunction) => {
     try {
@@ -219,8 +219,8 @@ callsRouter.get(
   }
 );
 
-// GET /calls - Get latest calls across all campaigns with optional status filter
-callsRouter.get('/calls', async (req: Request, res: Response, next: NextFunction) => {
+// GET /calls or /api/calls - Get latest calls across all campaigns with optional status filter
+callsRouter.get(['/calls', '/api/calls'], async (req: Request, res: Response, next: NextFunction) => {
   try {
     const status = req.query.status as string | undefined;
     const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 100;

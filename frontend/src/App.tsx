@@ -49,6 +49,7 @@ const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) => {
   const [isCreateCampaignModalOpen, setIsCreateCampaignModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isTestCallModalOpen, setIsTestCallModalOpen] = useState(false);
+  const [campaignRefreshKey, setCampaignRefreshKey] = useState(0);
 
   return (
     <DashboardLayout
@@ -85,6 +86,7 @@ const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) => {
             loading={loading}
             onImportModalOpen={() => setIsCreateCampaignModalOpen(true)}
             onSelectCall={setSelectedCall}
+            refreshTrigger={campaignRefreshKey}
           />
         )}
 
@@ -136,6 +138,7 @@ const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) => {
         onClose={() => setIsCreateCampaignModalOpen(false)}
         onCampaignCreated={() => {
           showToast('Voice campaign created and launched successfully!', 'success');
+          setCampaignRefreshKey((k) => k + 1);
           loadAllData();
         }}
       />
