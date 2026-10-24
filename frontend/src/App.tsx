@@ -2,14 +2,17 @@ import React, { useState, useEffect } from 'react';
 import { useDashboardData } from './hooks';
 import { DashboardLayout, Toast } from './components';
 import { 
+  DashboardHome,
+  BillingView,
+  SettingsView,
   CampaignOverview, 
+  CreateCampaignModal,
   LeadDirectory, 
   LeadImportModal,
   RecentCalls, 
   CallDetailModal, 
   TestCallModal, 
   RetryQueue, 
-  SopReference,
   LandingPage,
   LoginPage
 } from './features';
@@ -43,6 +46,7 @@ const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) => {
     handleImportLeads,
   } = useDashboardData();
 
+  const [isCreateCampaignModalOpen, setIsCreateCampaignModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isTestCallModalOpen, setIsTestCallModalOpen] = useState(false);
 
@@ -56,17 +60,31 @@ const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) => {
       health={health}
       loading={loading}
       onRefresh={loadAllData}
-      onImportModalOpen={() => setIsImportModalOpen(true)}
+      onImportModalOpen={() => setIsCreateCampaignModalOpen(true)}
       onTestCallOpen={() => setIsTestCallModalOpen(true)}
       user={user}
       onLogout={onLogout}
     >
       {/* Tab View Routing */}
       <div className="tab-content">
+        {activeTab === 'DASHBOARD' && (
+          <DashboardHome
+            summary={summary}
+            recentCalls={recentCalls}
+            user={user}
+            onTabChange={setActiveTab}
+            onImportModalOpen={() => setIsCreateCampaignModalOpen(true)}
+            onTestCallOpen={() => setIsTestCallModalOpen(true)}
+            onSelectCall={setSelectedCall}
+          />
+        )}
+
         {activeTab === 'CAMPAIGN' && (
           <CampaignOverview
             summary={summary}
             loading={loading}
+            onImportModalOpen={() => setIsCreateCampaignModalOpen(true)}
+            onSelectCall={setSelectedCall}
           />
         )}
 
@@ -94,8 +112,15 @@ const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) => {
           />
         )}
 
-        {activeTab === 'SOP' && (
-          <SopReference />
+        {activeTab === 'BILLING' && (
+          <BillingView />
+        )}
+
+        {activeTab === 'SETTINGS' && (
+          <SettingsView
+            health={health}
+            user={user}
+          />
         )}
       </div>
 
@@ -103,6 +128,16 @@ const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) => {
       <CallDetailModal
         call={selectedCall}
         onClose={() => setSelectedCall(null)}
+      />
+
+      {/* Create Voice Campaign Modal matching screenshot */}
+      <CreateCampaignModal
+        isOpen={isCreateCampaignModalOpen}
+        onClose={() => setIsCreateCampaignModalOpen(false)}
+        onCampaignCreated={() => {
+          showToast('Voice campaign created and launched successfully!', 'success');
+          loadAllData();
+        }}
       />
 
       {/* Bulk Lead Import Modal */}
