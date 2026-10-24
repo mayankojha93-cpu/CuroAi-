@@ -6,7 +6,14 @@ import {
   ChevronDown, 
   ChevronUp, 
   FileText,
-  Upload
+  Upload,
+  Clock,
+  Sliders,
+  Settings,
+  Sparkles,
+  Info,
+  X,
+  Plus
 } from 'lucide-react';
 import { createCampaign } from '../../services';
 import type { CampaignItem } from '../../types';
@@ -29,13 +36,51 @@ interface FlaggedIssue {
   reason: string;
 }
 
+const ALL_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+const DEFAULT_DISPOSITIONS = [
+  'CONFIRMED_PICKUP',
+  'NEEDS_AIRTEL_SUPPORT',
+  'SCHEDULE_CALLBACK',
+  'REFUSED',
+  'WRONG_PERSON',
+  'BUSY',
+  'NO_ANSWER'
+];
+
 export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
   isOpen,
   onClose,
   onCampaignCreated,
 }) => {
+  // Campaign Details
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [script, setScript] = useState(
+    'नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं आपसे बात कर सकती हूँ?'
+  );
+  const [language, setLanguage] = useState('hi-IN');
+  const [voicePipeline, setVoicePipeline] = useState('Sarvam AI (Priya - hi-IN)');
+
+  // Schedule
+  const [scheduleStartTime, setScheduleStartTime] = useState('09:00');
+  const [scheduleEndTime, setScheduleEndTime] = useState('20:00');
+  const [operatingDays, setOperatingDays] = useState<string[]>([
+    'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'
+  ]);
+
+  // Rate Limits & Retries
+  const [maxConcurrentCalls, setMaxConcurrentCalls] = useState<number | string>(5);
+  const [callsPerMinute, setCallsPerMinute] = useState<number | string>(30);
+  const [retryAttempts, setRetryAttempts] = useState<number | string>(3);
+  const [retryDelayMinutes, setRetryDelayMinutes] = useState<number | string>(180);
+
+  // Call Settings
+  const [maxCallDurationMinutes, setMaxCallDurationMinutes] = useState<number | string>(5);
+  const [expectedDispositions, setExpectedDispositions] = useState<string[]>(DEFAULT_DISPOSITIONS);
+  const [newDispositionInput, setNewDispositionInput] = useState('');
+
+  // Audience & Validation
   const [contactsText, setContactsText] = useState('');
   const [fileName, setFileName] = useState('');
   const [fileRawLines, setFileRawLines] = useState<string[]>([]);
@@ -44,6 +89,26 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
   const [error, setError] = useState<string | null>(null);
 
   const fileInputId = useId();
+
+  // Day toggle handler
+  const toggleDay = (day: string) => {
+    setOperatingDays((prev) =>
+      prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]
+    );
+  };
+
+  // Disposition management
+  const removeDisposition = (disp: string) => {
+    setExpectedDispositions((prev) => prev.filter((d) => d !== disp));
+  };
+
+  const addDisposition = () => {
+    const trimmed = newDispositionInput.trim().toUpperCase().replace(/\s+/g, '_');
+    if (trimmed && !expectedDispositions.includes(trimmed)) {
+      setExpectedDispositions((prev) => [...prev, trimmed]);
+      setNewDispositionInput('');
+    }
+  };
 
   // Parse CSV and textarea contacts with duplicates and <10 digits flagging
   const { validContacts, flaggedDuplicates, flaggedShortNumbers } = useMemo(() => {
@@ -200,6 +265,11 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
       return;
     }
 
+    if (operatingDays.length === 0) {
+      setError('Please select at least one operating day for the schedule.');
+      return;
+    }
+
     if (contactCount === 0) {
       setError('Please provide at least one valid phone number (10+ digits).');
       return;
@@ -209,7 +279,19 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
     try {
       const created = await createCampaign({
         name: name.trim(),
-        description: description.trim() || 'Voice outreach campaign dispatched via CuroAI.',
+        description: description.trim() || undefined,
+        script: script.trim(),
+        language,
+        voice_pipeline: voicePipeline,
+        schedule_start_time: scheduleStartTime,
+        schedule_end_time: scheduleEndTime,
+        operating_days: operatingDays,
+        max_concurrent_calls: Number(maxConcurrentCalls) || 5,
+        calls_per_minute: Number(callsPerMinute) || 30,
+        retry_attempts: Number(retryAttempts) >= 0 ? Number(retryAttempts) : 3,
+        retry_delay_minutes: Number(retryDelayMinutes) || 180,
+        max_call_duration_minutes: Number(maxCallDurationMinutes) || 5,
+        expected_dispositions: expectedDispositions,
         status: 'RUNNING',
         total_contacts: contactCount,
         contacts: validContacts.map((c) => c.phone),
@@ -233,19 +315,51 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
     }
   };
 
+  const inputStyle: React.CSSProperties = {
+    width: '100%',
+    boxSizing: 'border-box',
+    padding: '9px 12px',
+    borderRadius: 8,
+    background: '#080A10',
+    border: '1px solid rgba(255, 255, 255, 0.1)',
+    color: '#FFFFFF',
+    fontSize: '0.85rem',
+    outline: 'none',
+    transition: 'border-color 0.15s ease',
+  };
+
+  const labelStyle: React.CSSProperties = {
+    display: 'block',
+    fontSize: '0.78rem',
+    fontWeight: 500,
+    color: '#94A3B8',
+    marginBottom: 5,
+  };
+
+  const sectionHeadingStyle: React.CSSProperties = {
+    fontSize: '0.86rem',
+    fontWeight: 600,
+    color: '#E2E8F0',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 7,
+    letterSpacing: '-0.01em',
+    marginBottom: 12,
+  };
+
   return (
     <div
       style={{
         position: 'fixed',
         inset: 0,
-        backgroundColor: 'rgba(0, 0, 0, 0.78)',
-        backdropFilter: 'blur(6px)',
-        WebkitBackdropFilter: 'blur(6px)',
+        backgroundColor: 'rgba(0, 0, 0, 0.82)',
+        backdropFilter: 'blur(8px)',
+        WebkitBackdropFilter: 'blur(8px)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         zIndex: 1000,
-        padding: 20,
+        padding: '16px 20px',
       }}
       onClick={(e) => {
         if (e.target === e.currentTarget && !isSubmitting) {
@@ -255,15 +369,15 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
     >
       <div
         style={{
-          background: '#0E121B',
+          background: '#0B0F17',
           border: '1px solid rgba(255, 255, 255, 0.1)',
           borderRadius: 16,
-          width: 560,
+          width: 680,
           maxWidth: '100%',
           maxHeight: '92vh',
           display: 'flex',
           flexDirection: 'column',
-          boxShadow: '0 24px 64px rgba(0, 0, 0, 0.85)',
+          boxShadow: '0 28px 72px rgba(0, 0, 0, 0.9)',
           color: '#FFFFFF',
           animation: 'fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards',
           overflow: 'hidden',
@@ -271,28 +385,59 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div style={{ padding: '24px 28px 18px 28px', borderBottom: '1px solid rgba(255, 255, 255, 0.07)' }}>
-          <h2
-            style={{
-              fontSize: '1.25rem',
-              fontWeight: 700,
-              color: '#FFFFFF',
-              letterSpacing: '-0.02em',
-              margin: '0 0 4px 0',
-            }}
-          >
-            Create campaign
-          </h2>
-          <p
-            style={{
-              fontSize: '0.84rem',
-              color: '#94A3B8',
-              margin: 0,
-              lineHeight: 1.4,
-            }}
-          >
-            Upload a CSV or paste contacts. Numbers &lt;10 digits and duplicates are automatically flagged and cleaned.
-          </p>
+        <div style={{ padding: '20px 24px 16px 24px', borderBottom: '1px solid rgba(255, 255, 255, 0.08)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <h2
+                style={{
+                  fontSize: '1.2rem',
+                  fontWeight: 700,
+                  color: '#FFFFFF',
+                  letterSpacing: '-0.02em',
+                  margin: '0 0 4px 0',
+                }}
+              >
+                Create campaign
+              </h2>
+              <p
+                style={{
+                  fontSize: '0.8rem',
+                  color: '#94A3B8',
+                  margin: 0,
+                  lineHeight: 1.4,
+                }}
+              >
+                Configure voice agent script, dispatch schedule, rate limits, and target audience.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={isSubmitting}
+              style={{
+                background: 'rgba(255, 255, 255, 0.04)',
+                border: '1px solid rgba(255, 255, 255, 0.08)',
+                color: '#94A3B8',
+                borderRadius: 8,
+                padding: '6px 8px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'all 0.15s ease',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.color = '#FFFFFF';
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.color = '#94A3B8';
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
+              }}
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
 
         {/* Scrollable Form Body */}
@@ -301,8 +446,8 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
           style={{
             display: 'flex',
             flexDirection: 'column',
-            gap: 16,
-            padding: '20px 28px',
+            gap: 20,
+            padding: '20px 24px',
             overflowY: 'auto',
           }}
         >
@@ -315,353 +460,662 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
                 border: '1px solid rgba(239, 68, 68, 0.3)',
                 color: '#EF4444',
                 fontSize: '0.82rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
               }}
             >
-              {error}
+              <AlertTriangle size={15} />
+              <span>{error}</span>
             </div>
           )}
 
-          {/* Field 1: Campaign name */}
-          <div>
-            <label
-              style={{
-                display: 'block',
-                fontSize: '0.82rem',
-                fontWeight: 500,
-                color: '#E2E8F0',
-                marginBottom: 6,
-              }}
-            >
-              Campaign name
-            </label>
-            <input
-              type="text"
-              required
-              autoFocus
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Q4 Wi-Fi Router Outbound Pilot"
-              style={{
-                width: '100%',
-                boxSizing: 'border-box',
-                padding: '10px 14px',
-                borderRadius: 8,
-                background: '#080A10',
-                border: '1px solid #3B82F6',
-                color: '#FFFFFF',
-                fontSize: '0.88rem',
-                outline: 'none',
-                boxShadow: '0 0 0 1px #3B82F6',
-              }}
-            />
+          {/* SECTION 1: Campaign Details */}
+          <div
+            style={{
+              background: '#070A10',
+              border: '1px solid rgba(255, 255, 255, 0.06)',
+              borderRadius: 12,
+              padding: 16,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 14,
+            }}
+          >
+            <div style={sectionHeadingStyle}>
+              <Sparkles size={15} color="#38BDF8" />
+              <span>Campaign Information</span>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 12 }}>
+              <div>
+                <label style={labelStyle}>Campaign Name *</label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. Q4 Airtel Wi-Fi Outbound Pilot"
+                  style={{
+                    ...inputStyle,
+                    borderColor: '#3B82F6',
+                    boxShadow: '0 0 0 1px rgba(59, 130, 246, 0.3)',
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={labelStyle}>Description (Optional)</label>
+                <input
+                  type="text"
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="e.g. Outbound Hindi retention pilot"
+                  style={inputStyle}
+                  onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.5)')}
+                  onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)')}
+                />
+              </div>
+            </div>
+
+            {/* Script Field */}
+            <div>
+              <label style={labelStyle}>Agent Script / Opening Prompt *</label>
+              <textarea
+                rows={2}
+                value={script}
+                onChange={(e) => setScript(e.target.value)}
+                placeholder="Initial greeting and context for the voice pipeline..."
+                style={{
+                  ...inputStyle,
+                  fontFamily: 'inherit',
+                  resize: 'vertical',
+                  minHeight: 56,
+                  lineHeight: 1.4,
+                }}
+                onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.5)')}
+                onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)')}
+              />
+            </div>
+
+            {/* Language & Voice Pipeline */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div>
+                <label style={labelStyle}>Language</label>
+                <select
+                  value={language}
+                  onChange={(e) => setLanguage(e.target.value)}
+                  style={{
+                    ...inputStyle,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <option value="hi-IN" style={{ background: '#0B0F17' }}>Hindi (hi-IN)</option>
+                  <option value="en-IN" style={{ background: '#0B0F17' }}>English (India - en-IN)</option>
+                  <option value="hi-Latn" style={{ background: '#0B0F17' }}>Hinglish (hi-Latn)</option>
+                  <option value="ta-IN" style={{ background: '#0B0F17' }}>Tamil (ta-IN)</option>
+                  <option value="te-IN" style={{ background: '#0B0F17' }}>Telugu (te-IN)</option>
+                  <option value="kn-IN" style={{ background: '#0B0F17' }}>Kannada (kn-IN)</option>
+                  <option value="bn-IN" style={{ background: '#0B0F17' }}>Bengali (bn-IN)</option>
+                  <option value="mr-IN" style={{ background: '#0B0F17' }}>Marathi (mr-IN)</option>
+                </select>
+              </div>
+
+              <div>
+                <label style={labelStyle}>Voice Pipeline</label>
+                <select
+                  value={voicePipeline}
+                  onChange={(e) => setVoicePipeline(e.target.value)}
+                  style={{
+                    ...inputStyle,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <option value="Sarvam AI (Priya - hi-IN)" style={{ background: '#0B0F17' }}>Sarvam AI (Priya - hi-IN)</option>
+                  <option value="Sarvam AI (Arvind - hi-IN)" style={{ background: '#0B0F17' }}>Sarvam AI (Arvind - hi-IN)</option>
+                  <option value="OpenAI Realtime (Alloy)" style={{ background: '#0B0F17' }}>OpenAI Realtime (Alloy)</option>
+                  <option value="OpenAI Realtime (Echo)" style={{ background: '#0B0F17' }}>OpenAI Realtime (Echo)</option>
+                  <option value="ElevenLabs (Rachel - Expressive)" style={{ background: '#0B0F17' }}>ElevenLabs (Rachel - Expressive)</option>
+                </select>
+              </div>
+            </div>
           </div>
 
-          {/* Field 2: Description */}
-          <div>
-            <label
-              style={{
-                display: 'block',
-                fontSize: '0.82rem',
-                fontWeight: 500,
-                color: '#E2E8F0',
-                marginBottom: 6,
-              }}
-            >
-              Description
-            </label>
-            <input
-              type="text"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="e.g. Outbound Hindi retention with Priya voice agent"
-              style={{
-                width: '100%',
-                boxSizing: 'border-box',
-                padding: '10px 14px',
-                borderRadius: 8,
-                background: '#080A10',
-                border: '1px solid rgba(255, 255, 255, 0.1)',
-                color: '#FFFFFF',
-                fontSize: '0.88rem',
-                outline: 'none',
-                transition: 'border-color 0.15s ease',
-              }}
-              onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.5)')}
-              onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)')}
-            />
+          {/* SECTION 2: Schedule */}
+          <div
+            style={{
+              background: '#070A10',
+              border: '1px solid rgba(255, 255, 255, 0.06)',
+              borderRadius: 12,
+              padding: 16,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 14,
+            }}
+          >
+            <div style={sectionHeadingStyle}>
+              <Clock size={15} color="#A78BFA" />
+              <span>Schedule & Operating Hours</span>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div>
+                <label style={labelStyle}>Start Time</label>
+                <input
+                  type="time"
+                  value={scheduleStartTime}
+                  onChange={(e) => setScheduleStartTime(e.target.value)}
+                  style={inputStyle}
+                  onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(167, 139, 250, 0.5)')}
+                  onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)')}
+                />
+              </div>
+
+              <div>
+                <label style={labelStyle}>End Time</label>
+                <input
+                  type="time"
+                  value={scheduleEndTime}
+                  onChange={(e) => setScheduleEndTime(e.target.value)}
+                  style={inputStyle}
+                  onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(167, 139, 250, 0.5)')}
+                  onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)')}
+                />
+              </div>
+            </div>
+
+            <div>
+              <label style={labelStyle}>Operating Days</label>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
+                {ALL_DAYS.map((day) => {
+                  const isActive = operatingDays.includes(day);
+                  return (
+                    <button
+                      key={day}
+                      type="button"
+                      onClick={() => toggleDay(day)}
+                      style={{
+                        padding: '6px 14px',
+                        borderRadius: 6,
+                        border: isActive ? '1px solid #8B5CF6' : '1px solid rgba(255, 255, 255, 0.1)',
+                        background: isActive ? 'rgba(139, 92, 246, 0.18)' : '#080A10',
+                        color: isActive ? '#C4B5FD' : '#94A3B8',
+                        fontSize: '0.78rem',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        transition: 'all 0.15s ease',
+                      }}
+                    >
+                      {day}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           </div>
 
-          {/* Field 3: Upload CSV file */}
-          <div>
-            <label
-              style={{
-                display: 'block',
-                fontSize: '0.82rem',
-                fontWeight: 500,
-                color: '#E2E8F0',
-                marginBottom: 6,
-              }}
-            >
-              Upload CSV file (supports phone_number, name, email)
-            </label>
+          {/* SECTION 3: Rate Limits & Retries */}
+          <div
+            style={{
+              background: '#070A10',
+              border: '1px solid rgba(255, 255, 255, 0.06)',
+              borderRadius: 12,
+              padding: 16,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 14,
+            }}
+          >
+            <div style={sectionHeadingStyle}>
+              <Sliders size={15} color="#34D399" />
+              <span>Rate Limits & Retry Policy</span>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+              <div>
+                <label style={labelStyle}>Max Concurrent</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={maxConcurrentCalls}
+                  onChange={(e) => setMaxConcurrentCalls(e.target.value)}
+                  style={inputStyle}
+                  onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(52, 211, 153, 0.5)')}
+                  onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)')}
+                />
+              </div>
+
+              <div>
+                <label style={labelStyle}>Calls Per Minute</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={300}
+                  value={callsPerMinute}
+                  onChange={(e) => setCallsPerMinute(e.target.value)}
+                  style={inputStyle}
+                  onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(52, 211, 153, 0.5)')}
+                  onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)')}
+                />
+              </div>
+
+              <div>
+                <label style={labelStyle}>Retry Attempt</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={10}
+                  value={retryAttempts}
+                  onChange={(e) => setRetryAttempts(e.target.value)}
+                  style={inputStyle}
+                  onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(52, 211, 153, 0.5)')}
+                  onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)')}
+                />
+              </div>
+
+              <div>
+                <label style={labelStyle}>Retry Delay (min)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={1440}
+                  value={retryDelayMinutes}
+                  onChange={(e) => setRetryDelayMinutes(e.target.value)}
+                  style={inputStyle}
+                  onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(52, 211, 153, 0.5)')}
+                  onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)')}
+                />
+              </div>
+            </div>
+
+            {/* Retries Explanation Notice */}
             <div
               style={{
-                background: '#080A10',
-                border: '1px solid rgba(255, 255, 255, 0.1)',
-                borderRadius: 8,
-                padding: '8px 12px',
                 display: 'flex',
-                alignItems: 'center',
-                gap: 12,
+                alignItems: 'flex-start',
+                gap: 8,
+                padding: '10px 12px',
+                borderRadius: 8,
+                background: 'rgba(56, 189, 248, 0.08)',
+                border: '1px solid rgba(56, 189, 248, 0.2)',
+                color: '#7DD3FC',
+                fontSize: '0.78rem',
+                lineHeight: 1.45,
               }}
             >
-              <input
-                id={fileInputId}
-                type="file"
-                accept=".csv,.txt"
-                onChange={handleFileUpload}
-                style={{ display: 'none' }}
-              />
-              <label
-                htmlFor={fileInputId}
-                style={{
-                  padding: '6px 14px',
-                  borderRadius: 6,
-                  background: 'rgba(56, 189, 248, 0.12)',
-                  border: '1px solid rgba(56, 189, 248, 0.3)',
-                  color: '#38BDF8',
-                  fontSize: '0.78rem',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  userSelect: 'none',
-                  flexShrink: 0,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  transition: 'background 0.15s ease',
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(56, 189, 248, 0.22)')}
-                onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(56, 189, 248, 0.12)')}
-              >
-                <Upload size={13} />
-                Choose CSV
-              </label>
-
-              <span
-                style={{
-                  fontSize: '0.82rem',
-                  color: fileName ? '#38BDF8' : '#64748B',
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  flex: 1,
-                }}
-              >
-                {fileName || 'No file selected (or drag & drop here)'}
+              <Info size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+              <span>
+                <strong>Notice:</strong> Retries apply to every not-connected result, including no answer, busy, and failed or unreachable calls.
               </span>
             </div>
           </div>
 
-          {/* Field 4: Or paste contacts */}
-          <div>
-            <label
-              style={{
-                display: 'block',
-                fontSize: '0.82rem',
-                fontWeight: 500,
-                color: '#E2E8F0',
-                marginBottom: 6,
-              }}
-            >
-              Or paste phone numbers manually
-            </label>
-            <textarea
-              rows={3}
-              value={contactsText}
-              onChange={(e) => setContactsText(e.target.value)}
-              placeholder="+919876543210, John Doe&#10;+919876543211, Jane Smith"
-              style={{
-                width: '100%',
-                boxSizing: 'border-box',
-                padding: '10px 14px',
-                borderRadius: 8,
-                background: '#080A10',
-                border: '1px solid rgba(255, 255, 255, 0.1)',
-                color: '#FFFFFF',
-                fontSize: '0.85rem',
-                fontFamily: 'inherit',
-                outline: 'none',
-                resize: 'vertical',
-                minHeight: 70,
-                transition: 'border-color 0.15s ease',
-              }}
-              onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.5)')}
-              onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)')}
-            />
-          </div>
+          {/* SECTION 4: Call Settings */}
+          <div
+            style={{
+              background: '#070A10',
+              border: '1px solid rgba(255, 255, 255, 0.06)',
+              borderRadius: 12,
+              padding: 16,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 14,
+            }}
+          >
+            <div style={sectionHeadingStyle}>
+              <Settings size={15} color="#FB923C" />
+              <span>Call Settings & Dispositions</span>
+            </div>
 
-          {/* Validation & Flagged Breakdown Panel */}
-          {hasUploadedOrEntered && (
-            <div
-              style={{
-                background: '#06080E',
-                border: '1px solid rgba(255, 255, 255, 0.08)',
-                borderRadius: 10,
-                padding: '12px 14px',
-              }}
-            >
-              {/* Status pills row */}
-              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
-                {/* Valid contacts badge */}
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    padding: '3px 10px',
-                    borderRadius: 6,
-                    background: 'rgba(16, 185, 129, 0.14)',
-                    border: '1px solid rgba(16, 185, 129, 0.3)',
-                    color: '#34D399',
-                    fontSize: '0.74rem',
-                    fontWeight: 700,
-                  }}
-                >
-                  <CheckCircle2 size={13} />
-                  <span>{contactCount} Valid Contact{contactCount === 1 ? '' : 's'}</span>
-                </div>
+            <div>
+              <label style={labelStyle}>Max Call Duration (minutes)</label>
+              <input
+                type="number"
+                min={1}
+                max={60}
+                value={maxCallDurationMinutes}
+                onChange={(e) => setMaxCallDurationMinutes(e.target.value)}
+                style={{ ...inputStyle, maxWidth: 220 }}
+                onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(251, 146, 60, 0.5)')}
+                onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)')}
+              />
+            </div>
 
-                {/* Duplicates flagged badge */}
-                {flaggedDuplicates.length > 0 && (
-                  <div
+            <div>
+              <label style={labelStyle}>Expected Dispositions</label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                {expectedDispositions.map((disp) => (
+                  <span
+                    key={disp}
                     style={{
-                      display: 'flex',
+                      display: 'inline-flex',
                       alignItems: 'center',
-                      gap: 6,
-                      padding: '3px 10px',
+                      gap: 5,
+                      padding: '3px 8px',
                       borderRadius: 6,
-                      background: 'rgba(245, 158, 11, 0.14)',
-                      border: '1px solid rgba(245, 158, 11, 0.3)',
-                      color: '#F59E0B',
+                      background: 'rgba(251, 146, 60, 0.12)',
+                      border: '1px solid rgba(251, 146, 60, 0.28)',
+                      color: '#FDBA74',
                       fontSize: '0.74rem',
-                      fontWeight: 700,
+                      fontWeight: 600,
                     }}
                   >
-                    <AlertTriangle size={13} />
-                    <span>{flaggedDuplicates.length} Duplicate{flaggedDuplicates.length === 1 ? '' : 's'} Flagged</span>
-                  </div>
-                )}
-
-                {/* Short numbers (< 10 digits) flagged badge */}
-                {flaggedShortNumbers.length > 0 && (
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 6,
-                      padding: '3px 10px',
-                      borderRadius: 6,
-                      background: 'rgba(244, 63, 94, 0.14)',
-                      border: '1px solid rgba(244, 63, 94, 0.3)',
-                      color: '#FB7185',
-                      fontSize: '0.74rem',
-                      fontWeight: 700,
-                    }}
-                  >
-                    <XCircle size={13} />
-                    <span>{flaggedShortNumbers.length} Invalid (&lt;10 digits)</span>
-                  </div>
-                )}
-              </div>
-
-              {/* Explanatory note */}
-              {totalFlagged > 0 ? (
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <p style={{ fontSize: '0.76rem', color: '#94A3B8', margin: 0, lineHeight: 1.4 }}>
-                      Flagged items are automatically removed to protect campaign deliverability.
-                    </p>
+                    {disp}
                     <button
                       type="button"
-                      onClick={() => setShowFlaggedDetails(!showFlaggedDetails)}
+                      onClick={() => removeDisposition(disp)}
                       style={{
                         background: 'transparent',
                         border: 'none',
-                        color: '#38BDF8',
-                        fontSize: '0.74rem',
-                        fontWeight: 600,
+                        color: '#FDBA74',
                         cursor: 'pointer',
+                        padding: 0,
                         display: 'flex',
                         alignItems: 'center',
-                        gap: 4,
-                        padding: '2px 4px',
                       }}
                     >
-                      {showFlaggedDetails ? (
-                        <>Hide flagged items <ChevronUp size={12} /></>
-                      ) : (
-                        <>View flagged ({totalFlagged}) <ChevronDown size={12} /></>
-                      )}
+                      <X size={11} />
                     </button>
+                  </span>
+                ))}
+              </div>
+
+              {/* Add custom disposition row */}
+              <div style={{ display: 'flex', gap: 8, maxWidth: 360 }}>
+                <input
+                  type="text"
+                  value={newDispositionInput}
+                  onChange={(e) => setNewDispositionInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      addDisposition();
+                    }
+                  }}
+                  placeholder="Add custom disposition (e.g. PAYMENT_PROMISED)"
+                  style={{ ...inputStyle, padding: '7px 10px', fontSize: '0.8rem' }}
+                />
+                <button
+                  type="button"
+                  onClick={addDisposition}
+                  style={{
+                    padding: '7px 12px',
+                    borderRadius: 8,
+                    background: 'rgba(251, 146, 60, 0.15)',
+                    border: '1px solid rgba(251, 146, 60, 0.3)',
+                    color: '#FB923C',
+                    fontSize: '0.78rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    flexShrink: 0,
+                  }}
+                >
+                  <Plus size={13} />
+                  Add
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* SECTION 5: Audience & Contacts */}
+          <div
+            style={{
+              background: '#070A10',
+              border: '1px solid rgba(255, 255, 255, 0.06)',
+              borderRadius: 12,
+              padding: 16,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 14,
+            }}
+          >
+            <div style={sectionHeadingStyle}>
+              <Upload size={15} color="#38BDF8" />
+              <span>Target Audience (CSV or Manual Input)</span>
+            </div>
+
+            {/* CSV File Upload */}
+            <div>
+              <label style={labelStyle}>Upload CSV file (supports phone_number, name, email)</label>
+              <div
+                style={{
+                  background: '#080A10',
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  borderRadius: 8,
+                  padding: '8px 12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                }}
+              >
+                <input
+                  id={fileInputId}
+                  type="file"
+                  accept=".csv,.txt"
+                  onChange={handleFileUpload}
+                  style={{ display: 'none' }}
+                />
+                <label
+                  htmlFor={fileInputId}
+                  style={{
+                    padding: '6px 14px',
+                    borderRadius: 6,
+                    background: 'rgba(56, 189, 248, 0.12)',
+                    border: '1px solid rgba(56, 189, 248, 0.3)',
+                    color: '#38BDF8',
+                    fontSize: '0.78rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                    flexShrink: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    transition: 'background 0.15s ease',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(56, 189, 248, 0.22)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(56, 189, 248, 0.12)')}
+                >
+                  <Upload size={13} />
+                  Choose CSV
+                </label>
+
+                <span
+                  style={{
+                    fontSize: '0.82rem',
+                    color: fileName ? '#38BDF8' : '#64748B',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    flex: 1,
+                  }}
+                >
+                  {fileName || 'No file selected (or drag & drop here)'}
+                </span>
+              </div>
+            </div>
+
+            {/* Manual Contacts Textarea */}
+            <div>
+              <label style={labelStyle}>Or paste phone numbers manually</label>
+              <textarea
+                rows={2}
+                value={contactsText}
+                onChange={(e) => setContactsText(e.target.value)}
+                placeholder="+919876543210, John Doe&#10;+919876543211, Jane Smith"
+                style={{
+                  ...inputStyle,
+                  fontFamily: 'inherit',
+                  resize: 'vertical',
+                  minHeight: 56,
+                }}
+                onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.5)')}
+                onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)')}
+              />
+            </div>
+
+            {/* Validation Breakdown Panel */}
+            {hasUploadedOrEntered && (
+              <div
+                style={{
+                  background: '#04060A',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  borderRadius: 10,
+                  padding: '12px 14px',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      padding: '3px 10px',
+                      borderRadius: 6,
+                      background: 'rgba(16, 185, 129, 0.14)',
+                      border: '1px solid rgba(16, 185, 129, 0.3)',
+                      color: '#34D399',
+                      fontSize: '0.74rem',
+                      fontWeight: 700,
+                    }}
+                  >
+                    <CheckCircle2 size={13} />
+                    <span>{contactCount} Valid Contact{contactCount === 1 ? '' : 's'}</span>
                   </div>
 
-                  {/* Expandable list of flagged numbers */}
-                  {showFlaggedDetails && (
+                  {flaggedDuplicates.length > 0 && (
                     <div
                       style={{
-                        marginTop: 10,
-                        maxHeight: 130,
-                        overflowY: 'auto',
                         display: 'flex',
-                        flexDirection: 'column',
+                        alignItems: 'center',
                         gap: 6,
-                        padding: '8px 10px',
-                        background: '#090D16',
+                        padding: '3px 10px',
                         borderRadius: 6,
-                        border: '1px solid rgba(255, 255, 255, 0.05)',
+                        background: 'rgba(245, 158, 11, 0.14)',
+                        border: '1px solid rgba(245, 158, 11, 0.3)',
+                        color: '#F59E0B',
+                        fontSize: '0.74rem',
+                        fontWeight: 700,
                       }}
                     >
-                      {flaggedShortNumbers.map((item, idx) => (
-                        <div
-                          key={`short-${idx}`}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            fontSize: '0.74rem',
-                            color: '#FB7185',
-                          }}
-                        >
-                          <span style={{ fontFamily: 'monospace' }}>{item.raw}</span>
-                          <span style={{ color: '#64748B' }}>Flagged: &lt; 10 digits</span>
-                        </div>
-                      ))}
+                      <AlertTriangle size={13} />
+                      <span>{flaggedDuplicates.length} Duplicate{flaggedDuplicates.length === 1 ? '' : 's'} Flagged</span>
+                    </div>
+                  )}
 
-                      {flaggedDuplicates.map((item, idx) => (
-                        <div
-                          key={`dup-${idx}`}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            fontSize: '0.74rem',
-                            color: '#F59E0B',
-                          }}
-                        >
-                          <span style={{ fontFamily: 'monospace' }}>{item.raw}</span>
-                          <span style={{ color: '#64748B' }}>Flagged: duplicate</span>
-                        </div>
-                      ))}
+                  {flaggedShortNumbers.length > 0 && (
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        padding: '3px 10px',
+                        borderRadius: 6,
+                        background: 'rgba(244, 63, 94, 0.14)',
+                        border: '1px solid rgba(244, 63, 94, 0.3)',
+                        color: '#FB7185',
+                        fontSize: '0.74rem',
+                        fontWeight: 700,
+                      }}
+                    >
+                      <XCircle size={13} />
+                      <span>{flaggedShortNumbers.length} Invalid (&lt;10 digits)</span>
                     </div>
                   )}
                 </div>
-              ) : (
-                <p style={{ fontSize: '0.75rem', color: '#10B981', margin: 0 }}>
-                  ✓ All numbers passed validation (10+ digits, zero duplicates detected).
-                </p>
-              )}
-            </div>
-          )}
+
+                {totalFlagged > 0 ? (
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <p style={{ fontSize: '0.76rem', color: '#94A3B8', margin: 0, lineHeight: 1.4 }}>
+                        Flagged items are automatically removed to protect campaign deliverability.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setShowFlaggedDetails(!showFlaggedDetails)}
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: '#38BDF8',
+                          fontSize: '0.74rem',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          padding: '2px 4px',
+                        }}
+                      >
+                        {showFlaggedDetails ? (
+                          <>Hide flagged items <ChevronUp size={12} /></>
+                        ) : (
+                          <>View flagged ({totalFlagged}) <ChevronDown size={12} /></>
+                        )}
+                      </button>
+                    </div>
+
+                    {showFlaggedDetails && (
+                      <div
+                        style={{
+                          marginTop: 10,
+                          maxHeight: 120,
+                          overflowY: 'auto',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 6,
+                          padding: '8px 10px',
+                          background: '#090D16',
+                          borderRadius: 6,
+                          border: '1px solid rgba(255, 255, 255, 0.05)',
+                        }}
+                      >
+                        {flaggedShortNumbers.map((item, idx) => (
+                          <div
+                            key={`short-${idx}`}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              fontSize: '0.74rem',
+                              color: '#FB7185',
+                            }}
+                          >
+                            <span style={{ fontFamily: 'monospace' }}>{item.raw}</span>
+                            <span style={{ color: '#64748B' }}>Flagged: &lt; 10 digits</span>
+                          </div>
+                        ))}
+
+                        {flaggedDuplicates.map((item, idx) => (
+                          <div
+                            key={`dup-${idx}`}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              fontSize: '0.74rem',
+                              color: '#F59E0B',
+                            }}
+                          >
+                            <span style={{ fontFamily: 'monospace' }}>{item.raw}</span>
+                            <span style={{ color: '#64748B' }}>Flagged: duplicate</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p style={{ fontSize: '0.75rem', color: '#10B981', margin: 0 }}>
+                    ✓ All numbers passed validation (10+ digits, zero duplicates detected).
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
 
           {/* Footer Row */}
           <div
@@ -670,7 +1124,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
               alignItems: 'center',
               justifyContent: 'space-between',
               paddingTop: 8,
-              borderTop: '1px solid rgba(255, 255, 255, 0.07)',
+              borderTop: '1px solid rgba(255, 255, 255, 0.08)',
             }}
           >
             {/* Contacts counter */}
