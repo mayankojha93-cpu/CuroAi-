@@ -998,35 +998,6 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
                   Choose CSV
                 </label>
 
-                {fileName && (
-                  <button
-                    type="button"
-                    onClick={handleDownloadUploadedCsv}
-                    style={{
-                      padding: '6px 12px',
-                      borderRadius: 6,
-                      background: 'rgba(56, 189, 248, 0.1)',
-                      border: '1px solid rgba(56, 189, 248, 0.28)',
-                      color: '#38BDF8',
-                      fontSize: '0.78rem',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                      userSelect: 'none',
-                      flexShrink: 0,
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 6,
-                      transition: 'all 0.15s ease',
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(56, 189, 248, 0.2)')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)')}
-                    title="Download uploaded CSV"
-                  >
-                    <Download size={13} />
-                    Download CSV
-                  </button>
-                )}
-
                 <span
                   style={{
                     fontSize: '0.82rem',
