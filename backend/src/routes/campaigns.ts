@@ -216,6 +216,19 @@ campaignsRouter.post('/api/campaigns/:id/contacts', async (req: Request, res: Re
 });
 
 /**
+ * GET /api/campaigns/:id/report - Get per-lead report data for CSV download
+ */
+campaignsRouter.get('/api/campaigns/:id/report', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = String(req.params.id);
+    const reportData = await campaignService.getCampaignReport(id);
+    return res.json({ success: true, count: reportData.length, report: reportData });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+/**
  * GET /api/campaigns/:id/dispositions - Get disposition breakdown for a campaign
  */
 campaignsRouter.get('/api/campaigns/:id/dispositions', async (req: Request, res: Response, next: NextFunction) => {

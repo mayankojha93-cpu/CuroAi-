@@ -27,16 +27,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ health, user }) => {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 28, paddingBottom: 32 }}>
       <div>
-        <div style={{
-          fontSize: '0.72rem',
-          fontWeight: 800,
-          letterSpacing: '0.08em',
-          color: '#38BDF8',
-          marginBottom: 6,
-          textTransform: 'uppercase',
-        }}>
-          SYSTEM CONFIGURATION
-        </div>
         <h1 style={{ fontSize: '1.9rem', fontWeight: 700, color: '#FFFFFF', letterSpacing: '-0.025em' }}>
           Settings & Agent Preferences
         </h1>

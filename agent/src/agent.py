@@ -9,11 +9,14 @@ logger = logging.getLogger("telecom-voice-agent")
 
 
 class AirtelAgent(Agent):
-    """Agent whose instructions AND tools change with the conversation step."""
+    """Agent whose instructions AND tools change with the conversation step, and whose spoken language
+    follows the customer (Hindi <-> English)."""
 
     def __init__(self, state, tools_instance):
         self._airtel_state = state
         self._airtel_tools = tools_instance
+        # Set by worker.py: called with "hi" / "en" when the customer switches language (switches the TTS voice).
+        self.on_language_change = None
         super().__init__(
             instructions=get_step_instructions(state),
             tools=tools_instance.tools_for_step(state.step),
@@ -27,14 +30,46 @@ class AirtelAgent(Agent):
     async def on_user_turn_completed(self, turn_ctx, new_message):
         """
         Gate between the customer's transcript and the LLM.
-        Carrier announcements (call-waiting "on hold", voicemail, not reachable) are NOT the customer.
-        Raising StopResponse means the LLM never sees them, so no tool can be triggered by them.
-        (worker.py handles the call outcome for voicemail.)
+        1. Carrier announcements (call-waiting "on hold", voicemail, not reachable) are NOT the customer.
+           Raising StopResponse means the LLM never sees them, so no tool can be triggered by them.
+        2. Follow the customer's language (Hindi <-> English) before anything is spoken.
+        3. If the customer named a pickup date, handle it directly (no LLM guess), then stop the LLM.
         """
         text = (getattr(new_message, "text_content", None) or "").strip()
         kind = classify_carrier_message(text)
         if kind:
             logger.warning(f"📵 Carrier announcement ({kind}) ignored, not sent to LLM: \"{text[:120]}\"")
+            raise StopResponse()
+
+        state = self._airtel_state
+        if state.update_reply_lang(text):
+            lang = state.reply_lang
+            logger.info(f"🌐 Customer switched language -> {lang}")
+            try:
+                if self.on_language_change:
+                    self.on_language_change(lang)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"TTS language switch failed: {e}")
+            try:
+                await self.update_instructions(get_step_instructions(state))
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"Could not refresh instructions after language switch: {e}")
+            try:  # belt and braces: also tell the LLM for THIS turn
+                turn_ctx.add_message(
+                    role="system",
+                    content=("The customer is now speaking English. Reply in English only."
+                             if lang == "en" else
+                             "The customer is now speaking Hindi. Reply in Hindi (Devanagari) only."),
+                )
+            except Exception:
+                pass
+
+        try:
+            handled = await self._airtel_tools.try_handle_date_utterance(text)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Direct date handling failed, falling back to LLM: {e}")
+            handled = False
+        if handled:
             raise StopResponse()
 
     async def llm_node(self, chat_ctx, tools, model_settings):

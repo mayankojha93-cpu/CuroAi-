@@ -12,6 +12,12 @@ import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { normalizeDate, normalizePhone } from '../utils/csvParser.js';
+import {
+  matchCanonicalDisposition,
+  isTerminalDisposition,
+  CANONICAL_DISPOSITIONS,
+  TERMINAL_DISPOSITIONS,
+} from '../utils/dispositions.js';
 
 export interface CallRecord {
   id: string;
@@ -25,6 +31,10 @@ export interface CallRecord {
   duration_seconds?: number;
   call_status?: string;
   recording_url?: string | null;
+  script?: string | null;
+  company_name?: string | null;
+  voice_pipeline?: string | null;
+  is_test_call?: boolean;
   median_latency_ms?: number | null;
   cost_estimate_inr?: number | null;
   created_at: string;
@@ -66,33 +76,6 @@ export interface LeadInput {
   r_date?: string;
   check?: string;
 }
-
-// Terminal dispositions that close the case and do not trigger retries
-const TERMINAL_DISPOSITIONS = new Set([
-  'CONFIRMED_FOR_PICKUP',
-  'PICKUP_CONFIRMED',
-  'PICKUP_CONFIRMED_NEW_DATE',
-  'REFUSED_TO_RETURN',
-  'PICKUP_DECLINED',
-  'ALREADY_RETURNED',
-  'ALREADY_PICKED_UP',
-  'REFUND_REQUEST',
-  'REFUND_OR_OWNERSHIP_QUERY',
-  'RECHARGED_DEVICE',
-  'ALREADY_RECHARGED',
-  'DAMAGED_DEVICE',
-  'LOST_DEVICE',
-  'WRONG_NUMBER',
-  'WRONG_NUMBER_OR_IDENTITY_NOT_CONFIRMED',
-  'DO_NOT_CALL',
-  'COMPLAINT_ESCALATION',
-  'NEEDS_AIRTEL_SUPPORT',
-  'SHIFTED_DEVICE_WITH_CUSTOMER',
-  'SHIFTED_DEVICE_WITH_RELATIVE',
-  'SHIFTED_DEVICE_LEFT_PREVIOUS',
-  'ALREADY_USING_DEVICE',
-  'LANGUAGE_BARRIER',
-]);
 
 // A call in 'initiated' / 'dialing' / 'answered' younger than this blocks another dial to the same customer
 const ACTIVE_CALL_WINDOW_MINUTES = 10;
@@ -196,8 +179,11 @@ export class CallService {
       const active = await client.query(
         `SELECT id, status, room_name FROM calls
          WHERE customer_id = $1
-           AND status IN ('initiated', 'dialing', 'answered')
-           AND created_at > NOW() - INTERVAL '${ACTIVE_CALL_WINDOW_MINUTES} minutes'
+           AND (
+             (status = 'answered' AND created_at > NOW() - INTERVAL '${ACTIVE_CALL_WINDOW_MINUTES} minutes')
+             OR
+             (status IN ('initiated', 'dialing') AND created_at > NOW() - INTERVAL '90 seconds')
+           )
          ORDER BY created_at DESC
          LIMIT 1`,
         [customerId]
@@ -252,6 +238,10 @@ export class CallService {
   async initiateTestCall(data: {
     phone: string;
     name?: string;
+    customer_name?: string;
+    company_name?: string;
+    script?: string;
+    voice_pipeline?: string;
     address?: string;
     account_no?: string;
     subs_del_no?: string;
@@ -259,6 +249,7 @@ export class CallService {
     r_date?: string;
     language?: string;
   }) {
+    const custName = data.customer_name || data.name || 'Test Subscriber';
     const normalizedPhone = normalizePhone(data.phone, data.subs_del_no);
     const normalizedServiceEnd = normalizeDate(data.service_end_date);
     const normalizedRDate = normalizeDate(data.r_date);
@@ -273,16 +264,17 @@ export class CallService {
        DO UPDATE SET
          name = EXCLUDED.name,
          address = EXCLUDED.address,
+         language = EXCLUDED.language,
          account_no = COALESCE(EXCLUDED.account_no, customers.account_no),
          subs_del_no = COALESCE(EXCLUDED.subs_del_no, customers.subs_del_no),
          service_end_date = COALESCE(EXCLUDED.service_end_date, customers.service_end_date),
          r_date = COALESCE(EXCLUDED.r_date, customers.r_date)
        RETURNING *`,
       [
-        data.name || 'Test Subscriber',
+        custName,
         normalizedPhone,
-        data.address || 'Delhi, 110011, burari, sant nagar',
-        data.language || 'hi',
+        data.address || (data.company_name ? `${data.company_name} HQ` : 'Delhi, 110011, burari, sant nagar'),
+        data.language || 'en',
         data.account_no || '20022941256',
         data.subs_del_no || '01121344121_wifi',
         normalizedServiceEnd || '2026-08-27',
@@ -291,7 +283,34 @@ export class CallService {
     );
 
     const customer = custRes.rows[0];
+
+    // For test calls, automatically resolve any lingering dialing/initiated calls for this customer
+    // so testers can immediately trigger a new test call without waiting
+    await query(
+      `UPDATE calls 
+       SET status = 'no_answer', call_status = 'no_answer', ended_at = NOW() 
+       WHERE customer_id = $1 AND status IN ('initiated', 'dialing')`,
+      [customer.id]
+    );
+
     const call = await this.initiateCall(customer.id);
+
+    const scriptName = data.script || 'Trump Towers India — Real Estate';
+    const voicePipeline = data.voice_pipeline || 'HABot Pipeline';
+    const companyName = data.company_name || (data.script?.includes('Trump') ? 'Trump Towers India' : (data.script?.includes('Ratnafin') ? 'Ratnafin' : 'Airtel'));
+
+    await query(
+      `UPDATE calls 
+       SET script = $1, company_name = $2, voice_pipeline = $3, is_test_call = TRUE 
+       WHERE id = $4`,
+      [scriptName, companyName, voicePipeline, call.id]
+    );
+
+    call.script = scriptName;
+    call.company_name = companyName;
+    call.voice_pipeline = voicePipeline;
+    call.is_test_call = true;
+
     return { call, customer: serializeCustomer(customer) };
   }
 
@@ -509,21 +528,22 @@ export class CallService {
     if (custRes.rows.length === 0) return;
     const cust = custRes.rows[0];
 
-    if (TERMINAL_DISPOSITIONS.has(disposition)) {
+    const canonical = matchCanonicalDisposition(disposition);
+
+    if (isTerminalDisposition(canonical)) {
       await query(
         `UPDATE customers
          SET current_disposition = $1, is_closed = TRUE, next_attempt_time = NULL
          WHERE id = $2`,
-        [disposition, customerId]
+        [canonical, customerId]
       );
-      logger.info({ customerId, disposition }, 'Customer closed with terminal disposition');
+      logger.info({ customerId, disposition: canonical }, 'Customer closed with terminal canonical disposition');
       return;
     }
 
-    // Already closed (max attempts reached / inbound-only record): a non-terminal outcome must not
-    // re-schedule it. Also makes duplicate saveOutcome calls harmless.
+    // Already closed: do not re-schedule
     if (cust.is_closed) {
-      logger.info({ customerId, disposition }, 'Customer already closed; skipping retry scheduling');
+      logger.info({ customerId, disposition: canonical }, 'Customer already closed; skipping retry scheduling');
       return;
     }
 
@@ -536,56 +556,60 @@ export class CallService {
       ? cust.retry_delay_minutes
       : 180;
 
-    // "Willing, no date": allow exactly ONE more follow-up call.
-    if (disposition === 'WILLING_TO_PICKUP' && cust.current_disposition !== 'WILLING_TO_PICKUP') {
+    // "Willing To Pickup": allow ONE more follow-up call if not already reached
+    if (canonical === 'Willing To Pickup' && cust.current_disposition !== 'Willing To Pickup') {
       const newMax = cust.total_attempts + 1;
       await query(
         `UPDATE customers
          SET current_disposition = $1,
              max_attempts = $2,
+             is_closed = FALSE,
              next_attempt_time = NOW() + ($3 || ' minutes')::interval
          WHERE id = $4`,
-        [disposition, newMax, retryDelayMinutes, customerId]
+        [canonical, newMax, retryDelayMinutes, customerId]
       );
-      logger.info({ customerId, disposition, newMax, retryDelayMinutes }, 'WILLING_TO_PICKUP: scheduled one follow-up call');
+      logger.info({ customerId, disposition: canonical, newMax, retryDelayMinutes }, 'Willing To Pickup: scheduled follow-up call');
       return;
     }
 
     if (cust.total_attempts >= maxAttempts) {
       await query(
         `UPDATE customers
-         SET current_disposition = 'NOT_REACHED', is_closed = TRUE, next_attempt_time = NULL
-         WHERE id = $1`,
-        [customerId]
+         SET current_disposition = $1, is_closed = TRUE, next_attempt_time = NULL
+         WHERE id = $2`,
+        [canonical, customerId]
       );
-      logger.info({ customerId, attempts: cust.total_attempts, maxAttempts }, 'Max attempts reached. Closed customer as NOT_REACHED');
+      logger.info({ customerId, attempts: cust.total_attempts, maxAttempts, disposition: canonical }, 'Max attempts reached. Closed customer');
       return;
     }
 
-    // Retries apply to every not-connected result, including no answer, busy, and failed or unreachable calls.
+    // Retries apply to every non-terminal result
     await query(
       `UPDATE customers
        SET current_disposition = $1,
+           is_closed = FALSE,
            next_attempt_time = NOW() + ($2 || ' minutes')::interval
        WHERE id = $3`,
-      [disposition, retryDelayMinutes, customerId]
+      [canonical, retryDelayMinutes, customerId]
     );
 
-    logger.info({ customerId, disposition, attempt: cust.total_attempts, maxAttempts, retryDelayMinutes }, 'Scheduled next retry attempt for customer');
+    logger.info({ customerId, disposition: canonical, attempt: cust.total_attempts, maxAttempts, retryDelayMinutes }, 'Scheduled next retry attempt for customer');
   }
 
   /**
-   * Idempotent save outcome handler with Airtel disposition & retry logic.
+   * Idempotent save outcome handler with Airtel canonical disposition & retry logic.
    */
   async saveOutcome(callId: string, data: SaveOutcomeInput) {
-    const finalDisp = data.final_disposition || data.outcome || 'DISCONNECTED';
-    logger.info({ callId, finalDisposition: finalDisp }, 'Saving call outcome (idempotent)');
-
+    const rawDisp = data.final_disposition || data.outcome || (data.duration_seconds && data.duration_seconds > 0 ? 'Abruptly Disconnected Call' : 'Not Connected (No Answer)');
+    
     const callRes = await query('SELECT id, customer_id, campaign_id, status FROM calls WHERE id = $1', [callId]);
     if (callRes.rows.length === 0) {
       throw new AppError(`Call not found: ${callId}`, 404);
     }
     const call = callRes.rows[0];
+
+    const finalDisp = matchCanonicalDisposition(rawDisp, data.duration_seconds, call.status);
+    logger.info({ callId, rawDisposition: rawDisp, canonicalDisposition: finalDisp }, 'Saving call outcome (canonical)');
 
     // Ensure campaign_id is linked if customer belongs to a campaign
     if (!call.campaign_id && call.customer_id) {
@@ -653,26 +677,15 @@ export class CallService {
 
     // Map into the 3 standard statuses: 'completed' (Successful), 'failed' (Failed), 'no_answer' (No Answer)
     let mappedStatus = 'completed';
-    const upper = (finalDisp || '').toUpperCase();
-    if (
-      upper.includes('NO ANSWER') ||
-      upper.includes('NO_ANSWER') ||
-      upper.includes('NO_RESPONSE') ||
-      upper.includes('VOICEMAIL') ||
-      upper.includes('TIMEOUT') ||
-      upper.includes('RINGING')
-    ) {
+    if (finalDisp === 'Not Connected (No Answer)' || finalDisp === 'Voicemail or IVR Detected') {
       mappedStatus = 'no_answer';
     } else if (
-      upper.includes('FAILED') ||
-      upper.includes('DROPPED') ||
-      upper.includes('BARRIER') ||
-      upper.includes('WRONG NUMBER') ||
-      upper.includes('WRONG_NUMBER') ||
-      upper.includes('BUSY') ||
-      upper.includes('DISCONNECTED') ||
-      upper.includes('DECLINED') ||
-      upper.includes('REFUSED') ||
+      finalDisp === 'Not Connected (Failed)' ||
+      finalDisp === 'Refused To Return' ||
+      finalDisp === 'Wrong Number' ||
+      finalDisp === 'Language Barrier' ||
+      finalDisp === 'Do Not Call' ||
+      finalDisp === 'Abruptly Disconnected Call' ||
       data.escalation_required
     ) {
       mappedStatus = 'failed';
@@ -1008,7 +1021,15 @@ export class CallService {
       throw new AppError(`Call not found: ${callId}`, 404);
     }
 
-    return res.rows[0];
+    const row = res.rows[0];
+    return {
+      ...row,
+      final_disposition: matchCanonicalDisposition(
+        row.final_disposition || row.call_status || row.status,
+        row.duration_seconds,
+        row.status
+      ),
+    };
   }
 
   async listCustomers(limit = 100) {
@@ -1016,7 +1037,7 @@ export class CallService {
     return res.rows.map((r: any) => serializeCustomer(r));
   }
 
-  async listRecentCalls(limit = 100, status?: string) {
+  async listRecentCalls(limit = 100, status?: string, isTest?: boolean) {
     let q = `
       SELECT c.*,
               cust.name as customer_name, cust.phone as customer_phone, cust.subs_del_no, cust.language as customer_language,
@@ -1028,21 +1049,39 @@ export class CallService {
        LEFT JOIN call_outcomes co ON c.id = co.call_id
     `;
     const params: any[] = [];
+    const whereConditions: string[] = [];
+
+    if (isTest) {
+      whereConditions.push('c.is_test_call = TRUE');
+    }
+
     if (status && status !== 'ALL') {
       const s = status.toUpperCase();
       if (s === 'SUCCESSFUL') {
-        q += ` WHERE (UPPER(c.status) IN ('COMPLETED', 'ANSWERED', 'SUCCESSFUL'))`;
+        whereConditions.push(`(UPPER(c.status) IN ('COMPLETED', 'ANSWERED', 'SUCCESSFUL'))`);
       } else if (s === 'FAILED') {
-        q += ` WHERE (UPPER(c.status) IN ('FAILED', 'BUSY', 'DISCONNECTED'))`;
+        whereConditions.push(`(UPPER(c.status) IN ('FAILED', 'BUSY', 'DISCONNECTED'))`);
       } else if (s === 'NO_ANSWER' || s === 'NO ANSWER') {
-        q += ` WHERE (UPPER(c.status) IN ('NO_ANSWER', 'NO ANSWER', 'NO_RESPONSE', 'VOICEMAIL'))`;
+        whereConditions.push(`(UPPER(c.status) IN ('NO_ANSWER', 'NO ANSWER', 'NO_RESPONSE', 'VOICEMAIL'))`);
       }
     }
+
+    if (whereConditions.length > 0) {
+      q += ` WHERE ${whereConditions.join(' AND ')}`;
+    }
+
     q += ` ORDER BY c.created_at DESC LIMIT $${params.length + 1}`;
     params.push(limit);
 
     const res = await query(q, params);
-    return res.rows;
+    return res.rows.map((row: any) => ({
+      ...row,
+      final_disposition: matchCanonicalDisposition(
+        row.final_disposition || row.call_status || row.status,
+        row.duration_seconds,
+        row.status
+      ),
+    }));
   }
 }
 

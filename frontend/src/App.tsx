@@ -12,6 +12,7 @@ import {
   RecentCalls, 
   CallDetailModal, 
   TestCallModal, 
+  TestCallView,
   RetryQueue, 
   LandingPage,
   LoginPage
@@ -35,6 +36,8 @@ const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) => {
     customers,
     recentCalls,
     retries,
+    campaigns,
+    credits,
     loading,
     dialingId,
     selectedCall,
@@ -72,6 +75,9 @@ const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) => {
           <DashboardHome
             summary={summary}
             recentCalls={recentCalls}
+            campaigns={campaigns}
+            credits={credits}
+            customersCount={customers.length}
             user={user}
             onTabChange={setActiveTab}
             onImportModalOpen={() => setIsCreateCampaignModalOpen(true)}
@@ -102,6 +108,12 @@ const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) => {
         {activeTab === 'CALLS' && (
           <RecentCalls
             calls={recentCalls}
+            onSelectCall={setSelectedCall}
+          />
+        )}
+
+        {activeTab === 'TEST_CALL' && (
+          <TestCallView
             onSelectCall={setSelectedCall}
           />
         )}

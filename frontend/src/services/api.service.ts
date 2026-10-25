@@ -117,16 +117,20 @@ export async function importLeads(leads: Partial<CustomerCreateInput>[]): Promis
 export interface TestCallInput {
   phone: string;
   name?: string;
+  customer_name?: string;
+  company_name?: string;
+  script?: string;
+  language?: string;
+  voice_pipeline?: string;
   address?: string;
   account_no?: string;
   subs_del_no?: string;
   service_end_date?: string;
   r_date?: string;
-  language?: string;
 }
 
 /**
- * Initiates customized developer test call with Priya AI agent dispatch
+ * Initiates customized developer test call with AI agent dispatch
  */
 export async function initiateTestCall(payload: TestCallInput): Promise<{
   success: boolean;
@@ -138,8 +142,12 @@ export async function initiateTestCall(payload: TestCallInput): Promise<{
     roomName: string;
     phone: string;
     customerName: string;
-    accountNo: string;
-    subsDelNo: string;
+    companyName?: string;
+    script?: string;
+    voicePipeline?: string;
+    language?: string;
+    accountNo?: string;
+    subsDelNo?: string;
     serviceEndDate?: string;
     createdAt: string;
   };
@@ -154,6 +162,24 @@ export async function initiateTestCall(payload: TestCallInput): Promise<{
     throw new Error(err.error || `Failed to initiate test call: ${res.statusText}`);
   }
   return res.json();
+}
+
+/**
+ * Fetches test call history from PostgreSQL
+ */
+export async function fetchTestCallHistory(): Promise<CallRecord[]> {
+  try {
+    const res = await authFetch(`${API_BASE}/api/calls/test-history`);
+    if (!res.ok) {
+      const fallbackRes = await authFetch(`${API_BASE}/api/calls`);
+      const fallbackData = await fallbackRes.json();
+      return fallbackData.calls || [];
+    }
+    const data = await res.json();
+    return data.calls || [];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -365,5 +391,42 @@ export async function fetchCampaignContacts(campaignId: string): Promise<Campaig
   }
   const data = await res.json();
   return data.contacts || [];
+}
+
+export interface CampaignReportRow {
+  sno: number;
+  lead_id: string;
+  subs_del_no: string;
+  mobile: string;
+  customer_name: string;
+  product_name: string;
+  address: string;
+  status: string;
+  attempts_count: number;
+  connected_attempts_count: number;
+  last_call_time: string;
+  attempt_1_disposition: string;
+  attempt_2_disposition: string;
+  attempt_3_disposition: string;
+  attempt_4_disposition: string;
+  attempt_5_disposition: string;
+  attempt_6_disposition: string;
+  attempt_7_disposition: string;
+  attempt_8_disposition: string;
+  final_disposition: string;
+  conclusion_date: string;
+  recording: string;
+}
+
+/**
+ * Fetches per-lead report data for a campaign (used for CSV download)
+ */
+export async function fetchCampaignReport(campaignId: string): Promise<CampaignReportRow[]> {
+  const res = await authFetch(`${API_BASE}/api/campaigns/${campaignId}/report`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch campaign report: ${res.statusText}`);
+  }
+  const data = await res.json();
+  return data.report || [];
 }
 

@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { Search, ChevronDown, FileText } from 'lucide-react';
 import type { CallRecord } from '../../types';
+import { matchCanonicalDisposition } from '../campaign/CampaignDetailView';
 
 interface RecentCallsProps {
   calls: CallRecord[];
@@ -96,16 +97,6 @@ export const RecentCalls: React.FC<RecentCallsProps> = ({ calls, onSelectCall })
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24, paddingBottom: 36 }}>
       {/* Header matching user screenshot */}
       <div>
-        <div style={{
-          fontSize: '0.72rem',
-          fontWeight: 800,
-          letterSpacing: '0.08em',
-          color: '#38BDF8',
-          marginBottom: 6,
-          textTransform: 'uppercase',
-        }}>
-          CALLS
-        </div>
         <h1 style={{
           fontSize: '1.95rem',
           fontWeight: 700,
@@ -233,8 +224,11 @@ export const RecentCalls: React.FC<RecentCallsProps> = ({ calls, onSelectCall })
                 const phoneDisplay = maskPhone(call.customer_phone || (call as any).phone);
                 const refId = call.subs_del_no || (call as any).contact_ref || '—';
                 const campName = (call as any).campaign_name || 'Direct Voice Outreach';
-                const normStatus = normalizeStatus(call.status, call.final_disposition);
-                const resultText = call.final_disposition || (call as any).call_result || call.call_status || (normStatus === 'SUCCESSFUL' ? 'Connected' : (normStatus === 'NO_ANSWER' ? 'No answer' : 'Failed'));
+                const rawResult = call.final_disposition || (call as any).call_result || call.call_status;
+                const normStatus = normalizeStatus(call.status, rawResult);
+                const resultText = rawResult
+                  ? matchCanonicalDisposition(rawResult, call.duration_seconds, call.status)
+                  : (normStatus === 'SUCCESSFUL' ? 'Confirmed For Pickup' : (normStatus === 'NO_ANSWER' ? 'Not Connected (No Answer)' : 'Not Connected (Failed)'));
                 const langText = (call as any).language === 'en' || (call as any).customer_language === 'en' ? 'English' : 'Hindi';
                 const durationText = formatDuration(call.duration_seconds);
                 const timeText = (call as any).formatted_time || formatTime(call.created_at);

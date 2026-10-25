@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Megaphone, 
   Users, 
@@ -7,12 +7,13 @@ import {
   ChevronRight, 
   X, 
   Plus, 
-  PhoneCall, 
   Phone,
   BarChart3,
-  CreditCard
+  CreditCard,
+  PhoneOff
 } from 'lucide-react';
-import type { CampaignSummary, CallRecord, TabKey, AuthUser } from '../../types';
+import type { CampaignSummary, CallRecord, TabKey, AuthUser, CampaignItem } from '../../types';
+import { fetchCampaigns, fetchBillingBalance } from '../../services';
 
 interface DashboardHomeProps {
   summary: CampaignSummary | null;
@@ -20,8 +21,11 @@ interface DashboardHomeProps {
   user: AuthUser | null;
   onTabChange: (tab: TabKey) => void;
   onImportModalOpen: () => void;
-  onTestCallOpen: () => void;
+  onTestCallOpen?: () => void;
   onSelectCall: (call: CallRecord) => void;
+  campaigns?: CampaignItem[];
+  credits?: number;
+  customersCount?: number;
 }
 
 export const DashboardHome: React.FC<DashboardHomeProps> = ({
@@ -30,9 +34,49 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
   user,
   onTabChange,
   onImportModalOpen,
-  onTestCallOpen,
+  onTestCallOpen: _onTestCallOpen,
   onSelectCall,
+  campaigns: propCampaigns,
+  credits: propCredits,
+  customersCount = 0,
 }) => {
+  const [internalCampaigns, setInternalCampaigns] = useState<CampaignItem[]>([]);
+  const [internalCredits, setInternalCredits] = useState<number>(() => {
+    const saved = localStorage.getItem('curoai_credits');
+    return saved ? parseInt(saved, 10) : 21874;
+  });
+
+  useEffect(() => {
+    if (!propCampaigns || propCampaigns.length === 0) {
+      fetchCampaigns()
+        .then((data) => setInternalCampaigns(data || []))
+        .catch(() => {});
+    }
+    if (typeof propCredits !== 'number') {
+      fetchBillingBalance()
+        .then((data) => {
+          if (data && typeof data.available_credits === 'number') {
+            setInternalCredits(data.available_credits);
+            localStorage.setItem('curoai_credits', String(data.available_credits));
+          }
+        })
+        .catch(() => {});
+    }
+  }, [propCampaigns, propCredits]);
+
+  useEffect(() => {
+    const handleUpdate = (e: CustomEvent<{ credits: number }>) => {
+      if (e.detail && typeof e.detail.credits === 'number') {
+        setInternalCredits(e.detail.credits);
+      }
+    };
+    window.addEventListener('curoai_credits_updated', handleUpdate as EventListener);
+    return () => window.removeEventListener('curoai_credits_updated', handleUpdate as EventListener);
+  }, []);
+
+  const campaignsList = (propCampaigns && propCampaigns.length > 0) ? propCampaigns : internalCampaigns;
+  const currentCredits = typeof propCredits === 'number' ? propCredits : internalCredits;
+
   const overview = summary?.overview || {
     sourceRows: 0,
     uniqueContacts: 0,
@@ -41,9 +85,27 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
     dispositionedContacts: 0,
   };
 
-  const successRate = overview.uniqueContacts > 0
-    ? Math.round((overview.connectedCalls / (overview.uniqueContacts || 1)) * 100)
-    : (overview.totalAttempts > 0 ? Math.round((overview.connectedCalls / overview.totalAttempts) * 100) : 0);
+  // Real Card 1: Actual total campaigns and active/paused count from DB
+  const totalCampaigns = campaignsList.length;
+  const activeOrPausedCount = campaignsList.filter((c) =>
+    ['RUNNING', 'PAUSED'].includes((c.status || '').toUpperCase())
+  ).length;
+
+  // Real Card 2: Actual total contacts across all campaigns (or customers table)
+  const totalCampaignContacts = campaignsList.reduce((acc, c) => acc + (c.total_contacts || 0), 0);
+  const totalContacts = totalCampaignContacts > 0
+    ? totalCampaignContacts
+    : (overview.uniqueContacts || overview.sourceRows || customersCount || 0);
+
+  // Real Card 3: Actual success rate (successful calls / total call attempts * 100)
+  const totalCallsCount = overview.totalAttempts || recentCalls.length || 0;
+  const successfulCallsCount = overview.connectedCalls || recentCalls.filter((c) => getCallStatus(c) === 'SUCCESSFUL').length || 0;
+  const successRate = totalCallsCount > 0
+    ? Math.min(100, Math.round((successfulCallsCount / totalCallsCount) * 100))
+    : 0;
+
+  // Real Card 4: Credits balance from billing accounts in DB
+  const displayCredits = currentCredits;
 
   // Mask phone number for security & display like the screenshot: +91 84****** 16
   const formatMaskedPhone = (phone?: string) => {
@@ -73,12 +135,34 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
 
   const displayCalls = recentCalls.slice(0, 6);
 
-  const isCallSuccessful = (call: any) => {
-    const disp = (call.disposition || call.status || '').toUpperCase();
-    if (disp.includes('FAILED') || disp.includes('UNCONNECTED') || disp.includes('NO_ANSWER') || disp.includes('BUSY') || disp.includes('CANCELLED')) {
-      return false;
+  const getCallStatus = (call: any): 'SUCCESSFUL' | 'FAILED' | 'NO_ANSWER' => {
+    const s = (call.status || call.call_status || '').toLowerCase();
+    const d = (
+      call.final_disposition ||
+      call.disposition ||
+      call.call_result ||
+      ''
+    ).toLowerCase();
+    if (
+      s === 'no_answer' ||
+      s === 'no answer' ||
+      d.includes('no answer') ||
+      d.includes('timeout') ||
+      d.includes('ringing') ||
+      d.includes('not connected (no answer)')
+    ) {
+      return 'NO_ANSWER';
     }
-    return true;
+    if (
+      s === 'completed' ||
+      s === 'successful' ||
+      s === 'answered' ||
+      d.includes('goal completed') ||
+      d.includes('confirmed for pickup')
+    ) {
+      return 'SUCCESSFUL';
+    }
+    return 'FAILED';
   };
 
   const getCallLanguage = (call: any) => {
@@ -101,17 +185,6 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
         gap: 16,
       }}>
         <div>
-          <div style={{
-            fontSize: '0.72rem',
-            fontWeight: 800,
-            letterSpacing: '0.08em',
-            color: '#38BDF8',
-            marginBottom: 6,
-            textTransform: 'uppercase',
-          }}>
-            DASHBOARD
-          </div>
-
           <h1 style={{
             fontSize: '1.95rem',
             fontWeight: 700,
@@ -140,35 +213,6 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
 
         {/* Action Button */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <button
-            onClick={onTestCallOpen}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              background: 'rgba(255, 255, 255, 0.05)',
-              border: '1px solid rgba(255, 255, 255, 0.12)',
-              color: '#E2E8F0',
-              padding: '10px 18px',
-              borderRadius: 10,
-              fontSize: '0.88rem',
-              fontWeight: 600,
-              cursor: 'pointer',
-              transition: 'all 0.18s ease',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.09)';
-              e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.25)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
-              e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.12)';
-            }}
-          >
-            <PhoneCall size={16} color="#38BDF8" />
-            Test AI call
-          </button>
-
           <button
             onClick={onImportModalOpen}
             style={{
@@ -251,17 +295,17 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
               Campaigns
             </div>
             <div style={{ fontSize: '1.7rem', fontWeight: 700, color: '#FFFFFF', lineHeight: 1.2, margin: '2px 0' }}>
-              6
+              {totalCampaigns}
             </div>
             <div style={{ fontSize: '0.78rem', color: '#64748B' }}>
-              2 active or paused
+              {activeOrPausedCount} active or paused
             </div>
           </div>
         </div>
 
         {/* Card 2: Total contacts */}
         <div 
-          onClick={() => onTabChange('LEADS')}
+          onClick={() => onTabChange('CAMPAIGN')}
           style={{
             background: '#0E121B',
             border: '1px solid rgba(255, 255, 255, 0.07)',
@@ -301,7 +345,7 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
               Total contacts
             </div>
             <div style={{ fontSize: '1.7rem', fontWeight: 700, color: '#FFFFFF', lineHeight: 1.2, margin: '2px 0' }}>
-              {(overview.uniqueContacts || 0).toLocaleString()}
+              {totalContacts.toLocaleString()}
             </div>
             <div style={{ fontSize: '0.78rem', color: '#64748B' }}>
               across all campaigns
@@ -354,7 +398,7 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
               {successRate}%
             </div>
             <div style={{ fontSize: '0.78rem', color: '#64748B' }}>
-              {(overview.connectedCalls || 0).toLocaleString()} successful calls
+              {successfulCallsCount.toLocaleString()} successful calls
             </div>
           </div>
         </div>
@@ -401,7 +445,7 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
               Credits
             </div>
             <div style={{ fontSize: '1.7rem', fontWeight: 700, color: '#FFFFFF', lineHeight: 1.2, margin: '2px 0' }}>
-              4,874
+              {displayCredits.toLocaleString()}
             </div>
             <div style={{ fontSize: '0.78rem', color: '#64748B' }}>
               available balance
@@ -678,7 +722,7 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
               </div>
             ) : (
               displayCalls.map((call, idx) => {
-                const isSuccess = isCallSuccessful(call);
+                const status = getCallStatus(call);
                 const lang = getCallLanguage(call);
                 const isLast = idx === displayCalls.length - 1;
 
@@ -704,15 +748,32 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
                       width: 32,
                       height: 32,
                       borderRadius: 8,
-                      background: isSuccess ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)',
-                      border: isSuccess ? '1px solid rgba(16, 185, 129, 0.28)' : '1px solid rgba(239, 68, 68, 0.28)',
+                      background:
+                        status === 'SUCCESSFUL'
+                          ? 'rgba(16, 185, 129, 0.12)'
+                          : status === 'NO_ANSWER'
+                          ? 'rgba(245, 158, 11, 0.12)'
+                          : 'rgba(239, 68, 68, 0.12)',
+                      border:
+                        status === 'SUCCESSFUL'
+                          ? '1px solid rgba(16, 185, 129, 0.28)'
+                          : status === 'NO_ANSWER'
+                          ? '1px solid rgba(245, 158, 11, 0.28)'
+                          : '1px solid rgba(239, 68, 68, 0.28)',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      color: isSuccess ? '#10B981' : '#EF4444',
+                      color:
+                        status === 'SUCCESSFUL'
+                          ? '#10B981'
+                          : status === 'NO_ANSWER'
+                          ? '#F59E0B'
+                          : '#EF4444',
                       flexShrink: 0,
                     }}>
-                      {isSuccess ? <Check size={16} strokeWidth={2.5} /> : <X size={16} strokeWidth={2.5} />}
+                      {status === 'SUCCESSFUL' && <Check size={16} strokeWidth={2.5} />}
+                      {status === 'NO_ANSWER' && <PhoneOff size={15} strokeWidth={2.5} />}
+                      {status === 'FAILED' && <X size={16} strokeWidth={2.5} />}
                     </div>
 
                     {/* Phone & Meta */}
@@ -737,7 +798,7 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
 
                   {/* Badge */}
                   <div>
-                    {isSuccess ? (
+                    {status === 'SUCCESSFUL' && (
                       <span style={{
                         display: 'inline-block',
                         padding: '3px 10px',
@@ -751,7 +812,23 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
                       }}>
                         SUCCESSFUL
                       </span>
-                    ) : (
+                    )}
+                    {status === 'NO_ANSWER' && (
+                      <span style={{
+                        display: 'inline-block',
+                        padding: '3px 10px',
+                        borderRadius: 6,
+                        background: 'rgba(245, 158, 11, 0.08)',
+                        border: '1px solid rgba(245, 158, 11, 0.3)',
+                        color: '#F59E0B',
+                        fontSize: '0.68rem',
+                        fontWeight: 700,
+                        letterSpacing: '0.04em',
+                      }}>
+                        NO ANSWER
+                      </span>
+                    )}
+                    {status === 'FAILED' && (
                       <span style={{
                         display: 'inline-block',
                         padding: '3px 10px',

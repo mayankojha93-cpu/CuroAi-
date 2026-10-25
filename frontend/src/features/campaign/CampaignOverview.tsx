@@ -15,7 +15,7 @@ import {
   RotateCcw
 } from 'lucide-react';
 import type { CampaignSummary, CampaignItem, CampaignStage, CallRecord } from '../../types';
-import { fetchCampaigns, updateCampaignStatus } from '../../services';
+import { fetchCampaigns, updateCampaignStatus, fetchCampaignReport, type CampaignReportRow } from '../../services';
 import { CampaignDetailView } from './CampaignDetailView';
 
 interface CampaignOverviewProps {
@@ -93,27 +93,84 @@ export const CampaignOverview: React.FC<CampaignOverviewProps> = ({
     }
   };
 
-  const handleDownloadCsv = (campaign: CampaignItem) => {
-    const csvRows = [
-      ['Campaign Name', campaign.name],
-      ['Status', normalizeStatus(campaign.status)],
-      ['Contacts', campaign.total_contacts.toString()],
-      ['Unique Called', campaign.unique_called.toString()],
-      ['Successful Calls', campaign.successful_calls.toString()],
-      ['Failed Calls', campaign.failed_calls.toString()],
-      ['Remaining Queue', campaign.remaining_calls.toString()],
-      ['Execution Date', campaign.execution_date || 'October 2026'],
-      ['Exported At', new Date().toISOString()],
-    ];
+  const handleDownloadCsv = async (campaign: CampaignItem) => {
+    try {
+      const reportData: CampaignReportRow[] = await fetchCampaignReport(campaign.id);
 
-    const csvContent = 'data:text/csv;charset=utf-8,' + csvRows.map((e) => e.join(',')).join('\n');
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `${campaign.name.replace(/\s+/g, '_')}_Report.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+      const headers = [
+        'S.No.',
+        'Lead Id',
+        'SUBS DEL NO',
+        'Mobile',
+        'Customer Name',
+        'Product Name',
+        'Address',
+        'Status',
+        'Attempts Count',
+        'Connected Attempts Count',
+        'Last Call Time',
+        'Attempt 1 Disposition',
+        'Attempt 2 Disposition',
+        'Attempt 3 Disposition',
+        'Attempt 4 Disposition',
+        'Attempt 5 Disposition',
+        'Attempt 6 Disposition',
+        'Attempt 7 Disposition',
+        'Attempt 8 Disposition',
+        'Final Disposition',
+        'Conclusion Date',
+        'Recording',
+      ];
+
+      const escapeCsvField = (field: string | number | null | undefined): string => {
+        const str = String(field ?? '');
+        if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+          return `"${str.replace(/"/g, '""')}"`;
+        }
+        return str;
+      };
+
+      const csvRows = [headers.join(',')];
+      for (const row of reportData) {
+        csvRows.push([
+          escapeCsvField(row.sno),
+          escapeCsvField(row.lead_id),
+          escapeCsvField(row.subs_del_no),
+          escapeCsvField(row.mobile),
+          escapeCsvField(row.customer_name),
+          escapeCsvField(row.product_name),
+          escapeCsvField(row.address),
+          escapeCsvField(row.status),
+          escapeCsvField(row.attempts_count),
+          escapeCsvField(row.connected_attempts_count),
+          escapeCsvField(row.last_call_time),
+          escapeCsvField(row.attempt_1_disposition),
+          escapeCsvField(row.attempt_2_disposition),
+          escapeCsvField(row.attempt_3_disposition),
+          escapeCsvField(row.attempt_4_disposition),
+          escapeCsvField(row.attempt_5_disposition),
+          escapeCsvField(row.attempt_6_disposition),
+          escapeCsvField(row.attempt_7_disposition),
+          escapeCsvField(row.attempt_8_disposition),
+          escapeCsvField(row.final_disposition),
+          escapeCsvField(row.conclusion_date),
+          escapeCsvField(row.recording),
+        ].join(','));
+      }
+
+      const csvContent = csvRows.join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', `${campaign.name.replace(/\s+/g, '_')}_Report.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Failed to download report:', err);
+    }
   };
 
   const getProgressBarColor = (status: string, idx: number) => {
@@ -151,17 +208,6 @@ export const CampaignOverview: React.FC<CampaignOverviewProps> = ({
         gap: 16,
       }}>
         <div>
-          <div style={{
-            fontSize: '0.72rem',
-            fontWeight: 800,
-            letterSpacing: '0.08em',
-            color: '#38BDF8',
-            marginBottom: 6,
-            textTransform: 'uppercase',
-          }}>
-            CAMPAIGNS
-          </div>
-
           <h1 style={{
             fontSize: '1.95rem',
             fontWeight: 700,
@@ -595,22 +641,88 @@ export const CampaignOverview: React.FC<CampaignOverviewProps> = ({
                     }} />
                   </div>
 
-                  {/* Outcomes Row */}
+                  {/* Outcomes Row: Structured 3-column status numbers grid */}
                   <div style={{
-                    display: 'flex',
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(3, 1fr)',
+                    gap: 8,
+                    padding: '8px 10px',
+                    background: 'rgba(255, 255, 255, 0.02)',
+                    borderRadius: 8,
+                    border: '1px solid rgba(255, 255, 255, 0.04)',
                     alignItems: 'center',
-                    gap: 16,
-                    fontSize: '0.78rem',
                   }}>
-                    <span style={{ color: '#10B981', display: 'flex', alignItems: 'center', gap: 4, fontWeight: 500 }}>
-                      <Check size={13} strokeWidth={2.5} /> {camp.successful_calls.toLocaleString()} successful
-                    </span>
-                    <span style={{ color: '#EF4444', display: 'flex', alignItems: 'center', gap: 4, fontWeight: 500 }}>
-                      <X size={13} strokeWidth={2.5} /> {camp.failed_calls.toLocaleString()} failed
-                    </span>
-                    <span style={{ color: '#F59E0B', display: 'flex', alignItems: 'center', gap: 4, fontWeight: 500 }}>
-                      <Clock size={13} /> {camp.remaining_calls.toLocaleString()} remaining
-                    </span>
+                    {/* Successful */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        color: '#10B981',
+                        fontSize: '0.82rem',
+                        fontWeight: 700,
+                        whiteSpace: 'nowrap',
+                      }}>
+                        <Check size={13} strokeWidth={2.5} />
+                        <span>{camp.successful_calls.toLocaleString()}</span>
+                      </div>
+                      <span style={{
+                        fontSize: '0.7rem',
+                        color: '#64748B',
+                        fontWeight: 500,
+                        whiteSpace: 'nowrap',
+                      }}>
+                        successful
+                      </span>
+                    </div>
+
+                    {/* Failed */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        color: '#EF4444',
+                        fontSize: '0.82rem',
+                        fontWeight: 700,
+                        whiteSpace: 'nowrap',
+                      }}>
+                        <X size={13} strokeWidth={2.5} />
+                        <span>{camp.failed_calls.toLocaleString()}</span>
+                      </div>
+                      <span style={{
+                        fontSize: '0.7rem',
+                        color: '#64748B',
+                        fontWeight: 500,
+                        whiteSpace: 'nowrap',
+                      }}>
+                        failed
+                      </span>
+                    </div>
+
+                    {/* Remaining */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        color: '#F59E0B',
+                        fontSize: '0.82rem',
+                        fontWeight: 700,
+                        whiteSpace: 'nowrap',
+                      }}>
+                        <Clock size={13} strokeWidth={2} />
+                        <span>{camp.remaining_calls.toLocaleString()}</span>
+                      </div>
+                      <span style={{
+                        fontSize: '0.7rem',
+                        color: '#64748B',
+                        fontWeight: 500,
+                        whiteSpace: 'nowrap',
+                      }}>
+                        remaining
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>

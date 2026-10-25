@@ -1,6 +1,11 @@
 import { pool } from '../db/index.js';
 import { logger } from '../config/logger.js';
 import { callService } from './callService.js';
+import {
+  CANONICAL_DISPOSITIONS,
+  TERMINAL_DISPOSITIONS,
+  matchCanonicalDisposition,
+} from '../utils/dispositions.js';
 
 export type CampaignStatus = 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'STOPPED' | 'Running' | 'Paused' | 'Completed' | 'Stopped';
 
@@ -198,15 +203,7 @@ export class CampaignService {
       retryAttempts,
       retryDelayMinutes,
       maxDuration,
-      JSON.stringify(data.expected_dispositions || [
-        'CONFIRMED_PICKUP',
-        'NEEDS_AIRTEL_SUPPORT',
-        'SCHEDULE_CALLBACK',
-        'REFUSED',
-        'WRONG_PERSON',
-        'BUSY',
-        'NO_ANSWER',
-      ]),
+      JSON.stringify(data.expected_dispositions || CANONICAL_DISPOSITIONS),
     ]);
     const campaign = res.rows[0];
 
@@ -285,6 +282,7 @@ export class CampaignService {
 
     // Terminal dispositions that should remain closed
     const terminalList = [
+      ...TERMINAL_DISPOSITIONS,
       'CONFIRMED_FOR_PICKUP', 'PICKUP_CONFIRMED', 'PICKUP_CONFIRMED_NEW_DATE',
       'REFUSED_TO_RETURN', 'PICKUP_DECLINED', 'ALREADY_RETURNED', 'ALREADY_PICKED_UP',
       'REFUND_REQUEST', 'REFUND_OR_OWNERSHIP_QUERY', 'RECHARGED_DEVICE', 'ALREADY_RECHARGED',
@@ -382,7 +380,16 @@ export class CampaignService {
        LIMIT 100`,
       [campaignId]
     );
-    return res.rows;
+    return res.rows.map((row: any) => {
+      const canonical = row.call_result
+        ? matchCanonicalDisposition(row.call_result, row.duration_seconds, row.status)
+        : null;
+      return {
+        ...row,
+        call_result: canonical || row.call_result,
+        final_disposition: canonical,
+      };
+    });
   }
 
   /**
@@ -434,7 +441,15 @@ export class CampaignService {
       LIMIT 500
     `;
     const res = await pool.query(query, [campaignId]);
-    return res.rows;
+    return res.rows.map((row: any) => ({
+      ...row,
+      final_disposition: row.final_disposition || row.current_disposition
+        ? matchCanonicalDisposition(row.final_disposition || row.current_disposition, row.duration_seconds, row.call_status)
+        : null,
+      current_disposition: row.current_disposition
+        ? matchCanonicalDisposition(row.current_disposition)
+        : null,
+    }));
   }
 
   /**
@@ -561,6 +576,150 @@ export class CampaignService {
   }
 
   /**
+   * Generate per-lead report data for CSV download.
+   * Returns: S.No, Lead Id, SUBS DEL NO, Mobile, Customer Name, Product Name, Address,
+   *          Status, Attempts Count, Connected Attempts Count, Last Call Time,
+   *          Attempt 1-8 Disposition, Final Disposition, Conclusion Date, Recording
+   */
+  async getCampaignReport(campaignId: string): Promise<any[]> {
+    const campaign = await this.getCampaign(campaignId);
+    if (!campaign) {
+      throw new Error(`Campaign not found: ${campaignId}`);
+    }
+
+    // Fetch all leads for this campaign with all their call attempts
+    const query = `
+      SELECT
+        cu.id as lead_id,
+        cu.subs_del_no,
+        cu.phone as mobile,
+        cu.name as customer_name,
+        cu.product_name,
+        cu.address,
+        cu.is_closed,
+        cu.current_disposition,
+        cu.total_attempts,
+        cu.created_at as lead_created_at
+      FROM customers cu
+      WHERE cu.campaign_id = $1
+         OR cu.id IN (SELECT customer_id FROM calls WHERE campaign_id = $1)
+      ORDER BY cu.created_at ASC
+    `;
+    const leadsRes = await pool.query(query, [campaignId]);
+
+    const reportRows: any[] = [];
+
+    for (let idx = 0; idx < leadsRes.rows.length; idx++) {
+      const lead = leadsRes.rows[idx];
+
+      // Fetch all call attempts for this lead, ordered by attempt number / created_at
+      const callsQuery = `
+        SELECT
+          c.id as call_id,
+          c.attempt_number,
+          c.status as call_status,
+          c.duration_seconds,
+          c.created_at as call_time,
+          c.recording_url,
+          c.ended_at,
+          COALESCE(co.final_disposition, c.call_status, c.status) as disposition,
+          co.final_disposition as outcome_disposition
+        FROM calls c
+        LEFT JOIN call_outcomes co ON c.id = co.call_id
+        WHERE c.customer_id = $1
+        ORDER BY c.created_at ASC
+      `;
+      const callsRes = await pool.query(callsQuery, [lead.lead_id]);
+      const calls = callsRes.rows;
+
+      // Build attempt dispositions (up to 8)
+      const attemptDispositions: (string | null)[] = Array(8).fill(null);
+      let connectedCount = 0;
+      let lastCallTime: string | null = null;
+      let lastRecordingUrl: string | null = null;
+      let finalDisposition: string | null = lead.current_disposition || null;
+      let conclusionDate: string | null = null;
+
+      for (let i = 0; i < calls.length; i++) {
+        const call = calls[i];
+        // Map to attempt index (0-based for array, but attempt_number is 1-based)
+        const attemptIdx = i < 8 ? i : 7; // Cap at 8 attempts
+        const rawDisp = call.outcome_disposition || call.disposition || call.call_status || '';
+        const canonical = rawDisp ? matchCanonicalDisposition(rawDisp, call.duration_seconds, call.call_status) : '';
+        attemptDispositions[attemptIdx] = canonical || rawDisp || null;
+
+        // Count connected attempts (answered / completed with duration > 0)
+        const status = (call.call_status || call.disposition || '').toUpperCase();
+        if (
+          status === 'ANSWERED' ||
+          status === 'COMPLETED' ||
+          (call.duration_seconds && call.duration_seconds > 0)
+        ) {
+          connectedCount++;
+        }
+
+        // Track last call time
+        if (call.call_time) {
+          lastCallTime = call.call_time;
+        }
+
+        // Track recording URL (use the latest one available)
+        if (call.recording_url) {
+          lastRecordingUrl = call.recording_url;
+        }
+
+        // Final disposition = last call's disposition
+        if (i === calls.length - 1) {
+          finalDisposition = canonical || rawDisp || lead.current_disposition || null;
+          // Conclusion date = ended_at of last call if lead is closed
+          if (lead.is_closed && call.ended_at) {
+            conclusionDate = call.ended_at;
+          } else if (lead.is_closed && call.call_time) {
+            conclusionDate = call.call_time;
+          }
+        }
+      }
+
+      // Determine status
+      let leadStatus = 'Pending';
+      if (lead.is_closed) {
+        leadStatus = 'Closed';
+      } else if (calls.length > 0) {
+        leadStatus = 'In Progress';
+      }
+
+      const attemptsCount = Math.max(lead.total_attempts || 0, calls.length);
+
+      reportRows.push({
+        sno: idx + 1,
+        lead_id: lead.lead_id,
+        subs_del_no: lead.subs_del_no || '',
+        mobile: lead.mobile || '',
+        customer_name: lead.customer_name || '',
+        product_name: lead.product_name || 'Airtel IP TV',
+        address: lead.address || '',
+        status: leadStatus,
+        attempts_count: attemptsCount,
+        connected_attempts_count: connectedCount,
+        last_call_time: lastCallTime || '',
+        attempt_1_disposition: attemptDispositions[0] || '',
+        attempt_2_disposition: attemptDispositions[1] || '',
+        attempt_3_disposition: attemptDispositions[2] || '',
+        attempt_4_disposition: attemptDispositions[3] || '',
+        attempt_5_disposition: attemptDispositions[4] || '',
+        attempt_6_disposition: attemptDispositions[5] || '',
+        attempt_7_disposition: attemptDispositions[6] || '',
+        attempt_8_disposition: attemptDispositions[7] || '',
+        final_disposition: finalDisposition ? matchCanonicalDisposition(finalDisposition) : '',
+        conclusion_date: conclusionDate || '',
+        recording: lastRecordingUrl || '',
+      });
+    }
+
+    return reportRows;
+  }
+
+  /**
    * Get disposition breakdown for a campaign
    */
   async getCampaignDispositions(campaignId: string): Promise<{
@@ -619,26 +778,25 @@ export class CampaignService {
     );
     let totalCalls = totalRes.rows[0]?.total || 0;
 
-    const expected: string[] = Array.isArray(campaign.expected_dispositions)
-      ? campaign.expected_dispositions
-      : [];
+    const expected: string[] = Array.isArray(campaign.expected_dispositions) && campaign.expected_dispositions.length > 0
+      ? campaign.expected_dispositions.map((e) => matchCanonicalDisposition(e))
+      : [...CANONICAL_DISPOSITIONS];
 
     const dispMap = new Map<string, number>();
 
-    // Seed expected dispositions with 0
-    expected.forEach((d) => dispMap.set(d.toUpperCase(), 0));
+    // Seed all 14 canonical dispositions with 0
+    CANONICAL_DISPOSITIONS.forEach((d) => dispMap.set(d, 0));
 
-    // Fill with actual call counts
+    // Fill with actual call counts mapped to canonical 14
     res.rows.forEach((row) => {
-      const name = (row.disposition || 'UNKNOWN').toUpperCase();
-      dispMap.set(name, (dispMap.get(name) || 0) + Number(row.count));
+      const canonicalName = matchCanonicalDisposition(row.disposition);
+      dispMap.set(canonicalName, (dispMap.get(canonicalName) || 0) + Number(row.count));
     });
 
     const totalDispositionsCount = Array.from(dispMap.values()).reduce((sum, c) => sum + c, 0);
     const denominator = totalCalls > 0 ? totalCalls : totalDispositionsCount;
 
     const dispositions = Array.from(dispMap.entries())
-      .filter(([name, count]) => count > 0 || expected.map(e => e.toUpperCase()).includes(name))
       .map(([name, count]) => ({
         name,
         count,

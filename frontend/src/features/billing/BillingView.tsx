@@ -160,16 +160,6 @@ export const BillingView: React.FC = () => {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24, paddingBottom: 40, width: '100%' }}>
       {/* Page Header */}
       <div>
-        <div style={{
-          fontSize: '0.72rem',
-          fontWeight: 800,
-          letterSpacing: '0.08em',
-          color: '#38BDF8',
-          marginBottom: 6,
-          textTransform: 'uppercase',
-        }}>
-          BILLING
-        </div>
         <h1 style={{ fontSize: '1.95rem', fontWeight: 700, color: '#FFFFFF', letterSpacing: '-0.025em', margin: 0 }}>
           Credits
         </h1>

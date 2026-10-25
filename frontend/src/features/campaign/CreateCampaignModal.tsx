@@ -13,7 +13,8 @@ import {
   Sparkles,
   Info,
   X,
-  Plus
+  Plus,
+  Download
 } from 'lucide-react';
 import { createCampaign } from '../../services';
 import type { CampaignItem } from '../../types';
@@ -67,15 +68,24 @@ export const SCRIPT_PRESETS: ScriptPresetOption[] = [
 
 const ALL_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-const DEFAULT_DISPOSITIONS = [
-  'CONFIRMED_PICKUP',
-  'NEEDS_AIRTEL_SUPPORT',
-  'SCHEDULE_CALLBACK',
-  'REFUSED',
-  'WRONG_PERSON',
-  'BUSY',
-  'NO_ANSWER'
+const CANONICAL_DISPOSITIONS = [
+  'Confirmed For Pickup',
+  'Willing To Pickup',
+  'Schedule Callback',
+  'Already Returned Device',
+  'Refused To Return',
+  'Willing To Recharge',
+  'Already Recharged',
+  'Wrong Number',
+  'Language Barrier',
+  'Do Not Call',
+  'Abruptly Disconnected Call',
+  'Voicemail or IVR Detected',
+  'Not Connected (No Answer)',
+  'Not Connected (Failed)',
 ];
+
+const DEFAULT_DISPOSITIONS = CANONICAL_DISPOSITIONS;
 
 export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
   isOpen,
@@ -110,6 +120,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
   // Audience & Validation (CSV Upload)
   const [fileName, setFileName] = useState('');
   const [fileRawLines, setFileRawLines] = useState<string[]>([]);
+  const [uploadedFileContent, setUploadedFileContent] = useState<string>('');
   const [showFlaggedDetails, setShowFlaggedDetails] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -260,6 +271,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
       const content = event.target?.result as string;
       if (!content) return;
 
+      setUploadedFileContent(content);
       const lines = content
         .split(/\r?\n/)
         .map((l) => l.trim())
@@ -269,6 +281,22 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
       setShowFlaggedDetails(false);
     };
     reader.readAsText(file);
+  };
+
+  const handleDownloadUploadedCsv = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const content = uploadedFileContent || fileRawLines.join('\n');
+    if (!content) return;
+    const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', fileName || 'uploaded_audience.csv');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const handleLaunch = async (e: React.FormEvent) => {
@@ -891,9 +919,37 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
               gap: 14,
             }}
           >
-            <div style={sectionHeadingStyle}>
-              <Upload size={15} color="#38BDF8" />
-              <span>Target Audience (CSV Upload)</span>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={sectionHeadingStyle}>
+                <Upload size={15} color="#38BDF8" />
+                <span>Target Audience (CSV Upload)</span>
+              </div>
+              {fileName && (
+                <button
+                  type="button"
+                  onClick={handleDownloadUploadedCsv}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '5px 12px',
+                    borderRadius: 6,
+                    background: 'rgba(56, 189, 248, 0.1)',
+                    border: '1px solid rgba(56, 189, 248, 0.28)',
+                    color: '#38BDF8',
+                    fontSize: '0.76rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(56, 189, 248, 0.2)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)')}
+                  title={`Download uploaded file: ${fileName}`}
+                >
+                  <Download size={13} />
+                  <span>Download CSV</span>
+                </button>
+              )}
             </div>
 
             {/* CSV File Upload */}
@@ -907,7 +963,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
                   padding: '8px 12px',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: 12,
+                  gap: 10,
                 }}
               >
                 <input

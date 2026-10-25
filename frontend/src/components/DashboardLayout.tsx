@@ -3,6 +3,7 @@ import {
   LayoutGrid, 
   Megaphone, 
   Phone, 
+  PhoneCall,
   CreditCard, 
   Settings, 
   Wallet, 
@@ -85,6 +86,7 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
       case 'DASHBOARD': return 'Dashboard';
       case 'CAMPAIGN': return 'Campaigns';
       case 'CALLS': return 'Calls';
+      case 'TEST_CALL': return 'Test AI Call';
       case 'LEADS': return 'Lead Directory';
       case 'RETRIES': return 'Retry Queue';
       case 'BILLING': return 'Billing';
@@ -109,6 +111,11 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
       label: 'Calls',
       icon: <Phone size={18} />,
       badge: callsCount > 0 ? { count: callsCount, color: 'badge-blue' } : null,
+    },
+    {
+      id: 'TEST_CALL',
+      label: 'Test AI Call',
+      icon: <PhoneCall size={18} />,
     },
     {
       id: 'BILLING',
