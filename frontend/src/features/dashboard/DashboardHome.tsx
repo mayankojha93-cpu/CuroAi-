@@ -9,7 +9,8 @@ import {
   Plus, 
   Phone,
   BarChart3,
-  CreditCard
+  CreditCard,
+  PhoneOff
 } from 'lucide-react';
 import type { CampaignSummary, CallRecord, TabKey, AuthUser } from '../../types';
 
@@ -41,8 +42,8 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
   };
 
   const successRate = overview.uniqueContacts > 0
-    ? Math.round((overview.connectedCalls / (overview.uniqueContacts || 1)) * 100)
-    : (overview.totalAttempts > 0 ? Math.round((overview.connectedCalls / overview.totalAttempts) * 100) : 0);
+    ? Math.min(100, Math.round((overview.connectedCalls / (overview.uniqueContacts || 1)) * 100))
+    : (overview.totalAttempts > 0 ? Math.min(100, Math.round((overview.connectedCalls / overview.totalAttempts) * 100)) : 0);
 
   // Mask phone number for security & display like the screenshot: +91 84****** 16
   const formatMaskedPhone = (phone?: string) => {
@@ -72,12 +73,34 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
 
   const displayCalls = recentCalls.slice(0, 6);
 
-  const isCallSuccessful = (call: any) => {
-    const disp = (call.disposition || call.status || '').toUpperCase();
-    if (disp.includes('FAILED') || disp.includes('UNCONNECTED') || disp.includes('NO_ANSWER') || disp.includes('BUSY') || disp.includes('CANCELLED')) {
-      return false;
+  const getCallStatus = (call: any): 'SUCCESSFUL' | 'FAILED' | 'NO_ANSWER' => {
+    const s = (call.status || call.call_status || '').toLowerCase();
+    const d = (
+      call.final_disposition ||
+      call.disposition ||
+      call.call_result ||
+      ''
+    ).toLowerCase();
+    if (
+      s === 'no_answer' ||
+      s === 'no answer' ||
+      d.includes('no answer') ||
+      d.includes('timeout') ||
+      d.includes('ringing') ||
+      d.includes('not connected (no answer)')
+    ) {
+      return 'NO_ANSWER';
     }
-    return true;
+    if (
+      s === 'completed' ||
+      s === 'successful' ||
+      s === 'answered' ||
+      d.includes('goal completed') ||
+      d.includes('confirmed for pickup')
+    ) {
+      return 'SUCCESSFUL';
+    }
+    return 'FAILED';
   };
 
   const getCallLanguage = (call: any) => {
@@ -648,7 +671,7 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
               </div>
             ) : (
               displayCalls.map((call, idx) => {
-                const isSuccess = isCallSuccessful(call);
+                const status = getCallStatus(call);
                 const lang = getCallLanguage(call);
                 const isLast = idx === displayCalls.length - 1;
 
@@ -674,15 +697,32 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
                       width: 32,
                       height: 32,
                       borderRadius: 8,
-                      background: isSuccess ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)',
-                      border: isSuccess ? '1px solid rgba(16, 185, 129, 0.28)' : '1px solid rgba(239, 68, 68, 0.28)',
+                      background:
+                        status === 'SUCCESSFUL'
+                          ? 'rgba(16, 185, 129, 0.12)'
+                          : status === 'NO_ANSWER'
+                          ? 'rgba(245, 158, 11, 0.12)'
+                          : 'rgba(239, 68, 68, 0.12)',
+                      border:
+                        status === 'SUCCESSFUL'
+                          ? '1px solid rgba(16, 185, 129, 0.28)'
+                          : status === 'NO_ANSWER'
+                          ? '1px solid rgba(245, 158, 11, 0.28)'
+                          : '1px solid rgba(239, 68, 68, 0.28)',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      color: isSuccess ? '#10B981' : '#EF4444',
+                      color:
+                        status === 'SUCCESSFUL'
+                          ? '#10B981'
+                          : status === 'NO_ANSWER'
+                          ? '#F59E0B'
+                          : '#EF4444',
                       flexShrink: 0,
                     }}>
-                      {isSuccess ? <Check size={16} strokeWidth={2.5} /> : <X size={16} strokeWidth={2.5} />}
+                      {status === 'SUCCESSFUL' && <Check size={16} strokeWidth={2.5} />}
+                      {status === 'NO_ANSWER' && <PhoneOff size={15} strokeWidth={2.5} />}
+                      {status === 'FAILED' && <X size={16} strokeWidth={2.5} />}
                     </div>
 
                     {/* Phone & Meta */}
@@ -707,7 +747,7 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
 
                   {/* Badge */}
                   <div>
-                    {isSuccess ? (
+                    {status === 'SUCCESSFUL' && (
                       <span style={{
                         display: 'inline-block',
                         padding: '3px 10px',
@@ -721,7 +761,23 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
                       }}>
                         SUCCESSFUL
                       </span>
-                    ) : (
+                    )}
+                    {status === 'NO_ANSWER' && (
+                      <span style={{
+                        display: 'inline-block',
+                        padding: '3px 10px',
+                        borderRadius: 6,
+                        background: 'rgba(245, 158, 11, 0.08)',
+                        border: '1px solid rgba(245, 158, 11, 0.3)',
+                        color: '#F59E0B',
+                        fontSize: '0.68rem',
+                        fontWeight: 700,
+                        letterSpacing: '0.04em',
+                      }}>
+                        NO ANSWER
+                      </span>
+                    )}
+                    {status === 'FAILED' && (
                       <span style={{
                         display: 'inline-block',
                         padding: '3px 10px',
