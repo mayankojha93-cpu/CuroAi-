@@ -1,16 +1,50 @@
 import time
 import asyncio
 import logging
-from livekit import agents
+from livekit import agents, api
 from livekit.agents import AgentSession
 
 from src.state import Step, ConversationState
+from src.lang import L
 from src.tools.api import post_outcome_to_backend
 
 logger = logging.getLogger("agent-watchdog")
 
-async def clean_hangup(ctx: agents.JobContext, session: AgentSession, state: ConversationState):
-    """Waits for final audio delivery, ensures outcome is saved, then cleanly disconnects."""
+
+async def _end_call(ctx: agents.JobContext, room_name: str):
+    """Really hang up the phone call.
+
+    Leaving the room (ctx.room.disconnect()) only removes the AGENT: the SIP/phone participant stays connected,
+    so the call never ends. Deleting the room disconnects everyone, including the phone leg."""
+    try:
+        await ctx.api.room.delete_room(api.DeleteRoomRequest(room=room_name))
+        logger.info(f"Room {room_name} deleted: phone call ended.")
+        return
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"delete_room failed ({e}); removing participants one by one.")
+
+    try:
+        for p in list(ctx.room.remote_participants.values()):
+            try:
+                await ctx.api.room.remove_participant(
+                    api.RoomParticipantIdentity(room=room_name, identity=p.identity)
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"remove_participant({p.identity}) failed: {e}")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not enumerate participants: {e}")
+
+
+async def clean_hangup(ctx: agents.JobContext, session: AgentSession, state: ConversationState, speech=None):
+    """Waits for the final line to finish playing, saves the outcome, then ENDS the call.
+
+    speech: the SpeechHandle of the closing line (when known), so we hang up exactly when it has been spoken."""
+    if state.hangup_started:
+        return
+    state.hangup_started = True
+    state.is_completed = True
+    room_name = ctx.room.name or getattr(getattr(ctx.job, "room", None), "name", "")
+
     # Ensure disposition is set
     if not state.final_disposition or state.final_disposition == "DISCONNECTED":
         if state.step == Step.CLOSE and state.confirmed_date:
@@ -23,26 +57,29 @@ async def clean_hangup(ctx: agents.JobContext, session: AgentSession, state: Con
     # It runs in a thread, concurrently with the closing-line playout below.
     post_task = asyncio.create_task(asyncio.to_thread(post_outcome_to_backend, state))
 
-    # Wait gracefully for closing line TTS synthesis & audio playback to complete
+    # Wait for the closing line ("... for any other help dial 121, thank you") to be fully spoken
     try:
-        # Give up to 1.5s for the speech handle to be scheduled if just queued
-        for _ in range(15):
-            if getattr(session, "current_speech", None):
-                break
-            await asyncio.sleep(0.1)
-
-        if getattr(session, "current_speech", None):
-            await asyncio.wait_for(session.current_speech.wait_for_playout(), timeout=12.0)
-        elif hasattr(session, "wait_for_idle"):
-            await asyncio.wait_for(session.wait_for_idle(), timeout=12.0)
+        if speech is not None:
+            await asyncio.wait_for(speech.wait_for_playout(), timeout=15.0)
         else:
-            await asyncio.sleep(4.0)
+            # Give up to 1.5s for the speech handle to be scheduled if just queued
+            for _ in range(15):
+                if getattr(session, "current_speech", None):
+                    break
+                await asyncio.sleep(0.1)
+
+            if getattr(session, "current_speech", None):
+                await asyncio.wait_for(session.current_speech.wait_for_playout(), timeout=15.0)
+            elif hasattr(session, "wait_for_idle"):
+                await asyncio.wait_for(session.wait_for_idle(), timeout=12.0)
+            else:
+                await asyncio.sleep(4.0)
     except Exception as e:
         logger.debug(f"Wait for audio playout note: {e}")
         await asyncio.sleep(2.0)
 
     # Short grace period to ensure final audio packets reach the caller
-    await asyncio.sleep(1.0)
+    await asyncio.sleep(0.8)
 
     # Collect the backend save. Only a successful save marks the outcome as posted.
     try:
@@ -53,25 +90,24 @@ async def clean_hangup(ctx: agents.JobContext, session: AgentSession, state: Con
     if not state.outcome_posted:
         logger.error(f"❌ Outcome for call {state.call_id} was NOT saved to the backend.")
 
-    # Allow audio queues to drain cleanly
-    try:
-        if hasattr(session, "drain"):
-            await asyncio.wait_for(session.drain(), timeout=1.5)
-    except Exception:
-        pass
-
-    # Gracefully close session before disconnecting room transport
+    # Gracefully close the agent session
     try:
         if hasattr(session, "aclose"):
-            await asyncio.wait_for(session.aclose(), timeout=2.0)
+            await asyncio.wait_for(session.aclose(), timeout=3.0)
     except Exception:
         pass
 
-    logger.info(f"Cleanly disconnecting room {ctx.room.name} (Final disposition: {state.final_disposition})...")
+    logger.info(f"Ending call in room {room_name} (Final disposition: {state.final_disposition})...")
+    await _end_call(ctx, room_name)
     try:
         await ctx.room.disconnect()
     except Exception as e:
         logger.debug(f"Room disconnect note: {e}")
+    try:
+        ctx.shutdown(reason="call completed")
+    except Exception as e:
+        logger.debug(f"Shutdown note: {e}")
+
 
 async def silence_watchdog(
     ctx: agents.JobContext,
@@ -90,7 +126,7 @@ async def silence_watchdog(
     await _silence_loop(ctx, session, state, timing_tracker, SILENCE_THRESHOLD_SECONDS)
 
     # Fallback: a tool already moved the call to a terminal step, but the closing line was never
-    # played (LLM returned nothing / TTS hiccup), so worker.py never triggered the hangup.
+    # played (LLM returned nothing / TTS hiccup), so the hangup was never triggered.
     if state.is_terminal() and not state.is_completed:
         for _ in range(20):
             await asyncio.sleep(1.0)
@@ -102,13 +138,18 @@ async def silence_watchdog(
                 return
         logger.warning("⚠️ Terminal step reached but no closing line was played. Speaking fallback and hanging up.")
         state.is_completed = True
-        line = state.closing_line or "धन्यवाद। किसी भी जानकारी के लिए कृपया एयरटेल 121 पर संपर्क करें।"
+        line = state.closing_line or L(
+            state,
+            "धन्यवाद। किसी भी जानकारी के लिए कृपया एयरटेल 121 पर संपर्क करें।",
+            "Thank you. For any other help, please dial Airtel 121.",
+        )
         state.add_transcript("assistant", line)
+        speech = None
         try:
-            await session.say(line, allow_interruptions=False)
+            speech = session.say(line, allow_interruptions=False)
         except Exception as e:
             logger.debug(f"Fallback closing line failed: {e}")
-        await clean_hangup(ctx, session, state)
+        await clean_hangup(ctx, session, state, speech=speech)
 
 
 async def _silence_loop(ctx, session, state, timing_tracker, SILENCE_THRESHOLD_SECONDS):
@@ -130,8 +171,7 @@ async def _silence_loop(ctx, session, state, timing_tracker, SILENCE_THRESHOLD_S
             or timing_tracker.get("is_agent_speaking", False)
             or timing_tracker.get("provider_filler_pending", False)
         )
-        # The CUSTOMER talking is not silence either. (Previously the watchdog only looked at the agent's
-        # state, so it re-prompted "can you hear me?" on top of a customer mid-sentence.)
+        # The CUSTOMER talking is not silence either.
         # Capped at 30s so line noise that VAD mistakes for speech can never keep the call alive forever.
         user_speaking = getattr(session, "user_state", "listening") == "speaking"
         if user_speaking:
@@ -154,7 +194,7 @@ async def _silence_loop(ctx, session, state, timing_tracker, SILENCE_THRESHOLD_S
             if state.silence_count == 0:
                 state.silence_count += 1
                 timing_tracker["last_activity_time"] = time.time()
-                reprompt = "नमस्ते, क्या आप मुझे सुन पा रहे हैं?"
+                reprompt = L(state, "नमस्ते, क्या आप मुझे सुन पा रहे हैं?", "Hello, can you hear me?")
 
                 logger.warning(f"⚠️ Silence detected (5s). Re-prompting: {reprompt}")
                 state.add_transcript("assistant", reprompt)
@@ -168,7 +208,11 @@ async def _silence_loop(ctx, session, state, timing_tracker, SILENCE_THRESHOLD_S
             elif state.silence_count == 1:
                 state.silence_count += 1
                 timing_tracker["last_activity_time"] = time.time()
-                reprompt = f"नमस्ते {state.customer_name} जी, क्या मेरी आवाज़ आप तक पहुँच रही है?"
+                reprompt = L(
+                    state,
+                    f"नमस्ते {state.customer_name} जी, क्या मेरी आवाज़ आप तक पहुँच रही है?",
+                    f"Hello {state.customer_name}, is my voice reaching you?",
+                )
 
                 logger.warning(f"⚠️ Second silence detected (10s total). Final re-prompt: {reprompt}")
                 state.add_transcript("assistant", reprompt)
@@ -187,12 +231,17 @@ async def _silence_loop(ctx, session, state, timing_tracker, SILENCE_THRESHOLD_S
                 state.customer_note = "Call ended due to persistent customer silence (NO_RESPONSE)"
                 state.transition_to(Step.TERMINATED)
 
-                closing_line = "शायद आपकी आवाज़ नहीं आ पा रही है। हम आपसे बाद में संपर्क करेंगे। धन्यवाद।"
+                closing_line = L(
+                    state,
+                    "शायद आपकी आवाज़ नहीं आ पा रही है। हम आपसे बाद में संपर्क करेंगे। धन्यवाद।",
+                    "I think your voice is not reaching me. We will contact you later. Thank you.",
+                )
                 state.add_transcript("assistant", closing_line)
+                speech = None
                 try:
-                    await session.say(closing_line, allow_interruptions=False)
+                    speech = session.say(closing_line, allow_interruptions=False)
                 except Exception as e:
                     logger.debug(f"Session closed before closing line: {e}")
-                await clean_hangup(ctx, session, state)
+                await clean_hangup(ctx, session, state, speech=speech)
                 break
             
