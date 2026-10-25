@@ -36,6 +36,8 @@ const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) => {
     customers,
     recentCalls,
     retries,
+    campaigns,
+    credits,
     loading,
     dialingId,
     selectedCall,
@@ -73,6 +75,9 @@ const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) => {
           <DashboardHome
             summary={summary}
             recentCalls={recentCalls}
+            campaigns={campaigns}
+            credits={credits}
+            customersCount={customers.length}
             user={user}
             onTabChange={setActiveTab}
             onImportModalOpen={() => setIsCreateCampaignModalOpen(true)}
