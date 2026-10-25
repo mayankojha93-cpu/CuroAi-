@@ -31,6 +31,10 @@ export interface CallRecord {
   duration_seconds?: number;
   call_status?: string;
   recording_url?: string | null;
+  script?: string | null;
+  company_name?: string | null;
+  voice_pipeline?: string | null;
+  is_test_call?: boolean;
   median_latency_ms?: number | null;
   cost_estimate_inr?: number | null;
   created_at: string;
@@ -175,8 +179,11 @@ export class CallService {
       const active = await client.query(
         `SELECT id, status, room_name FROM calls
          WHERE customer_id = $1
-           AND status IN ('initiated', 'dialing', 'answered')
-           AND created_at > NOW() - INTERVAL '${ACTIVE_CALL_WINDOW_MINUTES} minutes'
+           AND (
+             (status = 'answered' AND created_at > NOW() - INTERVAL '${ACTIVE_CALL_WINDOW_MINUTES} minutes')
+             OR
+             (status IN ('initiated', 'dialing') AND created_at > NOW() - INTERVAL '90 seconds')
+           )
          ORDER BY created_at DESC
          LIMIT 1`,
         [customerId]
@@ -231,6 +238,10 @@ export class CallService {
   async initiateTestCall(data: {
     phone: string;
     name?: string;
+    customer_name?: string;
+    company_name?: string;
+    script?: string;
+    voice_pipeline?: string;
     address?: string;
     account_no?: string;
     subs_del_no?: string;
@@ -238,6 +249,7 @@ export class CallService {
     r_date?: string;
     language?: string;
   }) {
+    const custName = data.customer_name || data.name || 'Test Subscriber';
     const normalizedPhone = normalizePhone(data.phone, data.subs_del_no);
     const normalizedServiceEnd = normalizeDate(data.service_end_date);
     const normalizedRDate = normalizeDate(data.r_date);
@@ -252,16 +264,17 @@ export class CallService {
        DO UPDATE SET
          name = EXCLUDED.name,
          address = EXCLUDED.address,
+         language = EXCLUDED.language,
          account_no = COALESCE(EXCLUDED.account_no, customers.account_no),
          subs_del_no = COALESCE(EXCLUDED.subs_del_no, customers.subs_del_no),
          service_end_date = COALESCE(EXCLUDED.service_end_date, customers.service_end_date),
          r_date = COALESCE(EXCLUDED.r_date, customers.r_date)
        RETURNING *`,
       [
-        data.name || 'Test Subscriber',
+        custName,
         normalizedPhone,
-        data.address || 'Delhi, 110011, burari, sant nagar',
-        data.language || 'hi',
+        data.address || (data.company_name ? `${data.company_name} HQ` : 'Delhi, 110011, burari, sant nagar'),
+        data.language || 'en',
         data.account_no || '20022941256',
         data.subs_del_no || '01121344121_wifi',
         normalizedServiceEnd || '2026-08-27',
@@ -270,7 +283,34 @@ export class CallService {
     );
 
     const customer = custRes.rows[0];
+
+    // For test calls, automatically resolve any lingering dialing/initiated calls for this customer
+    // so testers can immediately trigger a new test call without waiting
+    await query(
+      `UPDATE calls 
+       SET status = 'no_answer', call_status = 'no_answer', ended_at = NOW() 
+       WHERE customer_id = $1 AND status IN ('initiated', 'dialing')`,
+      [customer.id]
+    );
+
     const call = await this.initiateCall(customer.id);
+
+    const scriptName = data.script || 'Trump Towers India — Real Estate';
+    const voicePipeline = data.voice_pipeline || 'HABot Pipeline';
+    const companyName = data.company_name || (data.script?.includes('Trump') ? 'Trump Towers India' : (data.script?.includes('Ratnafin') ? 'Ratnafin' : 'Airtel'));
+
+    await query(
+      `UPDATE calls 
+       SET script = $1, company_name = $2, voice_pipeline = $3, is_test_call = TRUE 
+       WHERE id = $4`,
+      [scriptName, companyName, voicePipeline, call.id]
+    );
+
+    call.script = scriptName;
+    call.company_name = companyName;
+    call.voice_pipeline = voicePipeline;
+    call.is_test_call = true;
+
     return { call, customer: serializeCustomer(customer) };
   }
 
@@ -997,7 +1037,7 @@ export class CallService {
     return res.rows.map((r: any) => serializeCustomer(r));
   }
 
-  async listRecentCalls(limit = 100, status?: string) {
+  async listRecentCalls(limit = 100, status?: string, isTest?: boolean) {
     let q = `
       SELECT c.*,
               cust.name as customer_name, cust.phone as customer_phone, cust.subs_del_no, cust.language as customer_language,
@@ -1009,16 +1049,27 @@ export class CallService {
        LEFT JOIN call_outcomes co ON c.id = co.call_id
     `;
     const params: any[] = [];
+    const whereConditions: string[] = [];
+
+    if (isTest) {
+      whereConditions.push('c.is_test_call = TRUE');
+    }
+
     if (status && status !== 'ALL') {
       const s = status.toUpperCase();
       if (s === 'SUCCESSFUL') {
-        q += ` WHERE (UPPER(c.status) IN ('COMPLETED', 'ANSWERED', 'SUCCESSFUL'))`;
+        whereConditions.push(`(UPPER(c.status) IN ('COMPLETED', 'ANSWERED', 'SUCCESSFUL'))`);
       } else if (s === 'FAILED') {
-        q += ` WHERE (UPPER(c.status) IN ('FAILED', 'BUSY', 'DISCONNECTED'))`;
+        whereConditions.push(`(UPPER(c.status) IN ('FAILED', 'BUSY', 'DISCONNECTED'))`);
       } else if (s === 'NO_ANSWER' || s === 'NO ANSWER') {
-        q += ` WHERE (UPPER(c.status) IN ('NO_ANSWER', 'NO ANSWER', 'NO_RESPONSE', 'VOICEMAIL'))`;
+        whereConditions.push(`(UPPER(c.status) IN ('NO_ANSWER', 'NO ANSWER', 'NO_RESPONSE', 'VOICEMAIL'))`);
       }
     }
+
+    if (whereConditions.length > 0) {
+      q += ` WHERE ${whereConditions.join(' AND ')}`;
+    }
+
     q += ` ORDER BY c.created_at DESC LIMIT $${params.length + 1}`;
     params.push(limit);
 

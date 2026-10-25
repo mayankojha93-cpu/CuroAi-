@@ -70,12 +70,16 @@ const testCallSchema = {
   body: z.object({
     phone: z.string().min(5, { message: 'Phone or dialable number is required' }),
     name: z.string().optional().default('Test Subscriber'),
+    customer_name: z.string().optional(),
+    company_name: z.string().optional(),
+    script: z.string().optional(),
+    voice_pipeline: z.string().optional().default('HABot Pipeline'),
     address: z.string().optional().default('Delhi, 110011, burari, sant nagar'),
     account_no: z.string().optional().default('20022941256'),
     subs_del_no: z.string().optional().default('01121344121_wifi'),
     service_end_date: z.string().optional().default('2026-08-27'),
     r_date: z.string().optional().default('2026-08-29'),
-    language: z.string().optional().default('hi'),
+    language: z.string().optional().default('en'),
   }),
 };
 
@@ -96,6 +100,10 @@ callsRouter.post(
           roomName: call.room_name,
           phone: customer.phone,
           customerName: customer.name,
+          companyName: (call as any).company_name || req.body.company_name || null,
+          script: (call as any).script || req.body.script || null,
+          voicePipeline: (call as any).voice_pipeline || req.body.voice_pipeline || 'HABot Pipeline',
+          language: customer.language || req.body.language || 'en',
           accountNo: customer.account_no,
           subsDelNo: customer.subs_del_no,
           serviceEndDate: customer.service_end_date,
@@ -223,8 +231,26 @@ callsRouter.get(
 callsRouter.get(['/calls', '/api/calls'], async (req: Request, res: Response, next: NextFunction) => {
   try {
     const status = req.query.status as string | undefined;
+    const isTest = req.query.is_test === 'true';
     const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 100;
-    const calls = await callService.listRecentCalls(limit, status);
+    const calls = await callService.listRecentCalls(limit, status, isTest || undefined);
+    return res.json({ calls, count: calls.length });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// GET /api/calls/test-history - Get test call history with full transcripts and details
+callsRouter.get('/api/calls/test-history', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const status = req.query.status as string | undefined;
+    const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 100;
+    // Look up test calls first
+    let calls = await callService.listRecentCalls(limit, status, true);
+    // If no test-specific calls found, fall back to recent calls so user always has real data
+    if (calls.length === 0) {
+      calls = await callService.listRecentCalls(limit, status);
+    }
     return res.json({ calls, count: calls.length });
   } catch (err) {
     return next(err);
