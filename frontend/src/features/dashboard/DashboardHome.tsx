@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Megaphone, 
   Users, 
@@ -12,7 +12,8 @@ import {
   CreditCard,
   PhoneOff
 } from 'lucide-react';
-import type { CampaignSummary, CallRecord, TabKey, AuthUser } from '../../types';
+import type { CampaignSummary, CallRecord, TabKey, AuthUser, CampaignItem } from '../../types';
+import { fetchCampaigns, fetchBillingBalance } from '../../services';
 
 interface DashboardHomeProps {
   summary: CampaignSummary | null;
@@ -22,6 +23,9 @@ interface DashboardHomeProps {
   onImportModalOpen: () => void;
   onTestCallOpen?: () => void;
   onSelectCall: (call: CallRecord) => void;
+  campaigns?: CampaignItem[];
+  credits?: number;
+  customersCount?: number;
 }
 
 export const DashboardHome: React.FC<DashboardHomeProps> = ({
@@ -32,7 +36,47 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
   onImportModalOpen,
   onTestCallOpen: _onTestCallOpen,
   onSelectCall,
+  campaigns: propCampaigns,
+  credits: propCredits,
+  customersCount = 0,
 }) => {
+  const [internalCampaigns, setInternalCampaigns] = useState<CampaignItem[]>([]);
+  const [internalCredits, setInternalCredits] = useState<number>(() => {
+    const saved = localStorage.getItem('curoai_credits');
+    return saved ? parseInt(saved, 10) : 21874;
+  });
+
+  useEffect(() => {
+    if (!propCampaigns || propCampaigns.length === 0) {
+      fetchCampaigns()
+        .then((data) => setInternalCampaigns(data || []))
+        .catch(() => {});
+    }
+    if (typeof propCredits !== 'number') {
+      fetchBillingBalance()
+        .then((data) => {
+          if (data && typeof data.available_credits === 'number') {
+            setInternalCredits(data.available_credits);
+            localStorage.setItem('curoai_credits', String(data.available_credits));
+          }
+        })
+        .catch(() => {});
+    }
+  }, [propCampaigns, propCredits]);
+
+  useEffect(() => {
+    const handleUpdate = (e: CustomEvent<{ credits: number }>) => {
+      if (e.detail && typeof e.detail.credits === 'number') {
+        setInternalCredits(e.detail.credits);
+      }
+    };
+    window.addEventListener('curoai_credits_updated', handleUpdate as EventListener);
+    return () => window.removeEventListener('curoai_credits_updated', handleUpdate as EventListener);
+  }, []);
+
+  const campaignsList = (propCampaigns && propCampaigns.length > 0) ? propCampaigns : internalCampaigns;
+  const currentCredits = typeof propCredits === 'number' ? propCredits : internalCredits;
+
   const overview = summary?.overview || {
     sourceRows: 0,
     uniqueContacts: 0,
@@ -41,9 +85,27 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
     dispositionedContacts: 0,
   };
 
-  const successRate = overview.uniqueContacts > 0
-    ? Math.min(100, Math.round((overview.connectedCalls / (overview.uniqueContacts || 1)) * 100))
-    : (overview.totalAttempts > 0 ? Math.min(100, Math.round((overview.connectedCalls / overview.totalAttempts) * 100)) : 0);
+  // Real Card 1: Actual total campaigns and active/paused count from DB
+  const totalCampaigns = campaignsList.length;
+  const activeOrPausedCount = campaignsList.filter((c) =>
+    ['RUNNING', 'PAUSED'].includes((c.status || '').toUpperCase())
+  ).length;
+
+  // Real Card 2: Actual total contacts across all campaigns (or customers table)
+  const totalCampaignContacts = campaignsList.reduce((acc, c) => acc + (c.total_contacts || 0), 0);
+  const totalContacts = totalCampaignContacts > 0
+    ? totalCampaignContacts
+    : (overview.uniqueContacts || overview.sourceRows || customersCount || 0);
+
+  // Real Card 3: Actual success rate (successful calls / total call attempts * 100)
+  const totalCallsCount = overview.totalAttempts || recentCalls.length || 0;
+  const successfulCallsCount = overview.connectedCalls || recentCalls.filter((c) => getCallStatus(c) === 'SUCCESSFUL').length || 0;
+  const successRate = totalCallsCount > 0
+    ? Math.min(100, Math.round((successfulCallsCount / totalCallsCount) * 100))
+    : 0;
+
+  // Real Card 4: Credits balance from billing accounts in DB
+  const displayCredits = currentCredits;
 
   // Mask phone number for security & display like the screenshot: +91 84****** 16
   const formatMaskedPhone = (phone?: string) => {
@@ -233,17 +295,17 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
               Campaigns
             </div>
             <div style={{ fontSize: '1.7rem', fontWeight: 700, color: '#FFFFFF', lineHeight: 1.2, margin: '2px 0' }}>
-              6
+              {totalCampaigns}
             </div>
             <div style={{ fontSize: '0.78rem', color: '#64748B' }}>
-              2 active or paused
+              {activeOrPausedCount} active or paused
             </div>
           </div>
         </div>
 
         {/* Card 2: Total contacts */}
         <div 
-          onClick={() => onTabChange('LEADS')}
+          onClick={() => onTabChange('CAMPAIGN')}
           style={{
             background: '#0E121B',
             border: '1px solid rgba(255, 255, 255, 0.07)',
@@ -283,7 +345,7 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
               Total contacts
             </div>
             <div style={{ fontSize: '1.7rem', fontWeight: 700, color: '#FFFFFF', lineHeight: 1.2, margin: '2px 0' }}>
-              {(overview.uniqueContacts || 0).toLocaleString()}
+              {totalContacts.toLocaleString()}
             </div>
             <div style={{ fontSize: '0.78rem', color: '#64748B' }}>
               across all campaigns
@@ -336,7 +398,7 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
               {successRate}%
             </div>
             <div style={{ fontSize: '0.78rem', color: '#64748B' }}>
-              {(overview.connectedCalls || 0).toLocaleString()} successful calls
+              {successfulCallsCount.toLocaleString()} successful calls
             </div>
           </div>
         </div>
@@ -383,7 +445,7 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
               Credits
             </div>
             <div style={{ fontSize: '1.7rem', fontWeight: 700, color: '#FFFFFF', lineHeight: 1.2, margin: '2px 0' }}>
-              4,874
+              {displayCredits.toLocaleString()}
             </div>
             <div style={{ fontSize: '0.78rem', color: '#64748B' }}>
               available balance
