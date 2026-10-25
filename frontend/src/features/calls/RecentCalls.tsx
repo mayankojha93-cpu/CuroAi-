@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { Search, ChevronDown, FileText } from 'lucide-react';
 import type { CallRecord } from '../../types';
+import { matchCanonicalDisposition } from '../campaign/CampaignDetailView';
 
 interface RecentCallsProps {
   calls: CallRecord[];
@@ -233,8 +234,11 @@ export const RecentCalls: React.FC<RecentCallsProps> = ({ calls, onSelectCall })
                 const phoneDisplay = maskPhone(call.customer_phone || (call as any).phone);
                 const refId = call.subs_del_no || (call as any).contact_ref || '—';
                 const campName = (call as any).campaign_name || 'Direct Voice Outreach';
-                const normStatus = normalizeStatus(call.status, call.final_disposition);
-                const resultText = call.final_disposition || (call as any).call_result || call.call_status || (normStatus === 'SUCCESSFUL' ? 'Connected' : (normStatus === 'NO_ANSWER' ? 'No answer' : 'Failed'));
+                const rawResult = call.final_disposition || (call as any).call_result || call.call_status;
+                const normStatus = normalizeStatus(call.status, rawResult);
+                const resultText = rawResult
+                  ? matchCanonicalDisposition(rawResult, call.duration_seconds, call.status)
+                  : (normStatus === 'SUCCESSFUL' ? 'Confirmed For Pickup' : (normStatus === 'NO_ANSWER' ? 'Not Connected (No Answer)' : 'Not Connected (Failed)'));
                 const langText = (call as any).language === 'en' || (call as any).customer_language === 'en' ? 'English' : 'Hindi';
                 const durationText = formatDuration(call.duration_seconds);
                 const timeText = (call as any).formatted_time || formatTime(call.created_at);
