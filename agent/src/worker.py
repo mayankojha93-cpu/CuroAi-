@@ -19,8 +19,12 @@ from src.config import (
     PREEMPTIVE_GENERATION,
     ENDPOINT_MIN_DELAY,
     ENDPOINT_MAX_DELAY,
+    STT_LANGUAGE,
+    TTS_LANGUAGE_HI,
+    TTS_LANGUAGE_EN,
 )
 from src.state import Step, ConversationState
+from src.lang import L
 from src.agent import AirtelAgent
 from src.carrier_filter import classify_carrier_message
 from src.tools import AgentTools
@@ -28,6 +32,38 @@ from src.utils import silence_watchdog, clean_hangup
 from src.tools.api import post_outcome_to_backend, register_inbound_call_to_backend
 
 server = AgentServer()
+
+
+def _load_vad():
+    return silero.VAD.load(
+        sample_rate=16000,
+        min_speech_duration=0.05,
+        min_silence_duration=0.45,
+        activation_threshold=0.45,
+    )
+
+
+def prewarm(proc: agents.JobProcess):
+    """Runs once when the worker process starts (NOT per call): the Silero VAD model is loaded here, so a new
+    call does not pay ~1-3 seconds of model loading before the greeting."""
+    try:
+        proc.userdata["vad"] = _load_vad()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"VAD prewarm failed, will load per call: {e}")
+
+
+server.setup_fnc = prewarm
+
+
+def _fetch_call_info_sync(call_id: str):
+    import requests
+    from src.config import BACKEND_URL, INTERNAL_SECRET
+    return requests.get(
+        f"{BACKEND_URL}/internal/calls/{call_id}",
+        headers={"X-Internal-Secret": INTERNAL_SECRET},
+        timeout=2.0,
+    )
+
 
 @server.rtc_session(agent_name=AGENT_NAME)
 async def entrypoint(ctx: agents.JobContext):
@@ -64,18 +100,58 @@ async def entrypoint(ctx: agents.JobContext):
     elif ctx.room.name.startswith("call-"):
         direction = "outbound"
 
-    # If outbound and phone/customer data is missing from metadata, fetch from backend
+    # SPEED: the backend lookup (outbound, data missing from metadata) runs in the background WHILE the
+    # STT / LLM / TTS clients are being built below. It used to block the greeting for up to 3 seconds.
+    info_task = None
     if direction == "outbound" and call_id and (not phone or customer_name == "Customer"):
+        info_task = asyncio.create_task(asyncio.to_thread(_fetch_call_info_sync, call_id))
+
+    # 2. Speech and audio pipeline (does not depend on the customer data)
+    stt = sarvam.STT(
+        language=STT_LANGUAGE,
+        model="saaras:v4",
+        api_key=SARVAM_API_KEY,
+    )
+
+    vad = ctx.proc.userdata.get("vad") if getattr(ctx, "proc", None) else None
+    if vad is None:
+        vad = await asyncio.to_thread(_load_vad)  # prewarm missing: load off the event loop
+
+    llm_extra = {}
+    if OPENROUTER_PROVIDER_SORT:
+        # Ask OpenRouter for the fastest host of this model (fallbacks stay enabled by default).
+        llm_extra["extra_body"] = {"provider": {"sort": OPENROUTER_PROVIDER_SORT}}
+    llm = openai.LLM(
+        model=LLM_MODEL,
+        base_url="https://openrouter.ai/api/v1",
+        api_key=OPENROUTER_API_KEY,
+        temperature=0.15,
+        parallel_tool_calls=False,
+        max_completion_tokens=150,
+        **llm_extra,
+    )
+
+    tts = sarvam.TTS(
+        target_language_code=TTS_LANGUAGE_HI,
+        model="bulbul:v3",
+        speaker="priya",
+        api_key=SARVAM_API_KEY,
+    )
+
+    def _set_tts_language(lang: str):
+        """Customer switched language: switch the voice's language too, so English sentences are pronounced
+        as English (and Hindi as Hindi)."""
+        code = TTS_LANGUAGE_EN if lang == "en" else TTS_LANGUAGE_HI
         try:
-            import requests
-            from src.config import BACKEND_URL, INTERNAL_SECRET
-            def _fetch_call_info():
-                return requests.get(
-                    f"{BACKEND_URL}/internal/calls/{call_id}",
-                    headers={"X-Internal-Secret": INTERNAL_SECRET},
-                    timeout=3.0,
-                )
-            c_res = await asyncio.to_thread(_fetch_call_info)
+            tts.update_options(target_language_code=code)
+            logger.info(f"TTS language -> {code}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"TTS update_options({code}) failed: {e}")
+
+    # Collect the backend lookup (it has been running in parallel with the setup above)
+    if info_task is not None:
+        try:
+            c_res = await asyncio.wait_for(info_task, timeout=2.5)
             if c_res.status_code == 200:
                 c_data = c_res.json().get("call") or {}
                 customer_name = c_data.get("customer_name") or customer_name
@@ -133,7 +209,7 @@ async def entrypoint(ctx: agents.JobContext):
         else:
             logger.error("Inbound call could NOT be registered with backend; outcome will not be saved.")
 
-    # 2. Initialize Conversation State with lead info & call direction
+    # 3. Initialize Conversation State with lead info & call direction
     state = ConversationState(
         call_id=call_id,
         customer_name=customer_name,
@@ -158,46 +234,11 @@ async def entrypoint(ctx: agents.JobContext):
         "session_closed": False,           # True once the customer/session is gone: no timer may speak or save FAILED
     }
 
-    # 3. Agent and Tools Setup
+    # 4. Agent and Tools Setup
     tools_instance = AgentTools(state, timing_tracker)
     agent = AirtelAgent(state, tools_instance)
     tools_instance.agent = agent
-
-    # 4. Speech and Audio Pipeline Setup
-    stt = sarvam.STT(
-        language="hi-IN",
-        model="saaras:v4",
-        api_key=SARVAM_API_KEY,
-    )
-
-    vad = silero.VAD.load(
-        sample_rate=16000,
-        min_speech_duration=0.05,
-        min_silence_duration=0.45,
-        activation_threshold=0.45,
-    )
-
-    # LLM — OpenRouter
-    llm_extra = {}
-    if OPENROUTER_PROVIDER_SORT:
-        # Ask OpenRouter for the fastest host of this model (fallbacks stay enabled by default).
-        llm_extra["extra_body"] = {"provider": {"sort": OPENROUTER_PROVIDER_SORT}}
-    llm = openai.LLM(
-        model=LLM_MODEL,
-        base_url="https://openrouter.ai/api/v1",
-        api_key=OPENROUTER_API_KEY,
-        temperature=0.15,
-        parallel_tool_calls=False,
-        max_completion_tokens=150,
-        **llm_extra,
-    )
-
-    tts = sarvam.TTS(
-        target_language_code="hi-IN",
-        model="bulbul:v3",
-        speaker="priya",
-        api_key=SARVAM_API_KEY,
-    )
+    agent.on_language_change = _set_tts_language
 
     turn_opts = {"preemptive_generation": {"enabled": PREEMPTIVE_GENERATION}}
     endpointing_opts = {}
@@ -242,6 +283,18 @@ async def entrypoint(ctx: agents.JobContext):
                 state.outcome_posted = True
         except Exception as e:
             logger.error(f"Outcome save failed: {e}")
+
+    def _hangup_after(speech):
+        """The closing line has been queued ('... for any other help dial 121, thank you'): hang up as soon as it
+        has been spoken. Called by AgentTools._say for every terminal step."""
+        if state.hangup_started:
+            return
+        state.is_completed = True
+        _cancel_timers()
+        logger.info(f"Closing line queued at terminal step {state.step.value}. Call will end after it is spoken.")
+        asyncio.create_task(clean_hangup(ctx, session, state, speech=speech))
+
+    tools_instance.on_terminal = _hangup_after
 
     def _end_as_voicemail(text: str):
         """A voicemail / not-reachable greeting answered: no human to talk to. Close as VOICEMAIL (backend retries)."""
@@ -288,7 +341,11 @@ async def entrypoint(ctx: agents.JobContext):
                 logger.warning(f"⚠️ STT failure (attempt {state.stt_retry_count}/2): empty or low-confidence transcript")
                 if state.stt_retry_count <= 2:
                     asyncio.create_task(
-                        session.say("माफ़ कीजिए, मैं समझ नहीं पाई। क्या आप दोबारा बोल सकते हैं?", allow_interruptions=True)
+                        session.say(
+                            L(state, "माफ़ कीजिए, मैं समझ नहीं पाई। क्या आप दोबारा बोल सकते हैं?",
+                              "Sorry, I could not understand. Could you please say that again?"),
+                            allow_interruptions=True,
+                        )
                     )
                 else:
                     # After 2 retries, apologise and route to 121 per spec
@@ -299,14 +356,17 @@ async def entrypoint(ctx: agents.JobContext):
                     logger.error("❌ STT failed after 2 retries. Closing call, routing to 121.")
 
                     async def _stt_giveup():
+                        speech = None
                         try:
-                            await session.say(
-                                "माफ़ कीजिए, आपकी आवाज़ साफ़ नहीं आ रही है। कृपया एयरटेल 121 पर संपर्क करें। धन्यवाद।",
+                            speech = session.say(
+                                L(state,
+                                  "माफ़ कीजिए, आपकी आवाज़ साफ़ नहीं आ रही है। कृपया एयरटेल 121 पर संपर्क करें। धन्यवाद।",
+                                  "Sorry, your voice is not clear. For any other help, please dial 121. Thank you."),
                                 allow_interruptions=False,
                             )
                         except Exception:
                             pass
-                        await clean_hangup(ctx, session, state)
+                        await clean_hangup(ctx, session, state, speech=speech)
 
                     asyncio.create_task(_stt_giveup())
                 return
@@ -317,6 +377,11 @@ async def entrypoint(ctx: agents.JobContext):
             logger.info(f"🗣️ [Customer]: \"{clean_text}\"")
             state.add_transcript("customer", clean_text)
             state.silence_count = 0
+
+            # Follow the customer's language as early as possible (before the LLM reply is generated)
+            if state.update_reply_lang(clean_text):
+                logger.info(f"🌐 Reply language -> {state.reply_lang}")
+                _set_tts_language(state.reply_lang)
 
             # Provider timeout: start a 3-second filler timer (spec: LLM/TTS/STT > ~3s → "One moment please")
             if not timing_tracker["provider_filler_pending"] and not state.is_completed:
@@ -344,7 +409,7 @@ async def entrypoint(ctx: agents.JobContext):
                         retry = timing_tracker.get("_provider_filler_retry", 0) + 1
                         timing_tracker["_provider_filler_retry"] = retry
                         if retry == 1:
-                            filler = "एक पल रुकिए।"
+                            filler = L(state, "एक पल रुकिए।", "One moment please.")
                             logger.warning("⚠️ Provider timeout >3s. Playing 'One moment please' filler.")
                             timing_tracker["last_activity_time"] = time.time()
                             try:
@@ -361,14 +426,17 @@ async def entrypoint(ctx: agents.JobContext):
                             state.final_disposition = "FAILED"
                             state.customer_note = "Provider (LLM/TTS/STT) timed out twice. Routed to Airtel 121."
                             state.transition_to(Step.TERMINATED)
+                            speech = None
                             try:
-                                await session.say(
-                                    "माफ़ करें, तकनीकी समस्या आ गई है। कृपया एयरटेल 121 पर संपर्क करें। धन्यवाद।",
+                                speech = session.say(
+                                    L(state,
+                                      "माफ़ करें, तकनीकी समस्या आ गई है। कृपया एयरटेल 121 पर संपर्क करें। धन्यवाद।",
+                                      "Sorry, there is a technical problem. For any other help, please dial 121. Thank you."),
                                     allow_interruptions=False
                                 )
                             except Exception:
                                 pass
-                            await clean_hangup(ctx, session, state)
+                            await clean_hangup(ctx, session, state, speech=speech)
                             break
 
                 filler_task = asyncio.create_task(_provider_timeout_filler())
@@ -437,8 +505,9 @@ async def entrypoint(ctx: agents.JobContext):
                     logger.info(f"🤖 [Agent]: \"{content_str}\"")
                     state.add_transcript("assistant", content_str)
 
-                # Check if conversation reached a terminal state
-                if state.is_terminal() and not state.is_completed:
+                # Terminal state reached and the LLM (not a direct-speak tool) spoke the closing line:
+                # hang up now. (Direct-speak tools already started the hangup via on_terminal.)
+                if state.is_terminal() and not state.hangup_started:
                     state.is_completed = True
                     if watchdog_task and not watchdog_task.done():
                         watchdog_task.cancel()
@@ -473,6 +542,9 @@ async def entrypoint(ctx: agents.JobContext):
     # Customer disconnected / hung up phone
     @ctx.room.on("participant_disconnected")
     def on_participant_disconnected(participant):
+        # We ended the call ourselves (closing line spoken): nothing to save, clean_hangup owns it.
+        if state.hangup_started:
+            return
         timing_tracker["session_closed"] = True
         _cancel_timers()
         part_ident = getattr(participant, "identity", "caller")
@@ -503,6 +575,8 @@ async def entrypoint(ctx: agents.JobContext):
     # Room disconnect handler (agent lost its own connection): make sure the outcome still gets saved
     @ctx.room.on("disconnected")
     def on_room_disconnected():
+        if state.hangup_started:
+            return
         timing_tracker["session_closed"] = True
         _cancel_timers()
         if not state.is_completed:
@@ -519,11 +593,7 @@ async def entrypoint(ctx: agents.JobContext):
 
     ctx.add_shutdown_callback(_final_save)
 
-    # 5. Start agent session
-    await session.start(room=ctx.room, agent=agent)
-    logger.info("Agent session active in room.")
-
-    # 6. Opening Line: Greeting + Priya persona speaking on behalf of Airtel
+    # 5. Opening line (Hindi greeting). Built BEFORE session.start so nothing waits on it afterwards.
     if direction == "inbound":
         name_lower = (customer_name or "").lower().strip()
         is_generic = not name_lower or any(t in name_lower for t in ["customer", "subscriber", "inbound", "caller"])
@@ -545,11 +615,23 @@ async def entrypoint(ctx: agents.JobContext):
             f"नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं {who} से बात कर रही हूँ?"
         )
 
+    # 6. Start the session. The greeting is queued immediately, so the TTS request goes out the moment the audio
+    #    pipeline is ready (no extra await between start and say, no work left to do before the first word).
+    await session.start(room=ctx.room, agent=agent)
+    logger.info("Agent session active in room.")
+
     logger.info(f"Speaking opening line ({direction}): {opening_line}")
     state.add_transcript("assistant", opening_line)
     # Uninterruptible: a hold/IVR announcement or early 'hello' must not cut the greeting off mid-sentence.
-    await session.say(opening_line, allow_interruptions=False)
-    timing_tracker["last_activity_time"] = time.time()
+    opening_speech = session.say(opening_line, allow_interruptions=False)
 
-    # 7. Start 5-second silence watchdog task
+    # 7. Silence watchdog starts right away; it ignores the agent while it is speaking, so it does not need to
+    #    wait for the greeting to finish.
+    timing_tracker["last_activity_time"] = time.time()
     watchdog_task = asyncio.create_task(silence_watchdog(ctx, session, state, timing_tracker))
+
+    try:
+        await opening_speech.wait_for_playout()
+    except Exception:
+        pass
+    timing_tracker["last_activity_time"] = time.time()
