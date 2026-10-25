@@ -2,6 +2,9 @@ import time
 from enum import Enum
 from typing import Optional, List, Dict, Any
 
+from src.lang import detect_language
+
+
 class Step(str, Enum):
     IDENTITY = "IDENTITY"
     DISCLOSURE_REASON = "DISCLOSURE_REASON"
@@ -17,6 +20,7 @@ class Step(str, Enum):
     CALLBACK_REQUESTED = "CALLBACK_REQUESTED"
     ESCALATED = "ESCALATED"
     TERMINATED = "TERMINATED"
+
 
 class ConversationState:
     def __init__(
@@ -44,6 +48,9 @@ class ConversationState:
         self.r_date = r_date
         self.attempt_number = attempt_number
         self.direction = direction
+
+
+        self.reply_lang: str = "hi"
 
         # Timing and latency measurement
         self.start_time: float = time.time()
@@ -81,6 +88,16 @@ class ConversationState:
         self.date_retry_count: int = 0
         self.stt_retry_count: int = 0      # Tracks STT failures (max 2 retries per spec)
         self.is_completed: bool = False
+        self.hangup_started: bool = False  # clean_hangup runs at most once
+
+    def update_reply_lang(self, text: Optional[str]) -> bool:
+        """Follow the customer's language. Returns True if the reply language just changed.
+        Unclear / too-short text leaves the language as it is."""
+        lang = detect_language(text)
+        if lang and lang != self.reply_lang:
+            self.reply_lang = lang
+            return True
+        return False
 
     def add_transcript(self, role: str, message: Any):
         if isinstance(message, list):
@@ -123,4 +140,3 @@ class ConversationState:
             Step.ESCALATED,
             Step.TERMINATED,
         ]
-        
