@@ -641,22 +641,88 @@ export const CampaignOverview: React.FC<CampaignOverviewProps> = ({
                     }} />
                   </div>
 
-                  {/* Outcomes Row */}
+                  {/* Outcomes Row: Structured 3-column status numbers grid */}
                   <div style={{
-                    display: 'flex',
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(3, 1fr)',
+                    gap: 8,
+                    padding: '8px 10px',
+                    background: 'rgba(255, 255, 255, 0.02)',
+                    borderRadius: 8,
+                    border: '1px solid rgba(255, 255, 255, 0.04)',
                     alignItems: 'center',
-                    gap: 16,
-                    fontSize: '0.78rem',
                   }}>
-                    <span style={{ color: '#10B981', display: 'flex', alignItems: 'center', gap: 4, fontWeight: 500 }}>
-                      <Check size={13} strokeWidth={2.5} /> {camp.successful_calls.toLocaleString()} successful
-                    </span>
-                    <span style={{ color: '#EF4444', display: 'flex', alignItems: 'center', gap: 4, fontWeight: 500 }}>
-                      <X size={13} strokeWidth={2.5} /> {camp.failed_calls.toLocaleString()} failed
-                    </span>
-                    <span style={{ color: '#F59E0B', display: 'flex', alignItems: 'center', gap: 4, fontWeight: 500 }}>
-                      <Clock size={13} /> {camp.remaining_calls.toLocaleString()} remaining
-                    </span>
+                    {/* Successful */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        color: '#10B981',
+                        fontSize: '0.82rem',
+                        fontWeight: 700,
+                        whiteSpace: 'nowrap',
+                      }}>
+                        <Check size={13} strokeWidth={2.5} />
+                        <span>{camp.successful_calls.toLocaleString()}</span>
+                      </div>
+                      <span style={{
+                        fontSize: '0.7rem',
+                        color: '#64748B',
+                        fontWeight: 500,
+                        whiteSpace: 'nowrap',
+                      }}>
+                        successful
+                      </span>
+                    </div>
+
+                    {/* Failed */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        color: '#EF4444',
+                        fontSize: '0.82rem',
+                        fontWeight: 700,
+                        whiteSpace: 'nowrap',
+                      }}>
+                        <X size={13} strokeWidth={2.5} />
+                        <span>{camp.failed_calls.toLocaleString()}</span>
+                      </div>
+                      <span style={{
+                        fontSize: '0.7rem',
+                        color: '#64748B',
+                        fontWeight: 500,
+                        whiteSpace: 'nowrap',
+                      }}>
+                        failed
+                      </span>
+                    </div>
+
+                    {/* Remaining */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        color: '#F59E0B',
+                        fontSize: '0.82rem',
+                        fontWeight: 700,
+                        whiteSpace: 'nowrap',
+                      }}>
+                        <Clock size={13} strokeWidth={2} />
+                        <span>{camp.remaining_calls.toLocaleString()}</span>
+                      </div>
+                      <span style={{
+                        fontSize: '0.7rem',
+                        color: '#64748B',
+                        fontWeight: 500,
+                        whiteSpace: 'nowrap',
+                      }}>
+                        remaining
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
