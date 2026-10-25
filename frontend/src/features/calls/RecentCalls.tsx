@@ -97,16 +97,6 @@ export const RecentCalls: React.FC<RecentCallsProps> = ({ calls, onSelectCall })
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24, paddingBottom: 36 }}>
       {/* Header matching user screenshot */}
       <div>
-        <div style={{
-          fontSize: '0.72rem',
-          fontWeight: 800,
-          letterSpacing: '0.08em',
-          color: '#38BDF8',
-          marginBottom: 6,
-          textTransform: 'uppercase',
-        }}>
-          CALLS
-        </div>
         <h1 style={{
           fontSize: '1.95rem',
           fontWeight: 700,
