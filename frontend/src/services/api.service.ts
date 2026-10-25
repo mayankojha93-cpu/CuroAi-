@@ -393,3 +393,40 @@ export async function fetchCampaignContacts(campaignId: string): Promise<Campaig
   return data.contacts || [];
 }
 
+export interface CampaignReportRow {
+  sno: number;
+  lead_id: string;
+  subs_del_no: string;
+  mobile: string;
+  customer_name: string;
+  product_name: string;
+  address: string;
+  status: string;
+  attempts_count: number;
+  connected_attempts_count: number;
+  last_call_time: string;
+  attempt_1_disposition: string;
+  attempt_2_disposition: string;
+  attempt_3_disposition: string;
+  attempt_4_disposition: string;
+  attempt_5_disposition: string;
+  attempt_6_disposition: string;
+  attempt_7_disposition: string;
+  attempt_8_disposition: string;
+  final_disposition: string;
+  conclusion_date: string;
+  recording: string;
+}
+
+/**
+ * Fetches per-lead report data for a campaign (used for CSV download)
+ */
+export async function fetchCampaignReport(campaignId: string): Promise<CampaignReportRow[]> {
+  const res = await authFetch(`${API_BASE}/api/campaigns/${campaignId}/report`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch campaign report: ${res.statusText}`);
+  }
+  const data = await res.json();
+  return data.report || [];
+}
+
