@@ -1,6 +1,11 @@
 import { pool } from '../db/index.js';
 import { logger } from '../config/logger.js';
 import { callService } from './callService.js';
+import {
+  CANONICAL_DISPOSITIONS,
+  TERMINAL_DISPOSITIONS,
+  matchCanonicalDisposition,
+} from '../utils/dispositions.js';
 
 export type CampaignStatus = 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'STOPPED' | 'Running' | 'Paused' | 'Completed' | 'Stopped';
 
@@ -198,15 +203,7 @@ export class CampaignService {
       retryAttempts,
       retryDelayMinutes,
       maxDuration,
-      JSON.stringify(data.expected_dispositions || [
-        'CONFIRMED_PICKUP',
-        'NEEDS_AIRTEL_SUPPORT',
-        'SCHEDULE_CALLBACK',
-        'REFUSED',
-        'WRONG_PERSON',
-        'BUSY',
-        'NO_ANSWER',
-      ]),
+      JSON.stringify(data.expected_dispositions || CANONICAL_DISPOSITIONS),
     ]);
     const campaign = res.rows[0];
 
@@ -285,6 +282,7 @@ export class CampaignService {
 
     // Terminal dispositions that should remain closed
     const terminalList = [
+      ...TERMINAL_DISPOSITIONS,
       'CONFIRMED_FOR_PICKUP', 'PICKUP_CONFIRMED', 'PICKUP_CONFIRMED_NEW_DATE',
       'REFUSED_TO_RETURN', 'PICKUP_DECLINED', 'ALREADY_RETURNED', 'ALREADY_PICKED_UP',
       'REFUND_REQUEST', 'REFUND_OR_OWNERSHIP_QUERY', 'RECHARGED_DEVICE', 'ALREADY_RECHARGED',
@@ -382,7 +380,16 @@ export class CampaignService {
        LIMIT 100`,
       [campaignId]
     );
-    return res.rows;
+    return res.rows.map((row: any) => {
+      const canonical = row.call_result
+        ? matchCanonicalDisposition(row.call_result, row.duration_seconds, row.status)
+        : null;
+      return {
+        ...row,
+        call_result: canonical || row.call_result,
+        final_disposition: canonical,
+      };
+    });
   }
 
   /**
@@ -434,7 +441,15 @@ export class CampaignService {
       LIMIT 500
     `;
     const res = await pool.query(query, [campaignId]);
-    return res.rows;
+    return res.rows.map((row: any) => ({
+      ...row,
+      final_disposition: row.final_disposition || row.current_disposition
+        ? matchCanonicalDisposition(row.final_disposition || row.current_disposition, row.duration_seconds, row.call_status)
+        : null,
+      current_disposition: row.current_disposition
+        ? matchCanonicalDisposition(row.current_disposition)
+        : null,
+    }));
   }
 
   /**
@@ -619,26 +634,25 @@ export class CampaignService {
     );
     let totalCalls = totalRes.rows[0]?.total || 0;
 
-    const expected: string[] = Array.isArray(campaign.expected_dispositions)
-      ? campaign.expected_dispositions
-      : [];
+    const expected: string[] = Array.isArray(campaign.expected_dispositions) && campaign.expected_dispositions.length > 0
+      ? campaign.expected_dispositions.map((e) => matchCanonicalDisposition(e))
+      : [...CANONICAL_DISPOSITIONS];
 
     const dispMap = new Map<string, number>();
 
-    // Seed expected dispositions with 0
-    expected.forEach((d) => dispMap.set(d.toUpperCase(), 0));
+    // Seed all 14 canonical dispositions with 0
+    CANONICAL_DISPOSITIONS.forEach((d) => dispMap.set(d, 0));
 
-    // Fill with actual call counts
+    // Fill with actual call counts mapped to canonical 14
     res.rows.forEach((row) => {
-      const name = (row.disposition || 'UNKNOWN').toUpperCase();
-      dispMap.set(name, (dispMap.get(name) || 0) + Number(row.count));
+      const canonicalName = matchCanonicalDisposition(row.disposition);
+      dispMap.set(canonicalName, (dispMap.get(canonicalName) || 0) + Number(row.count));
     });
 
     const totalDispositionsCount = Array.from(dispMap.values()).reduce((sum, c) => sum + c, 0);
     const denominator = totalCalls > 0 ? totalCalls : totalDispositionsCount;
 
     const dispositions = Array.from(dispMap.entries())
-      .filter(([name, count]) => count > 0 || expected.map(e => e.toUpperCase()).includes(name))
       .map(([name, count]) => ({
         name,
         count,
