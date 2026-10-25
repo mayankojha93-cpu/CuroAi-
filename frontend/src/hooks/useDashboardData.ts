@@ -6,7 +6,9 @@ import {
   fetchRecentCalls, 
   fetchPendingRetries, 
   initiateCall, 
-  importLeads 
+  importLeads,
+  fetchCampaigns,
+  fetchBillingBalance
 } from '../services';
 import type { 
   CampaignSummary, 
@@ -14,7 +16,8 @@ import type {
   CallRecord, 
   SystemHealth, 
   TabKey,
-  CustomerCreateInput
+  CustomerCreateInput,
+  CampaignItem
 } from '../types';
 
 export function useDashboardData() {
@@ -24,6 +27,11 @@ export function useDashboardData() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [recentCalls, setRecentCalls] = useState<CallRecord[]>([]);
   const [retries, setRetries] = useState<Customer[]>([]);
+  const [campaigns, setCampaigns] = useState<CampaignItem[]>([]);
+  const [credits, setCredits] = useState<number>(() => {
+    const saved = localStorage.getItem('curoai_credits');
+    return saved ? parseInt(saved, 10) : 21874;
+  });
 
   const [loading, setLoading] = useState(false);
   const [dialingId, setDialingId] = useState<string | null>(null);
@@ -38,12 +46,14 @@ export function useDashboardData() {
   const loadAllData = useCallback(async () => {
     setLoading(true);
     try {
-      const [h, s, c, calls, r] = await Promise.all([
+      const [h, s, c, calls, r, camps, bill] = await Promise.all([
         fetchHealth().catch(() => null),
         fetchCampaignSummary().catch(() => null),
         fetchCustomers().catch(() => []),
         fetchRecentCalls().catch(() => []),
         fetchPendingRetries().catch(() => []),
+        fetchCampaigns().catch(() => []),
+        fetchBillingBalance().catch(() => null),
       ]);
 
       if (h) setHealth(h);
@@ -51,6 +61,11 @@ export function useDashboardData() {
       setCustomers(c);
       setRecentCalls(calls);
       setRetries(r);
+      if (camps) setCampaigns(camps);
+      if (bill && typeof bill.available_credits === 'number') {
+        setCredits(bill.available_credits);
+        localStorage.setItem('curoai_credits', String(bill.available_credits));
+      }
     } catch (err: any) {
       console.error('Error loading dashboard data:', err);
     } finally {
@@ -63,6 +78,17 @@ export function useDashboardData() {
     const interval = setInterval(loadAllData, 10000); // 10s auto-refresh
     return () => clearInterval(interval);
   }, [loadAllData]);
+
+  // Listen for credit update custom events from anywhere in the app
+  useEffect(() => {
+    const handleUpdate = (e: CustomEvent<{ credits: number }>) => {
+      if (e.detail && typeof e.detail.credits === 'number') {
+        setCredits(e.detail.credits);
+      }
+    };
+    window.addEventListener('curoai_credits_updated', handleUpdate as EventListener);
+    return () => window.removeEventListener('curoai_credits_updated', handleUpdate as EventListener);
+  }, []);
 
   const handleDialCustomer = async (customerId: string, name?: string) => {
     try {
@@ -97,6 +123,8 @@ export function useDashboardData() {
     customers,
     recentCalls,
     retries,
+    campaigns,
+    credits,
     loading,
     dialingId,
     selectedCall,
