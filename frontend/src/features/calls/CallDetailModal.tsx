@@ -261,20 +261,6 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
                 {activeCall.duration_seconds || 0}s {activeCall.median_latency_ms ? `| ~${activeCall.median_latency_ms}ms` : ''}
               </div>
             </div>
-
-            <div style={{
-              background: '#0F1524',
-              border: '1px solid rgba(255, 255, 255, 0.06)',
-              borderRadius: 10,
-              padding: '12px 14px',
-            }}>
-              <span style={{ fontSize: '0.72rem', color: '#64748B', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.04em' }}>
-                Telephony Cost
-              </span>
-              <div style={{ fontSize: '0.88rem', fontWeight: 600, color: '#F59E0B', marginTop: 4 }}>
-                ₹{activeCall.cost_estimate_inr !== undefined && activeCall.cost_estimate_inr !== null ? activeCall.cost_estimate_inr : '0.00'}
-              </div>
-            </div>
           </div>
 
           {/* Customer & Address Details */}
