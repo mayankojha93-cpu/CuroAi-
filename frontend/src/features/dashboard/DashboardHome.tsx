@@ -123,17 +123,6 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
         gap: 16,
       }}>
         <div>
-          <div style={{
-            fontSize: '0.72rem',
-            fontWeight: 800,
-            letterSpacing: '0.08em',
-            color: '#38BDF8',
-            marginBottom: 6,
-            textTransform: 'uppercase',
-          }}>
-            DASHBOARD
-          </div>
-
           <h1 style={{
             fontSize: '1.95rem',
             fontWeight: 700,
