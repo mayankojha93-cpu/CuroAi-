@@ -28,6 +28,10 @@ export interface CallRecord {
   median_latency_ms?: number;
   cost_estimate_inr?: string | number;
   recording_url?: string | null;
+  script?: string;
+  company_name?: string;
+  voice_pipeline?: string;
+  is_test_call?: boolean;
   room_name: string;
   sip_call_id?: string | null;
   failure_reason?: string | null;

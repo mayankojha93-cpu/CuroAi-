@@ -9,6 +9,7 @@ export * from './leads/LeadImportModal';
 export * from './calls/RecentCalls';
 export * from './calls/CallDetailModal';
 export * from './calls/TestCallModal';
+export * from './calls/TestCallView';
 export * from './retries/RetryQueue';
 export * from './landing/LandingPage';
 export * from './auth/LoginPage';

@@ -7,7 +7,6 @@ import {
   ChevronRight, 
   X, 
   Plus, 
-  PhoneCall, 
   Phone,
   BarChart3,
   CreditCard
@@ -20,7 +19,7 @@ interface DashboardHomeProps {
   user: AuthUser | null;
   onTabChange: (tab: TabKey) => void;
   onImportModalOpen: () => void;
-  onTestCallOpen: () => void;
+  onTestCallOpen?: () => void;
   onSelectCall: (call: CallRecord) => void;
 }
 
@@ -30,7 +29,7 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
   user,
   onTabChange,
   onImportModalOpen,
-  onTestCallOpen,
+  onTestCallOpen: _onTestCallOpen,
   onSelectCall,
 }) => {
   const overview = summary?.overview || {
@@ -140,35 +139,6 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
 
         {/* Action Button */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <button
-            onClick={onTestCallOpen}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              background: 'rgba(255, 255, 255, 0.05)',
-              border: '1px solid rgba(255, 255, 255, 0.12)',
-              color: '#E2E8F0',
-              padding: '10px 18px',
-              borderRadius: 10,
-              fontSize: '0.88rem',
-              fontWeight: 600,
-              cursor: 'pointer',
-              transition: 'all 0.18s ease',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.09)';
-              e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.25)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
-              e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.12)';
-            }}
-          >
-            <PhoneCall size={16} color="#38BDF8" />
-            Test AI call
-          </button>
-
           <button
             onClick={onImportModalOpen}
             style={{

@@ -31,7 +31,7 @@ export interface SystemHealth {
   };
 }
 
-export type TabKey = 'DASHBOARD' | 'CAMPAIGN' | 'LEADS' | 'CALLS' | 'RETRIES' | 'BILLING' | 'SETTINGS';
+export type TabKey = 'DASHBOARD' | 'CAMPAIGN' | 'LEADS' | 'CALLS' | 'TEST_CALL' | 'RETRIES' | 'BILLING' | 'SETTINGS';
 
 export type CampaignStage = 'Running' | 'Paused' | 'Completed' | 'Stopped' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'STOPPED';
 

@@ -12,6 +12,7 @@ import {
   RecentCalls, 
   CallDetailModal, 
   TestCallModal, 
+  TestCallView,
   RetryQueue, 
   LandingPage,
   LoginPage
@@ -102,6 +103,12 @@ const DashboardView: React.FC<DashboardViewProps> = ({ user, onLogout }) => {
         {activeTab === 'CALLS' && (
           <RecentCalls
             calls={recentCalls}
+            onSelectCall={setSelectedCall}
+          />
+        )}
+
+        {activeTab === 'TEST_CALL' && (
+          <TestCallView
             onSelectCall={setSelectedCall}
           />
         )}
