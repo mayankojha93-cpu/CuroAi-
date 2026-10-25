@@ -34,6 +34,9 @@ LLM_MODEL = os.getenv("LLM_MODEL", "meta-llama/llama-3.3-70b-instruct")
 
 # Speech — Sarvam AI (STT + TTS)
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
+STT_LANGUAGE = os.getenv("STT_LANGUAGE", "hi-IN").strip() or "hi-IN"
+TTS_LANGUAGE_HI = os.getenv("TTS_LANGUAGE_HI", "hi-IN")
+TTS_LANGUAGE_EN = os.getenv("TTS_LANGUAGE_EN", "en-IN")
 
 
 DIRECT_SPEAK = os.getenv("DIRECT_SPEAK", "1") == "1"
