@@ -67,15 +67,24 @@ export const SCRIPT_PRESETS: ScriptPresetOption[] = [
 
 const ALL_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-const DEFAULT_DISPOSITIONS = [
-  'CONFIRMED_PICKUP',
-  'NEEDS_AIRTEL_SUPPORT',
-  'SCHEDULE_CALLBACK',
-  'REFUSED',
-  'WRONG_PERSON',
-  'BUSY',
-  'NO_ANSWER'
+const CANONICAL_DISPOSITIONS = [
+  'Confirmed For Pickup',
+  'Willing To Pickup',
+  'Schedule Callback',
+  'Already Returned Device',
+  'Refused To Return',
+  'Willing To Recharge',
+  'Already Recharged',
+  'Wrong Number',
+  'Language Barrier',
+  'Do Not Call',
+  'Abruptly Disconnected Call',
+  'Voicemail or IVR Detected',
+  'Not Connected (No Answer)',
+  'Not Connected (Failed)',
 ];
+
+const DEFAULT_DISPOSITIONS = CANONICAL_DISPOSITIONS;
 
 export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
   isOpen,

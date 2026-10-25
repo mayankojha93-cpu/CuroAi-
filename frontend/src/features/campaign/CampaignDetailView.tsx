@@ -94,29 +94,267 @@ const formatCleanPhone = (phone?: string): string => {
   return clean;
 };
 
+export const CANONICAL_DISPOSITIONS = [
+  'Confirmed For Pickup',
+  'Willing To Pickup',
+  'Schedule Callback',
+  'Already Returned Device',
+  'Refused To Return',
+  'Willing To Recharge',
+  'Already Recharged',
+  'Wrong Number',
+  'Language Barrier',
+  'Do Not Call',
+  'Abruptly Disconnected Call',
+  'Voicemail or IVR Detected',
+  'Not Connected (No Answer)',
+  'Not Connected (Failed)',
+] as const;
+
+export const matchCanonicalDisposition = (
+  rawInput?: string | null,
+  durationSeconds?: number,
+  callStatus?: string | null
+): string => {
+  const text = (rawInput || '').trim();
+  const upper = text.toUpperCase().replace(/[-_]/g, ' ');
+  const statusUpper = (callStatus || '').toUpperCase().replace(/[-_]/g, ' ');
+  const duration = Number(durationSeconds) || 0;
+
+  const exactMatch = CANONICAL_DISPOSITIONS.find(
+    (c) => c.toLowerCase() === text.toLowerCase() || c.toUpperCase() === upper
+  );
+  if (exactMatch) return exactMatch;
+
+  // 8. Wrong Number (Check early so 'IDENTITY NOT CONFIRMED' does not trigger 'CONFIRMED')
+  if (
+    upper.includes('WRONG NUMBER') ||
+    upper.includes('WRONG PERSON') ||
+    upper.includes('NOT CONFIRMED') ||
+    upper.includes('IDENTITY NOT CONFIRMED') ||
+    upper.includes('NOT SUBSCRIBER') ||
+    upper.includes('INVALID NUMBER') ||
+    upper.includes('NOT ME') ||
+    upper.includes('DOES NOT BELONG')
+  ) {
+    return 'Wrong Number';
+  }
+
+  // 10. Do Not Call
+  if (
+    upper.includes('DO NOT CALL') ||
+    upper.includes('DND') ||
+    upper.includes('STOP CALLING') ||
+    upper.includes('UNSUBSCRIBE') ||
+    upper.includes('DONOTCALL') ||
+    upper.includes('NEVER CALL')
+  ) {
+    return 'Do Not Call';
+  }
+
+  // 9. Language Barrier
+  if (
+    upper.includes('LANGUAGE BARRIER') ||
+    upper.includes('LANGUAGE') ||
+    upper.includes('BARRIER') ||
+    upper.includes('NOT UNDERSTAND') ||
+    upper.includes('SPEAK TAMIL') ||
+    upper.includes('SPEAK TELUGU') ||
+    upper.includes('SPEAK BENGALI') ||
+    upper.includes('SPEAK MARATHI') ||
+    upper.includes('SPEAK KANNADA') ||
+    upper.includes('SPEAK MALAYALAM')
+  ) {
+    return 'Language Barrier';
+  }
+
+  // 12. Voicemail or IVR Detected
+  if (
+    upper.includes('VOICEMAIL') ||
+    upper.includes('IVR') ||
+    upper.includes('ANSWERING MACHINE') ||
+    upper.includes('MACHINE DETECTED') ||
+    upper.includes('CARRIER MESSAGE') ||
+    upper.includes('AUTOMATED MESSAGE')
+  ) {
+    return 'Voicemail or IVR Detected';
+  }
+
+  // 4. Already Returned Device
+  if (
+    upper.includes('ALREADY RETURNED') ||
+    upper.includes('ALREADY PICKED UP') ||
+    upper.includes('DEVICE RETURNED') ||
+    upper.includes('RETURNED DEVICE') ||
+    upper.includes('HANDED OVER') ||
+    upper.includes('DEPOSITED') ||
+    upper.includes('ALREADY SUBMITTED')
+  ) {
+    return 'Already Returned Device';
+  }
+
+  // 6. Willing To Recharge
+  if (
+    upper.includes('WILLING TO RECHARGE') ||
+    upper.includes('WILL RECHARGE') ||
+    upper.includes('PROMISED RECHARGE') ||
+    upper.includes('RECHARGE PROMISED') ||
+    upper.includes('WILL PAY') ||
+    upper.includes('PROMISE TO PAY')
+  ) {
+    return 'Willing To Recharge';
+  }
+
+  // 7. Already Recharged
+  if (
+    upper.includes('ALREADY RECHARGED') ||
+    upper.includes('RECHARGED DEVICE') ||
+    upper.includes('RECHARGED') ||
+    upper.includes('ALREADY PAID') ||
+    upper.includes('ACCOUNT ACTIVE') ||
+    upper.includes('PAYMENT DONE') ||
+    upper.includes('ALREADY USING') ||
+    upper.includes('STILL USING')
+  ) {
+    return 'Already Recharged';
+  }
+
+  // 1. Confirmed For Pickup
+  if (
+    upper.includes('CONFIRMED FOR PICKUP') ||
+    upper.includes('PICKUP CONFIRMED') ||
+    upper.includes('CONFIRMED PICKUP') ||
+    upper.includes('GOAL COMPLETED') ||
+    upper.includes('PICKUP SCHEDULED') ||
+    upper.includes('SCHEDULED PICKUP') ||
+    upper.includes('CONFIRMED DATE') ||
+    upper.includes('PICKUP ACCEPTED') ||
+    (upper.includes('CONFIRMED') && !upper.includes('NOT CONFIRMED'))
+  ) {
+    return 'Confirmed For Pickup';
+  }
+
+  // 2. Willing To Pickup
+  if (
+    upper.includes('WILLING TO PICKUP') ||
+    upper.includes('WILLING PICKUP') ||
+    upper.includes('TENTATIVE PICKUP') ||
+    upper.includes('WILLING TO RETURN') ||
+    upper.includes('AGREED TO RETURN') ||
+    upper.includes('WILL RETURN') ||
+    upper.includes('RECORD WILLING NO DATE') ||
+    upper.includes('WILLING NO DATE')
+  ) {
+    return 'Willing To Pickup';
+  }
+
+  // 5. Refused To Return
+  if (
+    upper.includes('REFUSED TO RETURN') ||
+    upper.includes('PICKUP DECLINED') ||
+    upper.includes('REFUSED') ||
+    upper.includes('DECLINED') ||
+    upper.includes('NOT GIVING') ||
+    upper.includes('DENIED') ||
+    upper.includes('DECLINED PICKUP') ||
+    upper.includes('DAMAGED DEVICE') ||
+    upper.includes('LOST DEVICE') ||
+    upper.includes('REFUND OR OWNERSHIP')
+  ) {
+    return 'Refused To Return';
+  }
+
+  // 3. Schedule Callback
+  if (
+    upper.includes('SCHEDULE CALLBACK') ||
+    upper.includes('CALLBACK REQUESTED') ||
+    upper.includes('CALL LATER') ||
+    upper.includes('CALLBACK') ||
+    upper.includes('BUSY CALL LATER') ||
+    upper.includes('SCHEDULED CALLBACK') ||
+    upper.includes('CALL ME BACK') ||
+    upper.includes('CALL AFTER') ||
+    upper.includes('SHIFTED') ||
+    upper.includes('NEEDS AIRTEL SUPPORT')
+  ) {
+    return 'Schedule Callback';
+  }
+
+  // 13. Not Connected (No Answer)
+  if (
+    upper.includes('NO ANSWER') ||
+    upper.includes('NO_ANSWER') ||
+    upper.includes('NOT CONNECTED NO ANSWER') ||
+    upper.includes('NOT CONNECTED (NO ANSWER)') ||
+    upper.includes('NO RESPONSE') ||
+    upper.includes('TIMEOUT') ||
+    upper.includes('RINGING TIMEOUT') ||
+    upper.includes('UNANSWERED') ||
+    statusUpper === 'NO ANSWER' ||
+    statusUpper === 'NO_ANSWER'
+  ) {
+    return 'Not Connected (No Answer)';
+  }
+
+  // 11. Abruptly Disconnected Call
+  if (
+    upper.includes('ABRUPTLY DISCONNECTED') ||
+    upper.includes('DISCONNECTED') ||
+    upper.includes('CALL DROPPED') ||
+    upper.includes('DROPPED') ||
+    upper.includes('HANGUP') ||
+    upper.includes('HUNG UP') ||
+    upper.includes('CALL CUT') ||
+    (duration >= 5 && (statusUpper === 'COMPLETED' || upper.includes('DISCONNECT')))
+  ) {
+    return 'Abruptly Disconnected Call';
+  }
+
+  // 14. Not Connected (Failed)
+  if (
+    upper.includes('FAILED') ||
+    upper.includes('NOT CONNECTED FAILED') ||
+    upper.includes('NOT CONNECTED (FAILED)') ||
+    upper.includes('BUSY') ||
+    upper.includes('UNREACHABLE') ||
+    upper.includes('SWITCHED OFF') ||
+    upper.includes('OUT OF SERVICE') ||
+    upper.includes('NETWORK FAILURE') ||
+    statusUpper === 'FAILED' ||
+    statusUpper === 'BUSY'
+  ) {
+    return 'Not Connected (Failed)';
+  }
+
+  if (duration >= 5) return 'Abruptly Disconnected Call';
+  if (statusUpper.includes('ANSWER') || duration === 0) return 'Not Connected (No Answer)';
+  return 'Not Connected (Failed)';
+};
+
 const normalizeContactStatus = (callStatus?: string, disposition?: string): 'COMPLETED' | 'NO_ANSWER' | 'FAILED' | 'PENDING' => {
   if (!callStatus && !disposition) return 'PENDING';
-  const s = (callStatus || '').toLowerCase();
-  const d = (disposition || '').toLowerCase();
-  if (s === 'completed' || s === 'successful' || s === 'answered' || d.includes('pickup') || d.includes('completed') || d.includes('goal')) {
+  const canonical = matchCanonicalDisposition(disposition || callStatus);
+  if (
+    canonical === 'Confirmed For Pickup' ||
+    canonical === 'Already Returned Device' ||
+    canonical === 'Already Recharged' ||
+    canonical === 'Willing To Pickup' ||
+    canonical === 'Willing To Recharge'
+  ) {
     return 'COMPLETED';
   }
-  if (s === 'no_answer' || s === 'no answer' || s === 'busy' || s === 'unreachable' || d.includes('no answer') || d.includes('busy')) {
+  if (canonical === 'Not Connected (No Answer)' || canonical === 'Voicemail or IVR Detected') {
     return 'NO_ANSWER';
   }
-  if (s === 'failed' || d.includes('fail') || d.includes('refus')) {
-    return 'FAILED';
-  }
-  return 'PENDING';
+  return 'FAILED';
 };
 
 const formatContactDisposition = (c: CampaignContactRecord): string => {
   if (c.final_disposition) {
-    const raw = c.final_disposition.toUpperCase();
-    if (raw.includes('NO_ANSWER') || raw.includes('BUSY')) return 'Not Connected (No Answer)';
-    if (raw.includes('FAILED')) return 'Not Connected (Failed)';
-    if (raw.includes('DISCONNECT')) return 'Abruptly Disconnected Call';
-    return formatDispositionLabel(c.final_disposition);
+    return matchCanonicalDisposition(c.final_disposition, c.duration_seconds, c.call_status);
+  }
+  if (c.current_disposition) {
+    return matchCanonicalDisposition(c.current_disposition, c.duration_seconds, c.call_status);
   }
   const s = (c.call_status || '').toLowerCase();
   if (s === 'no_answer' || s === 'busy') return 'Not Connected (No Answer)';
@@ -127,16 +365,21 @@ const formatContactDisposition = (c: CampaignContactRecord): string => {
 
 const getDispositionColor = (key: string): string => {
   const norm = key.toUpperCase();
-  if (norm.includes('PICKUP') || norm.includes('SUCCESS') || norm.includes('CONFIRMED') || norm.includes('GOAL')) return '#10B981'; // Emerald Green
-  if (norm.includes('CALLBACK') || norm.includes('LATER') || norm.includes('WILLING')) return '#F59E0B'; // Amber
-  if (norm.includes('SUPPORT') || norm.includes('ESCALAT') || norm.includes('REFUND')) return '#38BDF8'; // Sky Blue
-  if (norm.includes('REFUS') || norm.includes('FAIL') || norm.includes('DAMAG')) return '#EF4444'; // Red
-  if (norm.includes('WRONG') || norm.includes('NOT_REACHED')) return '#A855F7'; // Purple
-  if (norm.includes('LANGUAGE') || norm.includes('BARRIER')) return '#EC4899'; // Pink
-  if (norm.includes('SHIFTED') || norm.includes('RELOCAT')) return '#F97316'; // Orange
-  if (norm.includes('DISCONNECT') || norm.includes('DROPPED')) return '#F43F5E'; // Rose
-  if (norm.includes('NO_ANSWER') || norm.includes('NO ANSWER') || norm.includes('BUSY') || norm.includes('UNREACHABLE')) return '#64748B'; // Slate
-  return '#3B82F6'; // Blue
+  if (norm.includes('CONFIRMED FOR PICKUP')) return '#10B981'; // Emerald Green
+  if (norm.includes('WILLING TO PICKUP')) return '#06B6D4'; // Cyan
+  if (norm.includes('SCHEDULE CALLBACK')) return '#F59E0B'; // Amber
+  if (norm.includes('ALREADY RETURNED')) return '#6366F1'; // Indigo
+  if (norm.includes('REFUSED TO RETURN')) return '#EF4444'; // Red
+  if (norm.includes('WILLING TO RECHARGE')) return '#14B8A6'; // Teal
+  if (norm.includes('ALREADY RECHARGED')) return '#8B5CF6'; // Purple
+  if (norm.includes('WRONG NUMBER')) return '#EC4899'; // Pink
+  if (norm.includes('LANGUAGE BARRIER')) return '#D946EF'; // Fuchsia
+  if (norm.includes('DO NOT CALL')) return '#DC2626'; // Dark Red
+  if (norm.includes('ABRUPTLY DISCONNECTED')) return '#F97316'; // Orange
+  if (norm.includes('VOICEMAIL')) return '#84CC16'; // Lime
+  if (norm.includes('NO ANSWER')) return '#64748B'; // Slate
+  if (norm.includes('FAILED')) return '#991B1B'; // Crimson
+  return '#3B82F6';
 };
 
 interface CampaignDetailViewProps {
@@ -430,50 +673,45 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
     });
   }, [contacts, contactSearchTerm, contactFilter]);
 
-  // Compute dispositions breakdown for display
+  // Compute dispositions breakdown for display (All 14 standard dispositions)
   const computedDispositions = useMemo(() => {
     const counts = new Map<string, number>();
 
-    const expectedList = currentCampaign.expected_dispositions || [
-      'CONFIRMED_PICKUP', 'NEEDS_AIRTEL_SUPPORT', 'SCHEDULE_CALLBACK', 'REFUSED', 'WRONG_PERSON'
-    ];
-    expectedList.forEach((e) => counts.set(e.toUpperCase(), 0));
+    // Seed all 14 canonical dispositions with 0
+    CANONICAL_DISPOSITIONS.forEach((name) => counts.set(name, 0));
 
     // Populate from dispositionData if loaded
     if (dispositionData && Array.isArray(dispositionData.dispositions)) {
       dispositionData.dispositions.forEach((d) => {
-        const name = (d.name || '').toUpperCase().trim();
-        if (name) {
-          counts.set(name, (counts.get(name) || 0) + (d.count || 0));
-        }
+        const canonical = matchCanonicalDisposition(d.name);
+        counts.set(canonical, (counts.get(canonical) || 0) + (d.count || 0));
       });
     }
 
     // Also scan calls in state to catch any freshly placed or updated calls
     calls.forEach((c) => {
-      const disp = (
+      const raw =
+        (c as any).final_disposition ||
         (c as any).call_result ||
         (c as any).disposition ||
-        (c as any).final_disposition ||
         (c as any).call_status ||
         c.status ||
-        ''
-      ).toUpperCase().trim();
-      if (disp && disp !== 'INITIATED' && disp !== 'IN_PROGRESS' && disp !== 'RINGING') {
+        '';
+      if (raw && raw !== 'INITIATED' && raw !== 'IN_PROGRESS' && raw !== 'RINGING') {
+        const canonical = matchCanonicalDisposition(raw, c.duration_seconds, c.status);
         if (!dispositionData || dispositionData.dispositions.length === 0) {
-          counts.set(disp, (counts.get(disp) || 0) + 1);
-        } else if (!counts.has(disp)) {
-          counts.set(disp, 1);
+          counts.set(canonical, (counts.get(canonical) || 0) + 1);
         }
       }
     });
 
-    // Also ensure any dispositions present on contacts are included
+    // Also scan contacts in state
     contacts.forEach((ct) => {
-      const disp = (ct.final_disposition || ct.current_disposition || '').toUpperCase().trim();
-      if (disp && disp !== 'PENDING' && disp !== 'NOT_STARTED') {
-        if (!counts.has(disp)) {
-          counts.set(disp, 0);
+      const raw = ct.final_disposition || ct.current_disposition || '';
+      if (raw && raw !== 'PENDING' && raw !== 'NOT_STARTED') {
+        const canonical = matchCanonicalDisposition(raw);
+        if (!counts.has(canonical)) {
+          counts.set(canonical, 0);
         }
       }
     });
@@ -483,7 +721,6 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
     const denominator = totalCalls > 0 ? totalCalls : (totalOccurrences > 0 ? totalOccurrences : 1);
 
     return Array.from(counts.entries())
-      .filter(([name, count]) => count > 0 || expectedList.map((e) => e.toUpperCase()).includes(name))
       .map(([name, count]) => ({
         name,
         count,
@@ -493,7 +730,7 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
         if (b.count !== a.count) return b.count - a.count;
         return a.name.localeCompare(b.name);
       });
-  }, [dispositionData, calls, contacts, currentCampaign.expected_dispositions]);
+  }, [dispositionData, calls, contacts]);
 
   // Compute real metrics from calls data and campaign DB values
   const computedStats = useMemo(() => {
