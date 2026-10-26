@@ -261,3 +261,33 @@ export function downloadSampleCsv(): void {
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
+
+/**
+ * Generates sample CSV template for Campaign Target Audience upload
+ */
+export function getCampaignAudienceSampleCsvContent(): string {
+  return [
+    'phone_number,name,email',
+    '+919876543210,Rahul Sharma,rahul.sharma@example.com',
+    '+919811223344,Priya Patel,priya.patel@example.com',
+    '+919822334455,Amit Verma,amit.verma@example.com',
+    '+919833445566,Sneha Gupta,sneha.gupta@example.com',
+  ].join('\n');
+}
+
+/**
+ * Triggers a browser file download for campaign audience sample CSV format
+ */
+export function downloadCampaignAudienceSampleCsv(): void {
+  const content = getCampaignAudienceSampleCsvContent();
+  const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.setAttribute('download', 'campaign_audience_format.csv');
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
