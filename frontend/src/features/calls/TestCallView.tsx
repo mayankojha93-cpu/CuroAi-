@@ -33,10 +33,11 @@ const LANGUAGES = [
 ];
 
 const PIPELINES = [
-  { id: 'habot', label: 'HABot Pipeline' },
-  { id: 'deepgram_gpt4', label: 'Deepgram + GPT-4o-mini + Cartesia' },
-  { id: 'sarvam', label: 'Sarvam AI Multilingual' },
-  { id: 'elevenlabs', label: 'ElevenLabs Voice Pipeline' },
+  { id: 'sarvam_priya', value: 'Sarvam AI (Priya - hi-IN)', label: 'Curoai 2026-0.2' },
+  { id: 'sarvam_arvind', value: 'Sarvam AI (Arvind - hi-IN)', label: 'Curoai 2026-0.3' },
+  { id: 'openai_alloy', value: 'OpenAI Realtime (Alloy)', label: 'Curoai 2026-0.4' },
+  { id: 'openai_echo', value: 'OpenAI Realtime (Echo)', label: 'Curoai 2026-0.5' },
+  { id: 'elevenlabs', value: 'ElevenLabs (Rachel - Expressive)', label: 'Curoai 2026-0.6' },
 ];
 
 export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
@@ -49,7 +50,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
   const [companyName, setCompanyName] = useState('');
   const [selectedScript, setSelectedScript] = useState('Trump Towers India — Real Estate');
   const [selectedLanguage, setSelectedLanguage] = useState('Multilingual');
-  const [selectedPipeline, setSelectedPipeline] = useState('HABot Pipeline');
+  const [selectedPipeline, setSelectedPipeline] = useState('Sarvam AI (Priya - hi-IN)');
 
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -545,7 +546,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                     }}
                   >
                     {PIPELINES.map((p) => (
-                      <option key={p.id} value={p.label} style={{ background: '#0B0F19', color: '#FFFFFF' }}>
+                      <option key={p.id} value={p.value} style={{ background: '#0B0F19', color: '#FFFFFF' }}>
                         {p.label}
                       </option>
                     ))}
