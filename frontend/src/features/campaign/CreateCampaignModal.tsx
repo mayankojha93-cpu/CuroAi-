@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { createCampaign } from '../../services';
 import type { CampaignItem } from '../../types';
+import { downloadCampaignAudienceSampleCsv } from '../../utils/csvHelper';
 
 interface CreateCampaignModalProps {
   isOpen: boolean;
@@ -120,7 +121,6 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
   // Audience & Validation (CSV Upload)
   const [fileName, setFileName] = useState('');
   const [fileRawLines, setFileRawLines] = useState<string[]>([]);
-  const [uploadedFileContent, setUploadedFileContent] = useState<string>('');
   const [showFlaggedDetails, setShowFlaggedDetails] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -171,7 +171,8 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
         c.includes('number') ||
         c.includes('contact') ||
         c.includes('name') ||
-        c.includes('email')
+        c.includes('email') ||
+        c.includes('subs')
       );
 
       if (isHeader) {
@@ -180,8 +181,14 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
           if (
             col.includes('phone') ||
             col.includes('mobile') ||
-            col.includes('number') ||
             col.includes('contact')
+          ) {
+            phoneColIdx = idx;
+          } else if (
+            (col.includes('number') || col.includes('subs')) &&
+            phoneColIdx === 0 &&
+            !headerCols[0].includes('phone') &&
+            !headerCols[0].includes('mobile')
           ) {
             phoneColIdx = idx;
           } else if (
@@ -198,8 +205,10 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
     }
 
     const processEntry = (phoneStr: string, nameStr?: string, emailStr?: string) => {
-      const cleanPhone = phoneStr.trim().replace(/^["']|["']$/g, '');
+      let cleanPhone = phoneStr.trim().replace(/^["']|["']$/g, '');
       if (!cleanPhone) return;
+
+      cleanPhone = cleanPhone.replace(/_(wifi|broadband|dsl|ftth|airtel)/gi, '').trim();
 
       const digits = cleanPhone.replace(/\D/g, '');
       if (digits.length === 0) return;
@@ -218,6 +227,8 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
       let normalized = cleanPhone.replace(/[^\d+]/g, '');
       if (!normalized.startsWith('+') && digits.length === 10) {
         normalized = '+91' + digits;
+      } else if (!normalized.startsWith('+') && digits.length === 11 && digits.startsWith('0')) {
+        normalized = '+91' + digits.slice(1);
       } else if (!normalized.startsWith('+')) {
         normalized = '+' + digits;
       }
@@ -271,7 +282,6 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
       const content = event.target?.result as string;
       if (!content) return;
 
-      setUploadedFileContent(content);
       const lines = content
         .split(/\r?\n/)
         .map((l) => l.trim())
@@ -283,20 +293,10 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
     reader.readAsText(file);
   };
 
-  const handleDownloadUploadedCsv = (e: React.MouseEvent) => {
+  const handleDownloadCsvFormat = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const content = uploadedFileContent || fileRawLines.join('\n');
-    if (!content) return;
-    const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', fileName || 'uploaded_audience.csv');
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    downloadCampaignAudienceSampleCsv();
   };
 
   const handleLaunch = async (e: React.FormEvent) => {
@@ -617,11 +617,11 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
                     cursor: 'pointer',
                   }}
                 >
-                  <option value="Sarvam AI (Priya - hi-IN)" style={{ background: '#0B0F17' }}>Sarvam AI (Priya - hi-IN)</option>
-                  <option value="Sarvam AI (Arvind - hi-IN)" style={{ background: '#0B0F17' }}>Sarvam AI (Arvind - hi-IN)</option>
-                  <option value="OpenAI Realtime (Alloy)" style={{ background: '#0B0F17' }}>OpenAI Realtime (Alloy)</option>
-                  <option value="OpenAI Realtime (Echo)" style={{ background: '#0B0F17' }}>OpenAI Realtime (Echo)</option>
-                  <option value="ElevenLabs (Rachel - Expressive)" style={{ background: '#0B0F17' }}>ElevenLabs (Rachel - Expressive)</option>
+                  <option value="Sarvam AI (Priya - hi-IN)" style={{ background: '#0B0F17' }}>Curoai 2026-0.2</option>
+                  <option value="Sarvam AI (Arvind - hi-IN)" style={{ background: '#0B0F17' }}>Curoai 2026-0.3</option>
+                  <option value="OpenAI Realtime (Alloy)" style={{ background: '#0B0F17' }}>Curoai 2026-0.4</option>
+                  <option value="OpenAI Realtime (Echo)" style={{ background: '#0B0F17' }}>Curoai 2026-0.5</option>
+                  <option value="ElevenLabs (Rachel - Expressive)" style={{ background: '#0B0F17' }}>Curoai 2026-0.6</option>
                 </select>
               </div>
             </div>
@@ -924,32 +924,30 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
                 <Upload size={15} color="#38BDF8" />
                 <span>Target Audience (CSV Upload)</span>
               </div>
-              {fileName && (
-                <button
-                  type="button"
-                  onClick={handleDownloadUploadedCsv}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    padding: '5px 12px',
-                    borderRadius: 6,
-                    background: 'rgba(56, 189, 248, 0.1)',
-                    border: '1px solid rgba(56, 189, 248, 0.28)',
-                    color: '#38BDF8',
-                    fontSize: '0.76rem',
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    transition: 'all 0.15s ease',
-                  }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(56, 189, 248, 0.2)')}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)')}
-                  title={`Download uploaded file: ${fileName}`}
-                >
-                  <Download size={13} />
-                  <span>Download CSV</span>
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={handleDownloadCsvFormat}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '5px 12px',
+                  borderRadius: 6,
+                  background: 'rgba(56, 189, 248, 0.1)',
+                  border: '1px solid rgba(56, 189, 248, 0.28)',
+                  color: '#38BDF8',
+                  fontSize: '0.76rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(56, 189, 248, 0.2)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)')}
+                title="Download CSV format template"
+              >
+                <Download size={13} />
+                <span>Download CSV Format</span>
+              </button>
             </div>
 
             {/* CSV File Upload */}

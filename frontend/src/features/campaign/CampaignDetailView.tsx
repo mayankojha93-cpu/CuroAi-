@@ -63,6 +63,14 @@ const formatContactDuration = (seconds?: number): string => {
   return `${m}:${s < 10 ? '0' : ''}${s}`;
 };
 
+const VOICE_PIPELINE_DISPLAY_MAP: Record<string, string> = {
+  'Sarvam AI (Priya - hi-IN)': 'Curoai 2026-0.2',
+  'Sarvam AI (Arvind - hi-IN)': 'Curoai 2026-0.3',
+  'OpenAI Realtime (Alloy)': 'Curoai 2026-0.4',
+  'OpenAI Realtime (Echo)': 'Curoai 2026-0.5',
+  'ElevenLabs (Rachel - Expressive)': 'Curoai 2026-0.6',
+};
+
 const formatLastCalled = (isoString?: string): string => {
   if (!isoString) return '—';
   try {
@@ -2166,7 +2174,7 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
             <div style={{ background: '#080A10', padding: 14, borderRadius: 8, border: '1px solid rgba(255, 255, 255, 0.05)' }}>
               <div style={{ fontSize: '0.74rem', color: '#64748B' }}>Language & Voice Pipeline</div>
               <div style={{ fontSize: '0.92rem', color: '#FFFFFF', fontWeight: 600, marginTop: 4 }}>
-                {currentCampaign.language || 'Hindi (hi-IN)'} • {currentCampaign.voice_pipeline || 'Sarvam AI (Priya - hi-IN)'}
+                {currentCampaign.language || 'Hindi (hi-IN)'} • {VOICE_PIPELINE_DISPLAY_MAP[currentCampaign.voice_pipeline || ''] || currentCampaign.voice_pipeline || 'curoai2026-0.2'}
               </div>
             </div>
 
