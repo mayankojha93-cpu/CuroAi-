@@ -11,7 +11,30 @@ export interface ParsedTelecomLead {
   subs_del_no?: string;
   service_end_date?: string;
   r_date?: string;
+  check_status?: string;
   check?: string;
+  cust_email?: string;
+  customer_identifier?: string;
+  alternate_phones?: string[];
+  alternate_phone?: string;
+  pincode?: string;
+  zone?: string;
+  town_flag?: string;
+  service_city?: string;
+  disconnection_reason?: string;
+  circle_new?: string;
+  circle_new20?: string;
+  allocated_to?: string;
+  product_name?: string;
+}
+
+/**
+ * Extracts a 6-digit Indian PIN code from an address string if present.
+ */
+export function extractPincode(address?: string | null): string {
+  if (!address) return '';
+  const match = address.match(/\b([1-9][0-9]{5})\b/);
+  return match ? match[1] : '';
 }
 
 /**
@@ -154,35 +177,76 @@ export function parseCsvRows(csvText: string): string[][] {
 
 /**
  * Maps CSV headers to lead fields flexibly:
- * Supports columns from sample:
- * "R. Date", "Check", "SUBS_DEL_NO", "ACCOUNT_NO", "SERVICE_END", "Address"
+ * Supports target columns:
+ * "R. DATE", "SUBS_DEL_NO", "SERVICE_END", "ADDRESS", "CUST_EMAIL",
+ * "CONTACT_PHONE" (multiple: CONTACT_PHONE1, CONTACT_PHONE2, etc.), "SUBS_NAME", "CUSTOMER_IDENTIFER"
  */
 export function parseCsvToLeads(csvText: string): ParsedTelecomLead[] {
   const rows = parseCsvRows(csvText);
   if (rows.length < 2) return [];
 
-  const headers = rows[0].map(h => h.trim().toLowerCase().replace(/[\s\._\-]/g, ''));
+  const rawHeaders = rows[0];
+  const normalizedHeaders = rawHeaders.map(h => h.trim().toLowerCase().replace(/[\s\._\-]/g, ''));
   const headerMap: Record<string, number> = {};
+  const phoneCols: number[] = [];
 
-  headers.forEach((header, index) => {
+  normalizedHeaders.forEach((header, index) => {
     if (header.includes('rdate') || header === 'rdate' || header === 'date') {
       headerMap['r_date'] = index;
-    } else if (header.includes('subsdel') || header.includes('subscriber') || header === 'wifiid') {
+    } else if (header.includes('subsdel') || header.includes('subscriberdel') || header === 'wifiid' || header.includes('subsno')) {
       headerMap['subs_del_no'] = index;
-    } else if (header.includes('account') || header.includes('accno')) {
+    } else if (header.includes('customerident') || header.includes('custident') || header.includes('identifier')) {
+      headerMap['customer_identifier'] = index;
+      if (headerMap['account_no'] === undefined) headerMap['account_no'] = index;
+    } else if (header.includes('account') || header.includes('accno') || header.includes('custid')) {
       headerMap['account_no'] = index;
+      if (headerMap['customer_identifier'] === undefined) headerMap['customer_identifier'] = index;
     } else if (header.includes('serviceend') || header.includes('enddate') || header === 'serviceend') {
       headerMap['service_end_date'] = index;
-    } else if (header.includes('address') || header.includes('addr')) {
+    } else if (header.includes('address') || header === 'addr') {
       headerMap['address'] = index;
-    } else if (header.includes('phone') || header.includes('mobile') || header.includes('contact')) {
-      headerMap['phone'] = index;
-    } else if (header.includes('name') || header.includes('customer')) {
+    } else if (header.includes('servicecity') || header === 'city') {
+      headerMap['service_city'] = index;
+    } else if (header.includes('disconnection') || header.includes('reason')) {
+      headerMap['disconnection_reason'] = index;
+    } else if (header.includes('townflag') || header.includes('town')) {
+      headerMap['town_flag'] = index;
+    } else if (header.includes('circlenew20')) {
+      headerMap['circle_new20'] = index;
+    } else if (header.includes('circlenew') || header.includes('circle')) {
+      headerMap['circle_new'] = index;
+    } else if (header.includes('pincode') || header.includes('pin') || header.includes('postal') || header.includes('zip')) {
+      headerMap['pincode'] = index;
+    } else if (header.includes('zone')) {
+      headerMap['zone'] = index;
+    } else if (header.includes('allocated') || header.includes('allocate')) {
+      headerMap['allocated_to'] = index;
+    } else if (header.includes('email') || header.includes('mail')) {
+      headerMap['cust_email'] = index;
+    } else if (header.includes('subsname') || header.includes('subscribername') || header.includes('customername') || header === 'name' || header === 'subs_name') {
       headerMap['name'] = index;
     } else if (header.includes('check')) {
       headerMap['check'] = index;
+    } else if (header.includes('phone') || header.includes('mobile') || header.includes('contact')) {
+      phoneCols.push(index);
     }
   });
+
+  // If no columns were explicitly identified as phone, check any unmapped columns containing 'number' or 'tel'
+  if (phoneCols.length === 0) {
+    normalizedHeaders.forEach((header, index) => {
+      if (header.includes('phone') || header.includes('mobile') || header.includes('contact') || header.includes('number') || header.includes('tel')) {
+        if (
+          index !== headerMap['subs_del_no'] &&
+          index !== headerMap['customer_identifier'] &&
+          index !== headerMap['account_no'] &&
+          index !== headerMap['pincode']
+        ) {
+          phoneCols.push(index);
+        }
+      }
+    });
+  }
 
   const leads: ParsedTelecomLead[] = [];
 
@@ -190,32 +254,82 @@ export function parseCsvToLeads(csvText: string): ParsedTelecomLead[] {
     const row = rows[i];
     const subsDelNo = headerMap['subs_del_no'] !== undefined ? row[headerMap['subs_del_no']] : '';
     const accountNo = headerMap['account_no'] !== undefined ? row[headerMap['account_no']] : '';
+    const customerIdentifier = headerMap['customer_identifier'] !== undefined ? row[headerMap['customer_identifier']] : '';
     const rawAddress = headerMap['address'] !== undefined ? row[headerMap['address']] : '';
-    const rawPhone = headerMap['phone'] !== undefined ? row[headerMap['phone']] : '';
     const rawName = headerMap['name'] !== undefined ? row[headerMap['name']] : '';
+    const rawEmail = headerMap['cust_email'] !== undefined ? row[headerMap['cust_email']] : '';
     const rawRDate = headerMap['r_date'] !== undefined ? row[headerMap['r_date']] : '';
     const rawServiceEnd = headerMap['service_end_date'] !== undefined ? row[headerMap['service_end_date']] : '';
     const rawCheck = headerMap['check'] !== undefined ? row[headerMap['check']] : '';
+    const rawPincode = headerMap['pincode'] !== undefined ? row[headerMap['pincode']] : '';
+    const rawZone = headerMap['zone'] !== undefined ? row[headerMap['zone']] : '';
+    const rawTownFlag = headerMap['town_flag'] !== undefined ? row[headerMap['town_flag']] : '';
+    const rawServiceCity = headerMap['service_city'] !== undefined ? row[headerMap['service_city']] : '';
+    const rawDisconnectionReason = headerMap['disconnection_reason'] !== undefined ? row[headerMap['disconnection_reason']] : '';
+    const rawCircleNew = headerMap['circle_new'] !== undefined ? row[headerMap['circle_new']] : '';
+    const rawCircleNew20 = headerMap['circle_new20'] !== undefined ? row[headerMap['circle_new20']] : '';
+    const rawAllocatedTo = headerMap['allocated_to'] !== undefined ? row[headerMap['allocated_to']] : '';
 
-    if (!subsDelNo && !accountNo && !rawAddress && !rawPhone) {
+    // Collect all candidate phones from all phone columns for this row
+    const candidatePhones: string[] = [];
+    for (const pIdx of phoneCols) {
+      if (row[pIdx] && row[pIdx].trim()) {
+        candidatePhones.push(row[pIdx].trim());
+      }
+    }
+
+    if (!subsDelNo && !accountNo && !rawAddress && candidatePhones.length === 0) {
       continue;
     }
 
-    const phone = normalizePhone(rawPhone, subsDelNo);
+    // Validate and normalize all phones
+    const validPhones: string[] = [];
+    for (const rawP of candidatePhones) {
+      const norm = normalizePhone(rawP);
+      if (norm && norm !== '+910000000000' && !validPhones.includes(norm)) {
+        validPhones.push(norm);
+      }
+    }
+
+    // Fallback to subsDelNo if no valid phone found in phone columns
+    if (validPhones.length === 0 && subsDelNo) {
+      const fromSubs = normalizePhone(undefined, subsDelNo);
+      if (fromSubs && fromSubs !== '+910000000000') {
+        validPhones.push(fromSubs);
+      }
+    }
+
+    const primaryPhone = validPhones[0] || '';
+    const altPhones = validPhones.slice(1);
     const serviceEndDate = normalizeDate(rawServiceEnd) || undefined;
     const rDate = normalizeDate(rawRDate) || undefined;
     const name = rawName.trim() || 'Airtel Subscriber';
     const address = rawAddress.trim() || 'Address On Record';
+    const pincode = rawPincode.trim() || extractPincode(address) || undefined;
 
     leads.push({
       name,
-      phone,
+      phone: primaryPhone,
+      alternate_phones: altPhones.length > 0 ? altPhones : undefined,
+      alternate_phone: altPhones[0] || undefined,
       address,
+      cust_email: rawEmail.trim() || undefined,
+      customer_identifier: customerIdentifier.trim() || undefined,
       subs_del_no: subsDelNo || undefined,
-      account_no: accountNo || undefined,
+      account_no: accountNo || customerIdentifier.trim() || undefined,
       service_end_date: serviceEndDate,
       r_date: rDate,
-      check: rawCheck || undefined,
+      check_status: rawCheck.trim() || undefined,
+      check: rawCheck.trim() || undefined,
+      pincode,
+      zone: rawZone.trim() || undefined,
+      town_flag: rawTownFlag.trim() || undefined,
+      service_city: rawServiceCity.trim() || undefined,
+      disconnection_reason: rawDisconnectionReason.trim() || undefined,
+      circle_new: rawCircleNew.trim() || undefined,
+      circle_new20: rawCircleNew20.trim() || undefined,
+      allocated_to: rawAllocatedTo.trim() || undefined,
+      product_name: 'Airtel IP TV',
       language: 'hi',
     });
   }
