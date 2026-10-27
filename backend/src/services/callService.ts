@@ -11,7 +11,7 @@ import { pool, query } from '../db/index.js';
 import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { AppError } from '../middleware/errorHandler.js';
-import { normalizeDate, normalizePhone } from '../utils/csvParser.js';
+import { normalizeDate, normalizePhone, extractPincode } from '../utils/csvParser.js';
 import {
   matchCanonicalDisposition,
   isTerminalDisposition,
@@ -75,6 +75,20 @@ export interface LeadInput {
   service_end_date?: string;
   r_date?: string;
   check?: string;
+  check_status?: string;
+  cust_email?: string;
+  customer_identifier?: string;
+  alternate_phones?: string[];
+  alternate_phone?: string;
+  pincode?: string;
+  zone?: string;
+  town_flag?: string;
+  service_city?: string;
+  disconnection_reason?: string;
+  circle_new?: string;
+  circle_new20?: string;
+  allocated_to?: string;
+  product_name?: string;
 }
 
 // A call in 'initiated' / 'dialing' / 'answered' younger than this blocks another dial to the same customer
@@ -779,12 +793,29 @@ export class CallService {
       const name = (lead.name && lead.name.trim()) || 'Airtel Subscriber';
       const address = (lead.address && lead.address.trim()) || 'Address On Record';
 
+      const custEmail = lead.cust_email || null;
+      const custIdentifier = lead.customer_identifier || lead.account_no || null;
+      const altPhones = Array.isArray(lead.alternate_phones) && lead.alternate_phones.length > 0 ? lead.alternate_phones : (lead.alternate_phone ? [lead.alternate_phone] : null);
+      const primaryAlt = lead.alternate_phone || (altPhones && altPhones[0]) || null;
+      const pincode = (lead.pincode && lead.pincode.trim()) || extractPincode(address) || null;
+      const zone = (lead.zone && lead.zone.trim()) || null;
+      const townFlag = (lead.town_flag && lead.town_flag.trim()) || null;
+      const serviceCity = (lead.service_city && lead.service_city.trim()) || null;
+      const disconnectionReason = (lead.disconnection_reason && lead.disconnection_reason.trim()) || null;
+      const circleNew = (lead.circle_new && lead.circle_new.trim()) || null;
+      const circleNew20 = (lead.circle_new20 && lead.circle_new20.trim()) || null;
+      const allocatedTo = (lead.allocated_to && lead.allocated_to.trim()) || null;
+      const checkStatus = (lead.check_status || lead.check || '').trim() || null;
+      const productName = (lead.product_name && lead.product_name.trim()) || 'Airtel IP TV';
+
       const res = await query(
         `INSERT INTO customers (
            name, phone, address, language, account_no, subs_del_no, service_end_date, r_date,
+           cust_email, customer_identifier, alternate_phones, alternate_phone,
+           pincode, zone, town_flag, service_city, disconnection_reason, circle_new, circle_new20, allocated_to, check_status, product_name,
            total_attempts, max_attempts, next_attempt_time
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 3, NOW())
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, 0, 3, NOW())
          ON CONFLICT (phone)
          DO UPDATE SET
            name = EXCLUDED.name,
@@ -792,17 +823,45 @@ export class CallService {
            account_no = COALESCE(EXCLUDED.account_no, customers.account_no),
            subs_del_no = COALESCE(EXCLUDED.subs_del_no, customers.subs_del_no),
            service_end_date = COALESCE(EXCLUDED.service_end_date, customers.service_end_date),
-           r_date = COALESCE(EXCLUDED.r_date, customers.r_date)
+           r_date = COALESCE(EXCLUDED.r_date, customers.r_date),
+           cust_email = COALESCE(EXCLUDED.cust_email, customers.cust_email),
+           customer_identifier = COALESCE(EXCLUDED.customer_identifier, customers.customer_identifier),
+           alternate_phones = COALESCE(EXCLUDED.alternate_phones, customers.alternate_phones),
+           alternate_phone = COALESCE(EXCLUDED.alternate_phone, customers.alternate_phone),
+           pincode = COALESCE(EXCLUDED.pincode, customers.pincode),
+           zone = COALESCE(EXCLUDED.zone, customers.zone),
+           town_flag = COALESCE(EXCLUDED.town_flag, customers.town_flag),
+           service_city = COALESCE(EXCLUDED.service_city, customers.service_city),
+           disconnection_reason = COALESCE(EXCLUDED.disconnection_reason, customers.disconnection_reason),
+           circle_new = COALESCE(EXCLUDED.circle_new, customers.circle_new),
+           circle_new20 = COALESCE(EXCLUDED.circle_new20, customers.circle_new20),
+           allocated_to = COALESCE(EXCLUDED.allocated_to, customers.allocated_to),
+           check_status = COALESCE(EXCLUDED.check_status, customers.check_status),
+           product_name = COALESCE(EXCLUDED.product_name, customers.product_name)
          RETURNING *`,
         [
           name,
           normalizedPhone,
           address,
           lead.language || 'hi',
-          lead.account_no || null,
+          lead.account_no || custIdentifier || null,
           lead.subs_del_no || null,
           normalizedServiceEnd,
           normalizedRDate,
+          custEmail,
+          custIdentifier,
+          altPhones,
+          primaryAlt,
+          pincode,
+          zone,
+          townFlag,
+          serviceCity,
+          disconnectionReason,
+          circleNew,
+          circleNew20,
+          allocatedTo,
+          checkStatus,
+          productName,
         ]
       );
       inserted.push(serializeCustomer(res.rows[0]));
