@@ -315,7 +315,7 @@ export async function startCampaignCalls(campaignId: string): Promise<{
  */
 export async function uploadCampaignContacts(
   campaignId: string,
-  contacts: (string | { phone: string; name?: string; email?: string })[]
+  contacts: (string | any)[]
 ): Promise<{
   success: boolean;
   message: string;
@@ -401,9 +401,15 @@ export interface CampaignReportRow {
   customer_name: string;
   product_name: string;
   address: string;
+  pincode?: string;
+  service_end?: string;
+  account_no?: string;
+  zone?: string;
+  town_flag?: string;
   status: string;
   attempts_count: number;
   connected_attempts_count: number;
+  first_call_time?: string;
   last_call_time: string;
   attempt_1_disposition: string;
   attempt_2_disposition: string;
