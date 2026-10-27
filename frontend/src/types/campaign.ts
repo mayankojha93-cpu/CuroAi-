@@ -64,7 +64,7 @@ export interface CampaignItem {
   retry_delay_minutes?: number;
   max_call_duration_minutes?: number;
   expected_dispositions?: string[];
-  contacts?: string[];
+  contacts?: (string | Record<string, any>)[];
   created_at?: string;
   updated_at?: string;
 }
