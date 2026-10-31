@@ -18,6 +18,7 @@ const envSchema = z.object({
   JWT_EXPIRES_IN: z.string().default('24h'),
   DEFAULT_ADMIN_EMAIL: z.string().default('admin@curoai.in'),
   DEFAULT_ADMIN_PASSWORD: z.string().default('admin12345'),
+  OPENROUTER_API_KEY: z.string().optional().default(''),
 
   // LiveKit credentials
   LIVEKIT_URL: z.string().optional().default(''),
