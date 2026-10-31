@@ -63,6 +63,9 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
       setCompanyName(found.defaultOrg);
       if (found.id === 'my_estate_finder') {
         setSelectedPipeline('Sarvam AI (Aditya - hi-IN)');
+        if (selectedLanguage === 'Hindi') {
+          setSelectedLanguage('Hinglish');
+        }
       } else if (found.id === 'airtel_return') {
         setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
       }
@@ -117,7 +120,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
     const formattedPhone = cleanPhone.startsWith('+') ? cleanPhone : `+91${cleanPhone.replace(/\D/g, '')}`;
 
     try {
-      const langCode = selectedLanguage === 'Hindi' ? 'hi' : (selectedLanguage === 'English' ? 'en' : 'en');
+      const langCode = (selectedLanguage === 'Hindi' || selectedLanguage === 'Hinglish') ? 'hi' : 'en';
       const res = await initiateTestCall({
         phone: formattedPhone,
         customer_name: customerName.trim() || undefined,
@@ -589,7 +592,13 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                         cursor: 'pointer',
                       }}
                     >
-                      {LANGUAGES.map((l) => (
+                      {LANGUAGES.filter((l) => {
+                        // For 2nd pipeline (Estate Finder), keep only English and Hinglish (remove Hindi)
+                        if (selectedScript.includes('Estate Finder') && l.id === 'hi') {
+                          return false;
+                        }
+                        return true;
+                      }).map((l) => (
                         <option key={l.id} value={l.label} style={{ background: '#0B0F19', color: '#FFFFFF' }}>
                           {l.label}
                         </option>
