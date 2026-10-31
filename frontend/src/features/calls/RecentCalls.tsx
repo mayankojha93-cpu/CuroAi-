@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Search, ChevronDown, FileText } from 'lucide-react';
+import { Search, ChevronDown, FileText, Volume2 } from 'lucide-react';
 import type { CallRecord } from '../../types';
 import { matchCanonicalDisposition } from '../campaign/CampaignDetailView';
 
@@ -340,38 +340,65 @@ export const RecentCalls: React.FC<RecentCallsProps> = ({ calls, onSelectCall })
                     </td>
 
                     {/* Action */}
-                    <td style={{ padding: '14px 16px', textAlign: 'right' }}>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onSelectCall(call);
-                        }}
-                        title="View Transcript & Audio"
-                        aria-label="View Transcript"
-                        style={{
-                          width: 30,
-                          height: 30,
-                          borderRadius: 6,
-                          background: 'rgba(37, 99, 235, 0.14)',
-                          border: '1px solid rgba(59, 130, 246, 0.3)',
-                          color: '#38BDF8',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          cursor: 'pointer',
-                          transition: 'all 0.15s ease',
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.background = 'rgba(37, 99, 235, 0.25)';
-                          e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.55)';
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.background = 'rgba(37, 99, 235, 0.14)';
-                          e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.3)';
-                        }}
-                      >
-                        <FileText size={14} />
-                      </button>
+                    <td style={{ padding: '14px 16px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6 }}>
+                        {call.recording_url ? (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onSelectCall(call);
+                            }}
+                            title="Call Recording Ready — Click to Listen"
+                            style={{
+                              width: 30,
+                              height: 30,
+                              borderRadius: 6,
+                              background: 'rgba(16, 185, 129, 0.14)',
+                              border: '1px solid rgba(16, 185, 129, 0.3)',
+                              color: '#10B981',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              cursor: 'pointer',
+                              transition: 'all 0.15s ease',
+                            }}
+                          >
+                            <Volume2 size={14} />
+                          </button>
+                        ) : null}
+
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onSelectCall(call);
+                          }}
+                          title="View Transcript & Details"
+                          aria-label="View Transcript"
+                          style={{
+                            width: 30,
+                            height: 30,
+                            borderRadius: 6,
+                            background: 'rgba(37, 99, 235, 0.14)',
+                            border: '1px solid rgba(59, 130, 246, 0.3)',
+                            color: '#38BDF8',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            cursor: 'pointer',
+                            transition: 'all 0.15s ease',
+                          }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.background = 'rgba(37, 99, 235, 0.25)';
+                            e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.55)';
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.background = 'rgba(37, 99, 235, 0.14)';
+                            e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.3)';
+                          }}
+                        >
+                          <FileText size={14} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
