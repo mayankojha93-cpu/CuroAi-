@@ -218,14 +218,28 @@ async def entrypoint(ctx: agents.JobContext):
         turn_handling=TurnHandlingOptions(**turn_opts),
     )
 
+    _room_deleted = False
+    _shutdown_in_progress = False
+
     async def _end_room():
+        nonlocal _room_deleted
+        if _room_deleted:
+            return
+        _room_deleted = True
         try:
             await ctx.api.room.delete_room(api.DeleteRoomRequest(room=ctx.room.name))
             logger.info(f"Room {ctx.room.name} deleted: call terminated cleanly.")
         except Exception as e:
-            logger.warning(f"delete_room failed: {e}")
+            if "not_found" in str(e).lower() or "404" in str(e):
+                logger.debug(f"Room {ctx.room.name} was already deleted.")
+            else:
+                logger.warning(f"delete_room failed: {e}")
 
     async def _save_and_shutdown():
+        nonlocal _shutdown_in_progress
+        if _shutdown_in_progress:
+            return
+        _shutdown_in_progress = True
         if not state.outcome_posted and state.call_id:
             await asyncio.to_thread(post_re_outcome_sync, state)
             state.outcome_posted = True
