@@ -29,7 +29,7 @@ ON CONFLICT (id) DO UPDATE SET
   pipeline = 'real_estate';
 
 -- Seed sample calls for Real Estate pipeline
-INSERT INTO calls (id, re_lead_id, campaign_id, pipeline, script, company_name, voice_pipeline, status, call_status, duration_seconds, is_test_call, created_at, answered_at, ended_at)
+INSERT INTO calls (id, re_lead_id, campaign_id, pipeline, script, company_name, voice_pipeline, status, call_status, duration_seconds, is_test_call, room_name, created_at, answered_at, ended_at)
 VALUES
   (
     'c45dbb98-d114-4915-a057-60953ebe6a54',
@@ -43,6 +43,7 @@ VALUES
     'Abruptly Disconnected Call',
     175,
     TRUE,
+    're-call-c45dbb98-d114-4915-a057-60953ebe6a54',
     NOW() - INTERVAL '4 hours',
     NOW() - INTERVAL '4 hours' + INTERVAL '5 seconds',
     NOW() - INTERVAL '4 hours' + INTERVAL '180 seconds'
@@ -59,6 +60,7 @@ VALUES
     'Qualified Lead',
     131,
     TRUE,
+    're-call-c45dbb98-d114-4915-a057-60953ebe6a55',
     NOW() - INTERVAL '5 hours',
     NOW() - INTERVAL '5 hours' + INTERVAL '5 seconds',
     NOW() - INTERVAL '5 hours' + INTERVAL '136 seconds'
@@ -75,6 +77,7 @@ VALUES
     'Schedule Callback',
     123,
     TRUE,
+    're-call-c45dbb98-d114-4915-a057-60953ebe6a56',
     NOW() - INTERVAL '1 day',
     NOW() - INTERVAL '1 day' + INTERVAL '5 seconds',
     NOW() - INTERVAL '1 day' + INTERVAL '128 seconds'
@@ -91,6 +94,7 @@ VALUES
     'Not Interested',
     38,
     TRUE,
+    're-call-c45dbb98-d114-4915-a057-60953ebe6a57',
     NOW() - INTERVAL '1 day' - INTERVAL '2 hours',
     NOW() - INTERVAL '1 day' - INTERVAL '2 hours' + INTERVAL '5 seconds',
     NOW() - INTERVAL '1 day' - INTERVAL '2 hours' + INTERVAL '43 seconds'
