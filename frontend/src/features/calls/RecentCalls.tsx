@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { Search, ChevronDown, FileText, Volume2 } from 'lucide-react';
 import type { CallRecord } from '../../types';
 import { matchCanonicalDisposition } from '../campaign/CampaignDetailView';
+import { cleanEnglishOnly } from '../../utils/textUtils';
 
 interface RecentCallsProps {
   calls: CallRecord[];
@@ -232,9 +233,12 @@ export const RecentCalls: React.FC<RecentCallsProps> = ({ calls, onSelectCall })
                 );
 
                 const phoneDisplay = maskPhone(call.customer_phone || (call as any).phone);
-                const contactHeader = isRealEstateCall && call.customer_name ? `${call.customer_name}` : phoneDisplay;
-                const contactSub = isRealEstateCall && call.customer_name
-                  ? `${phoneDisplay} • ${(call as any).re_project_or_society || (call as any).re_category || 'Property Intake'}`
+                const cleanCustomerName = cleanEnglishOnly(call.customer_name || (call as any).name || (call as any).owner_name_confirmed);
+                const cleanProjectSociety = cleanEnglishOnly((call as any).re_project_or_society);
+
+                const contactHeader = isRealEstateCall && cleanCustomerName ? cleanCustomerName : (cleanCustomerName || phoneDisplay);
+                const contactSub = isRealEstateCall && cleanCustomerName
+                  ? `${phoneDisplay} • ${cleanProjectSociety || (call as any).re_category || 'Property Intake'}`
                   : (call.subs_del_no || (call as any).contact_ref || '—');
 
                 const campName = (call as any).campaign_name || (isRealEstateCall ? 'My Estate Finder' : 'Direct Voice Outreach');
@@ -247,7 +251,8 @@ export const RecentCalls: React.FC<RecentCallsProps> = ({ calls, onSelectCall })
                     ? matchCanonicalDisposition(rawResult, call.duration_seconds, call.status)
                     : (normStatus === 'SUCCESSFUL' ? 'Confirmed For Pickup' : (normStatus === 'NO_ANSWER' ? 'Not Connected (No Answer)' : 'Not Connected (Failed)')));
 
-                const langText = (call as any).language === 'en' || (call as any).customer_language === 'en' ? 'English' : 'Hindi';
+                const isEnglish = (call as any).language === 'en' || (call as any).customer_language === 'en';
+                const langText = isEnglish ? 'English' : (isRealEstateCall ? 'Hinglish' : 'Hindi');
                 const durationText = formatDuration(call.duration_seconds);
                 const timeText = (call as any).formatted_time || formatTime(call.created_at);
 
