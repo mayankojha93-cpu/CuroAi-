@@ -6,6 +6,51 @@ import {
   TERMINAL_DISPOSITIONS,
   matchCanonicalDisposition,
 } from '../utils/dispositions.js';
+import { normalizeDate, extractPincode } from '../utils/csvParser.js';
+
+function formatDateTime(val: any): string {
+  if (!val) return '';
+  const d = new Date(val);
+  if (isNaN(d.getTime())) {
+    const s = String(val).replace('T', ' ');
+    const m = s.match(/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}/);
+    return m ? m[0] : s;
+  }
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hr = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${y}-${m}-${day} ${hr}:${min}`;
+}
+
+function formatDateOnly(val: any): string {
+  if (!val) return '';
+  const s = String(val).trim();
+  const m = s.match(/^\d{4}-\d{2}-\d{2}/);
+  if (m) return m[0];
+  const d = new Date(val);
+  if (isNaN(d.getTime())) return s;
+  const y = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${month}-${day}`;
+}
+
+function formatMobileNumber(phone?: string | null): string {
+  if (!phone) return '';
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length === 12 && digits.startsWith('91')) {
+    return digits.slice(2);
+  }
+  if (digits.length === 11 && digits.startsWith('0')) {
+    return digits.slice(1);
+  }
+  if (digits.length === 10) {
+    return digits;
+  }
+  return phone.replace(/^\+91/, '').replace(/^\+/, '');
+}
 
 export type CampaignStatus = 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'STOPPED' | 'Running' | 'Paused' | 'Completed' | 'Stopped';
 
@@ -150,24 +195,37 @@ export class CampaignService {
     expected_dispositions?: string[];
     total_contacts?: number;
     total_credits?: number;
-    contacts?: string[];
+    contacts?: (string | {
+      phone: string;
+      name?: string;
+      address?: string;
+      cust_email?: string;
+      email?: string;
+      customer_identifier?: string;
+      subs_del_no?: string;
+      service_end_date?: string;
+      r_date?: string;
+      alternate_phones?: string[];
+      alternate_phone?: string;
+    })[];
   }): Promise<CampaignDbRow> {
     const status = (data.status || 'RUNNING').toUpperCase();
     
     // Deduplicate phone numbers and discard any < 10 digits
     const rawList = Array.isArray(data.contacts) ? data.contacts : [];
-    const uniquePhones: string[] = [];
+    const uniqueContacts: any[] = [];
     const seen = new Set<string>();
 
-    for (const raw of rawList) {
-      const norm = normalizePhoneNumber(raw);
+    for (const item of rawList) {
+      const rawPhone = typeof item === 'string' ? item : item?.phone;
+      const norm = normalizePhoneNumber(rawPhone);
       if (norm && !seen.has(norm)) {
         seen.add(norm);
-        uniquePhones.push(norm);
+        uniqueContacts.push(typeof item === 'string' ? { phone: norm } : { ...item, phone: norm });
       }
     }
 
-    const totalContacts = uniquePhones.length > 0 ? uniquePhones.length : (data.total_contacts || 0);
+    const totalContacts = uniqueContacts.length > 0 ? uniqueContacts.length : (data.total_contacts || 0);
     const totalCredits = data.total_credits !== undefined && data.total_credits !== null ? Number(data.total_credits) : totalContacts;
     const retryAttempts = data.retry_attempts !== undefined && data.retry_attempts !== null ? Number(data.retry_attempts) : 3;
     const retryDelayMinutes = data.retry_delay_minutes !== undefined && data.retry_delay_minutes !== null ? Number(data.retry_delay_minutes) : 180;
@@ -207,22 +265,92 @@ export class CampaignService {
     ]);
     const campaign = res.rows[0];
 
-    // Insert deduplicated contacts linked to this campaign
-    if (uniquePhones.length > 0) {
+    // Insert deduplicated contacts linked to this campaign with full CSV metadata
+    if (uniqueContacts.length > 0) {
       const custLang = data.language ? data.language.slice(0, 2).toLowerCase() : 'hi';
-      for (const phone of uniquePhones) {
+      for (const item of uniqueContacts) {
         try {
+          const normServiceEnd = normalizeDate(item.service_end_date);
+          const normRDate = normalizeDate(item.r_date);
+          const email = item.cust_email || item.email || null;
+          const altPhones = Array.isArray(item.alternate_phones) && item.alternate_phones.length > 0
+            ? item.alternate_phones
+            : (item.alternate_phone ? [item.alternate_phone] : null);
+          const primaryAlt = item.alternate_phone || (altPhones && altPhones[0]) || null;
+          const name = item.name && item.name.trim() ? item.name.trim() : `Contact ${item.phone.slice(-4)}`;
+          const address = item.address && item.address.trim() ? item.address.trim() : 'Address On Record';
+          const custId = item.customer_identifier || null;
+          const subsDel = item.subs_del_no || null;
+          const accountNo = item.account_no || custId || null;
+          const pincode = item.pincode || extractPincode(address) || null;
+          const zone = item.zone || null;
+          const townFlag = item.town_flag || null;
+          const serviceCity = item.service_city || null;
+          const disconnectionReason = item.disconnection_reason || null;
+          const circleNew = item.circle_new || null;
+          const circleNew20 = item.circle_new20 || null;
+          const allocatedTo = item.allocated_to || null;
+          const checkStatus = item.check_status || item.check || null;
+
           await pool.query(
             `INSERT INTO customers (
-               name, phone, address, language, total_attempts, max_attempts, next_attempt_time, campaign_id
+               name, phone, address, language, total_attempts, max_attempts, next_attempt_time, campaign_id,
+               subs_del_no, cust_email, customer_identifier, service_end_date, r_date, alternate_phones, alternate_phone,
+               account_no, pincode, zone, town_flag, service_city, disconnection_reason, circle_new, circle_new20, allocated_to, check_status, product_name
              )
-             VALUES ($1, $2, 'Address On Record', $3, 0, $4, NOW(), $5)
+             VALUES ($1, $2, $3, $4, 0, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, 'Airtel IP TV')
              ON CONFLICT (phone)
-             DO UPDATE SET campaign_id = EXCLUDED.campaign_id, max_attempts = EXCLUDED.max_attempts`,
-            [`Contact ${phone.slice(-4)}`, phone, custLang, retryAttempts, campaign.id]
+             DO UPDATE SET
+               campaign_id = EXCLUDED.campaign_id,
+               max_attempts = EXCLUDED.max_attempts,
+               name = CASE WHEN EXCLUDED.name != 'Airtel Subscriber' AND EXCLUDED.name NOT LIKE 'Contact %' THEN EXCLUDED.name ELSE customers.name END,
+               address = CASE WHEN EXCLUDED.address != 'Address On Record' THEN EXCLUDED.address ELSE customers.address END,
+               subs_del_no = COALESCE(EXCLUDED.subs_del_no, customers.subs_del_no),
+               cust_email = COALESCE(EXCLUDED.cust_email, customers.cust_email),
+               customer_identifier = COALESCE(EXCLUDED.customer_identifier, customers.customer_identifier),
+               service_end_date = COALESCE(EXCLUDED.service_end_date, customers.service_end_date),
+               r_date = COALESCE(EXCLUDED.r_date, customers.r_date),
+               alternate_phones = COALESCE(EXCLUDED.alternate_phones, customers.alternate_phones),
+               alternate_phone = COALESCE(EXCLUDED.alternate_phone, customers.alternate_phone),
+               account_no = COALESCE(EXCLUDED.account_no, customers.account_no),
+               pincode = COALESCE(EXCLUDED.pincode, customers.pincode),
+               zone = COALESCE(EXCLUDED.zone, customers.zone),
+               town_flag = COALESCE(EXCLUDED.town_flag, customers.town_flag),
+               service_city = COALESCE(EXCLUDED.service_city, customers.service_city),
+               disconnection_reason = COALESCE(EXCLUDED.disconnection_reason, customers.disconnection_reason),
+               circle_new = COALESCE(EXCLUDED.circle_new, customers.circle_new),
+               circle_new20 = COALESCE(EXCLUDED.circle_new20, customers.circle_new20),
+               allocated_to = COALESCE(EXCLUDED.allocated_to, customers.allocated_to),
+               check_status = COALESCE(EXCLUDED.check_status, customers.check_status),
+               product_name = COALESCE(EXCLUDED.product_name, customers.product_name)`,
+            [
+              name,
+              item.phone,
+              address,
+              custLang,
+              retryAttempts,
+              campaign.id,
+              subsDel,
+              email,
+              custId,
+              normServiceEnd,
+              normRDate,
+              altPhones,
+              primaryAlt,
+              accountNo,
+              pincode,
+              zone,
+              townFlag,
+              serviceCity,
+              disconnectionReason,
+              circleNew,
+              circleNew20,
+              allocatedTo,
+              checkStatus,
+            ]
           );
         } catch (err) {
-          logger.warn({ phone, err }, 'Failed to insert customer lead for campaign');
+          logger.warn({ phone: item.phone, err }, 'Failed to insert customer lead for campaign');
         }
       }
     }
@@ -502,21 +630,20 @@ export class CampaignService {
    */
   async addContactsToCampaign(
     campaignId: string,
-    contacts: (string | { phone: string; name?: string; email?: string })[]
+    contacts: (string | any)[]
   ): Promise<{ campaign: CampaignDbRow; addedCount: number; duplicatesCount: number; invalidCount: number }> {
     const campaign = await this.getCampaign(campaignId);
     if (!campaign) {
       throw new Error(`Campaign not found: ${campaignId}`);
     }
 
-    const validPhones: { phone: string; name?: string }[] = [];
+    const validContacts: any[] = [];
     const seen = new Set<string>();
     let invalidCount = 0;
     let duplicatesCount = 0;
 
     for (const item of contacts) {
-      const rawPhone = typeof item === 'string' ? item : item.phone;
-      const rawName = typeof item === 'object' ? item.name : undefined;
+      const rawPhone = typeof item === 'string' ? item : item?.phone;
       const norm = normalizePhoneNumber(rawPhone);
 
       if (!norm) {
@@ -528,24 +655,94 @@ export class CampaignService {
         continue;
       }
       seen.add(norm);
-      validPhones.push({ phone: norm, name: rawName });
+      validContacts.push(typeof item === 'string' ? { phone: norm } : { ...item, phone: norm });
     }
 
     const retryAttempts = campaign.retry_attempts || 3;
     const custLang = campaign.language ? campaign.language.slice(0, 2).toLowerCase() : 'hi';
     let addedCount = 0;
 
-    for (const entry of validPhones) {
+    for (const entry of validContacts) {
       try {
+        const normServiceEnd = normalizeDate(entry.service_end_date);
+        const normRDate = normalizeDate(entry.r_date);
+        const email = entry.cust_email || entry.email || null;
+        const altPhones = Array.isArray(entry.alternate_phones) && entry.alternate_phones.length > 0
+          ? entry.alternate_phones
+          : (entry.alternate_phone ? [entry.alternate_phone] : null);
+        const primaryAlt = entry.alternate_phone || (altPhones && altPhones[0]) || null;
+        const name = entry.name && entry.name.trim() ? entry.name.trim() : `Contact ${entry.phone.slice(-4)}`;
+        const address = entry.address && entry.address.trim() ? entry.address.trim() : 'Address On Record';
+        const custId = entry.customer_identifier || null;
+        const subsDel = entry.subs_del_no || null;
+        const accountNo = entry.account_no || custId || null;
+        const pincode = entry.pincode || extractPincode(address) || null;
+        const zone = entry.zone || null;
+        const townFlag = entry.town_flag || null;
+        const serviceCity = entry.service_city || null;
+        const disconnectionReason = entry.disconnection_reason || null;
+        const circleNew = entry.circle_new || null;
+        const circleNew20 = entry.circle_new20 || null;
+        const allocatedTo = entry.allocated_to || null;
+        const checkStatus = entry.check_status || entry.check || null;
+
         const ins = await pool.query(
           `INSERT INTO customers (
-             name, phone, address, language, total_attempts, max_attempts, next_attempt_time, campaign_id
+             name, phone, address, language, total_attempts, max_attempts, next_attempt_time, campaign_id,
+             subs_del_no, cust_email, customer_identifier, service_end_date, r_date, alternate_phones, alternate_phone,
+             account_no, pincode, zone, town_flag, service_city, disconnection_reason, circle_new, circle_new20, allocated_to, check_status, product_name
            )
-           VALUES ($1, $2, 'Address On Record', $3, 0, $4, NOW(), $5)
+           VALUES ($1, $2, $3, $4, 0, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, 'Airtel IP TV')
            ON CONFLICT (phone)
-           DO UPDATE SET campaign_id = EXCLUDED.campaign_id, max_attempts = EXCLUDED.max_attempts
+           DO UPDATE SET
+             campaign_id = EXCLUDED.campaign_id,
+             max_attempts = EXCLUDED.max_attempts,
+             name = CASE WHEN EXCLUDED.name != 'Airtel Subscriber' AND EXCLUDED.name NOT LIKE 'Contact %' THEN EXCLUDED.name ELSE customers.name END,
+             address = CASE WHEN EXCLUDED.address != 'Address On Record' THEN EXCLUDED.address ELSE customers.address END,
+             subs_del_no = COALESCE(EXCLUDED.subs_del_no, customers.subs_del_no),
+             cust_email = COALESCE(EXCLUDED.cust_email, customers.cust_email),
+             customer_identifier = COALESCE(EXCLUDED.customer_identifier, customers.customer_identifier),
+             service_end_date = COALESCE(EXCLUDED.service_end_date, customers.service_end_date),
+             r_date = COALESCE(EXCLUDED.r_date, customers.r_date),
+             alternate_phones = COALESCE(EXCLUDED.alternate_phones, customers.alternate_phones),
+             alternate_phone = COALESCE(EXCLUDED.alternate_phone, customers.alternate_phone),
+             account_no = COALESCE(EXCLUDED.account_no, customers.account_no),
+             pincode = COALESCE(EXCLUDED.pincode, customers.pincode),
+             zone = COALESCE(EXCLUDED.zone, customers.zone),
+             town_flag = COALESCE(EXCLUDED.town_flag, customers.town_flag),
+             service_city = COALESCE(EXCLUDED.service_city, customers.service_city),
+             disconnection_reason = COALESCE(EXCLUDED.disconnection_reason, customers.disconnection_reason),
+             circle_new = COALESCE(EXCLUDED.circle_new, customers.circle_new),
+             circle_new20 = COALESCE(EXCLUDED.circle_new20, customers.circle_new20),
+             allocated_to = COALESCE(EXCLUDED.allocated_to, customers.allocated_to),
+             check_status = COALESCE(EXCLUDED.check_status, customers.check_status),
+             product_name = COALESCE(EXCLUDED.product_name, customers.product_name)
            RETURNING id`,
-          [entry.name || `Contact ${entry.phone.slice(-4)}`, entry.phone, custLang, retryAttempts, campaignId]
+          [
+            name,
+            entry.phone,
+            address,
+            custLang,
+            retryAttempts,
+            campaignId,
+            subsDel,
+            email,
+            custId,
+            normServiceEnd,
+            normRDate,
+            altPhones,
+            primaryAlt,
+            accountNo,
+            pincode,
+            zone,
+            townFlag,
+            serviceCity,
+            disconnectionReason,
+            circleNew,
+            circleNew20,
+            allocatedTo,
+            checkStatus,
+          ]
         );
         if (ins.rows.length > 0) {
           addedCount++;
@@ -596,6 +793,12 @@ export class CampaignService {
         cu.name as customer_name,
         cu.product_name,
         cu.address,
+        cu.pincode,
+        cu.service_end_date,
+        cu.account_no,
+        cu.customer_identifier,
+        cu.zone,
+        cu.town_flag,
         cu.is_closed,
         cu.current_disposition,
         cu.total_attempts,
@@ -632,21 +835,35 @@ export class CampaignService {
       const callsRes = await pool.query(callsQuery, [lead.lead_id]);
       const calls = callsRes.rows;
 
+      const attemptsCount = Math.max(lead.total_attempts || 0, calls.length);
+
       // Build attempt dispositions (up to 8)
       const attemptDispositions: (string | null)[] = Array(8).fill(null);
       let connectedCount = 0;
+      let firstCallTime: string | null = null;
       let lastCallTime: string | null = null;
       let lastRecordingUrl: string | null = null;
       let finalDisposition: string | null = lead.current_disposition || null;
       let conclusionDate: string | null = null;
 
+      if (calls.length > 1 && calls[0].call_time) {
+        firstCallTime = calls[0].call_time;
+      }
+
       for (let i = 0; i < calls.length; i++) {
         const call = calls[i];
-        // Map to attempt index (0-based for array, but attempt_number is 1-based)
-        const attemptIdx = i < 8 ? i : 7; // Cap at 8 attempts
         const rawDisp = call.outcome_disposition || call.disposition || call.call_status || '';
         const canonical = rawDisp ? matchCanonicalDisposition(rawDisp, call.duration_seconds, call.call_status) : '';
-        attemptDispositions[attemptIdx] = canonical || rawDisp || null;
+        const dispText = canonical || rawDisp || null;
+
+        // Slot attempt disposition into the correct attempt position (1-based to 0-based)
+        // If a call has an explicit attempt_number (e.g. 7), slot at index 6
+        // If only 1 call is logged but total_attempts > 1, slot at attemptsCount - 1
+        const attemptNum = typeof call.attempt_number === 'number' && call.attempt_number >= 1
+          ? call.attempt_number
+          : (calls.length === 1 && attemptsCount > 1 ? attemptsCount : (i + 1));
+        const attemptIdx = Math.min(Math.max(attemptNum - 1, 0), 7);
+        attemptDispositions[attemptIdx] = dispText;
 
         // Count connected attempts (answered / completed with duration > 0)
         const status = (call.call_status || call.disposition || '').toUpperCase();
@@ -671,37 +888,37 @@ export class CampaignService {
         // Final disposition = last call's disposition
         if (i === calls.length - 1) {
           finalDisposition = canonical || rawDisp || lead.current_disposition || null;
-          // Conclusion date = ended_at of last call if lead is closed
-          if (lead.is_closed && call.ended_at) {
+          if (call.ended_at) {
             conclusionDate = call.ended_at;
-          } else if (lead.is_closed && call.call_time) {
+          } else if (call.call_time) {
             conclusionDate = call.call_time;
           }
         }
       }
 
-      // Determine status
-      let leadStatus = 'Pending';
-      if (lead.is_closed) {
-        leadStatus = 'Closed';
-      } else if (calls.length > 0) {
-        leadStatus = 'In Progress';
-      }
-
-      const attemptsCount = Math.max(lead.total_attempts || 0, calls.length);
+      const pincode = lead.pincode || extractPincode(lead.address) || '';
+      const accountNo = lead.account_no || lead.customer_identifier || '';
+      const serviceEnd = formatDateOnly(lead.service_end_date);
+      const leadStatus = attemptsCount > 0 ? 'Attempted' : (lead.is_closed ? 'Attempted' : 'Pending');
 
       reportRows.push({
         sno: idx + 1,
         lead_id: lead.lead_id,
-        subs_del_no: lead.subs_del_no || '',
-        mobile: lead.mobile || '',
+        subs_del_no: lead.subs_del_no || '-',
+        mobile: formatMobileNumber(lead.mobile),
         customer_name: lead.customer_name || '',
         product_name: lead.product_name || 'Airtel IP TV',
         address: lead.address || '',
+        pincode,
+        service_end: serviceEnd,
+        account_no: accountNo,
+        zone: lead.zone || '',
+        town_flag: lead.town_flag || '',
         status: leadStatus,
         attempts_count: attemptsCount,
         connected_attempts_count: connectedCount,
-        last_call_time: lastCallTime || '',
+        first_call_time: firstCallTime ? formatDateTime(firstCallTime) : '',
+        last_call_time: lastCallTime ? formatDateTime(lastCallTime) : '',
         attempt_1_disposition: attemptDispositions[0] || '',
         attempt_2_disposition: attemptDispositions[1] || '',
         attempt_3_disposition: attemptDispositions[2] || '',
@@ -711,7 +928,7 @@ export class CampaignService {
         attempt_7_disposition: attemptDispositions[6] || '',
         attempt_8_disposition: attemptDispositions[7] || '',
         final_disposition: finalDisposition ? matchCanonicalDisposition(finalDisposition) : '',
-        conclusion_date: conclusionDate || '',
+        conclusion_date: conclusionDate ? formatDateTime(conclusionDate) : (lastCallTime ? formatDateTime(lastCallTime) : ''),
         recording: lastRecordingUrl || '',
       });
     }

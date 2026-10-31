@@ -18,24 +18,12 @@ import {
 } from 'lucide-react';
 import { createCampaign } from '../../services';
 import type { CampaignItem } from '../../types';
-import { downloadCampaignAudienceSampleCsv } from '../../utils/csvHelper';
+import { downloadCampaignAudienceSampleCsv, parseAudienceCsv } from '../../utils/csvHelper';
 
 interface CreateCampaignModalProps {
   isOpen: boolean;
   onClose: () => void;
   onCampaignCreated?: (newCampaign: CampaignItem) => void;
-}
-
-interface ValidContact {
-  phone: string;
-  name?: string;
-  email?: string;
-}
-
-interface FlaggedIssue {
-  raw: string;
-  type: 'duplicate' | 'short_number';
-  reason: string;
 }
 
 export interface ScriptPresetOption {
@@ -120,7 +108,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
 
   // Audience & Validation (CSV Upload)
   const [fileName, setFileName] = useState('');
-  const [fileRawLines, setFileRawLines] = useState<string[]>([]);
+  const [fileRawContent, setFileRawContent] = useState('');
   const [showFlaggedDetails, setShowFlaggedDetails] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -149,121 +137,11 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
 
   // Parse CSV contacts with duplicates and <10 digits flagging
   const { validContacts, flaggedDuplicates, flaggedShortNumbers } = useMemo(() => {
-    const valid: ValidContact[] = [];
-    const duplicates: FlaggedIssue[] = [];
-    const shortNumbers: FlaggedIssue[] = [];
-    const seenPhones = new Set<string>();
-
-    let phoneColIdx = 0;
-    let nameColIdx = -1;
-    let emailColIdx = -1;
-    let dataStartIndex = 0;
-
-    // Detect CSV headers if uploaded file exists
-    if (fileRawLines.length > 0) {
-      const firstLine = fileRawLines[0];
-      const headerCols = firstLine.split(',').map((c) =>
-        c.trim().toLowerCase().replace(/^["']|["']$/g, '')
-      );
-      const isHeader = headerCols.some((c) =>
-        c.includes('phone') ||
-        c.includes('mobile') ||
-        c.includes('number') ||
-        c.includes('contact') ||
-        c.includes('name') ||
-        c.includes('email') ||
-        c.includes('subs')
-      );
-
-      if (isHeader) {
-        dataStartIndex = 1;
-        headerCols.forEach((col, idx) => {
-          if (
-            col.includes('phone') ||
-            col.includes('mobile') ||
-            col.includes('contact')
-          ) {
-            phoneColIdx = idx;
-          } else if (
-            (col.includes('number') || col.includes('subs')) &&
-            phoneColIdx === 0 &&
-            !headerCols[0].includes('phone') &&
-            !headerCols[0].includes('mobile')
-          ) {
-            phoneColIdx = idx;
-          } else if (
-            col.includes('name') ||
-            col.includes('customer') ||
-            col.includes('subscriber')
-          ) {
-            nameColIdx = idx;
-          } else if (col.includes('email') || col.includes('mail')) {
-            emailColIdx = idx;
-          }
-        });
-      }
+    if (!fileRawContent.trim()) {
+      return { validContacts: [], flaggedDuplicates: [], flaggedShortNumbers: [] };
     }
-
-    const processEntry = (phoneStr: string, nameStr?: string, emailStr?: string) => {
-      let cleanPhone = phoneStr.trim().replace(/^["']|["']$/g, '');
-      if (!cleanPhone) return;
-
-      cleanPhone = cleanPhone.replace(/_(wifi|broadband|dsl|ftth|airtel)/gi, '').trim();
-
-      const digits = cleanPhone.replace(/\D/g, '');
-      if (digits.length === 0) return;
-
-      // 1. Flag numbers with less than 10 digits
-      if (digits.length < 10) {
-        shortNumbers.push({
-          raw: cleanPhone,
-          type: 'short_number',
-          reason: `Less than 10 digits (${digits.length} digits found)`,
-        });
-        return;
-      }
-
-      // 2. Normalize valid phone numbers (>= 10 digits)
-      let normalized = cleanPhone.replace(/[^\d+]/g, '');
-      if (!normalized.startsWith('+') && digits.length === 10) {
-        normalized = '+91' + digits;
-      } else if (!normalized.startsWith('+') && digits.length === 11 && digits.startsWith('0')) {
-        normalized = '+91' + digits.slice(1);
-      } else if (!normalized.startsWith('+')) {
-        normalized = '+' + digits;
-      }
-
-      // 3. Flag duplicates
-      if (seenPhones.has(normalized)) {
-        duplicates.push({
-          raw: cleanPhone,
-          type: 'duplicate',
-          reason: `Duplicate number of ${normalized}`,
-        });
-        return;
-      }
-
-      seenPhones.add(normalized);
-      valid.push({
-        phone: normalized,
-        name: nameStr ? nameStr.trim().replace(/^["']|["']$/g, '') : `Contact ${digits.slice(-4)}`,
-        email: emailStr ? emailStr.trim().replace(/^["']|["']$/g, '') : undefined,
-      });
-    };
-
-    // Process file lines
-    for (let i = dataStartIndex; i < fileRawLines.length; i++) {
-      const line = fileRawLines[i].trim();
-      if (!line) continue;
-      const cols = line.split(',').map((c) => c.trim());
-      const phoneVal = cols[phoneColIdx] !== undefined ? cols[phoneColIdx] : cols[0];
-      const nameVal = nameColIdx >= 0 ? cols[nameColIdx] : undefined;
-      const emailVal = emailColIdx >= 0 ? cols[emailColIdx] : undefined;
-      processEntry(phoneVal, nameVal, emailVal);
-    }
-
-    return { validContacts: valid, flaggedDuplicates: duplicates, flaggedShortNumbers: shortNumbers };
-  }, [fileRawLines]);
+    return parseAudienceCsv(fileRawContent);
+  }, [fileRawContent]);
 
   const contactCount = validContacts.length;
   const totalFlagged = flaggedDuplicates.length + flaggedShortNumbers.length;
@@ -282,12 +160,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
       const content = event.target?.result as string;
       if (!content) return;
 
-      const lines = content
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .filter(Boolean);
-
-      setFileRawLines(lines);
+      setFileRawContent(content);
       setShowFlaggedDetails(false);
     };
     reader.readAsText(file);
@@ -339,7 +212,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
         expected_dispositions: expectedDispositions,
         status: 'RUNNING',
         total_contacts: contactCount,
-        contacts: validContacts.map((c) => c.phone),
+        contacts: validContacts,
       });
 
       if (onCampaignCreated) {
@@ -351,7 +224,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
       setDescription('');
       setSelectedScriptId('delhi-routine');
       setFileName('');
-      setFileRawLines([]);
+      setFileRawContent('');
       onClose();
     } catch (err: any) {
       setError(err.message || 'Failed to create campaign. Please try again.');
@@ -952,7 +825,6 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
 
             {/* CSV File Upload */}
             <div>
-              <label style={labelStyle}>Upload CSV file (supports phone_number, name, email)</label>
               <div
                 style={{
                   background: '#080A10',

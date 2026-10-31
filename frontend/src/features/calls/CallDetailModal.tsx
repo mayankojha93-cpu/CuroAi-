@@ -263,6 +263,86 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
             </div>
           </div>
 
+          {/* Real Estate Property Intake Dossier (if real-estate call) */}
+          {Boolean((activeCall as any).re_category || (activeCall as any).re_project_or_society || (activeCall.script || '').includes('Estate')) && (
+            <div style={{
+              background: '#0F1524',
+              border: '1px solid rgba(139, 92, 246, 0.25)',
+              borderRadius: 12,
+              padding: 16,
+              boxShadow: '0 0 25px -5px rgba(139, 92, 246, 0.1)',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                <h4 style={{ fontSize: '0.78rem', color: '#A78BFA', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.05em', margin: 0 }}>
+                  🏡 My Estate Finder — Property Intake Dossier
+                </h4>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {(activeCall as any).re_category && (
+                    <span style={{ background: 'rgba(139, 92, 246, 0.2)', color: '#C4B5FD', padding: '2px 8px', borderRadius: 4, fontSize: '0.72rem', fontWeight: 700 }}>
+                      {String((activeCall as any).re_category).toUpperCase()}
+                    </span>
+                  )}
+                  {(activeCall as any).re_intent && (
+                    <span style={{ background: 'rgba(56, 189, 248, 0.2)', color: '#7DD3FC', padding: '2px 8px', borderRadius: 4, fontSize: '0.72rem', fontWeight: 700 }}>
+                      {String((activeCall as any).re_intent).toUpperCase()}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, fontSize: '0.84rem' }}>
+                <div>
+                  <span style={{ color: '#94A3B8' }}>Society / Project: </span>
+                  <strong style={{ color: '#FFFFFF' }}>{(activeCall as any).re_project_or_society || '—'}</strong>
+                </div>
+                <div>
+                  <span style={{ color: '#94A3B8' }}>Sector / Location: </span>
+                  <span style={{ color: '#E2E8F0' }}>{(activeCall as any).re_sector_or_location || '—'}</span>
+                </div>
+                <div>
+                  <span style={{ color: '#94A3B8' }}>Unit & Floor: </span>
+                  <span style={{ color: '#E2E8F0' }}>
+                    {[(activeCall as any).re_unit_number, (activeCall as any).re_floor_number ? `Floor ${(activeCall as any).re_floor_number}` : ''].filter(Boolean).join(', ') || '—'}
+                  </span>
+                </div>
+                <div>
+                  <span style={{ color: '#94A3B8' }}>Config / Type: </span>
+                  <span style={{ color: '#38BDF8', fontWeight: 600 }}>{(activeCall as any).re_bhk_config || (activeCall as any).re_commercial_type || '—'}</span>
+                </div>
+                <div>
+                  <span style={{ color: '#94A3B8' }}>Approx Area: </span>
+                  <span style={{ color: '#E2E8F0' }}>{(activeCall as any).re_approx_area_sqft ? `${(activeCall as any).re_approx_area_sqft} sq ft` : '—'}</span>
+                </div>
+                <div>
+                  <span style={{ color: '#94A3B8' }}>Furnishing: </span>
+                  <span style={{ color: '#E2E8F0' }}>{(activeCall as any).re_furnishing_status || '—'}</span>
+                </div>
+                <div>
+                  <span style={{ color: '#94A3B8' }}>Expected Price / Rent: </span>
+                  <strong style={{ color: '#34D399' }}>
+                    {(activeCall as any).re_expected_sale_price || (activeCall as any).re_expected_monthly_rent || '—'}
+                  </strong>
+                </div>
+                <div>
+                  <span style={{ color: '#94A3B8' }}>Immediate Occupancy: </span>
+                  <span style={{ color: '#E2E8F0' }}>
+                    {(activeCall as any).re_immediate_occupancy === true ? 'Yes' : ((activeCall as any).re_immediate_occupancy === false ? 'No' : '—')}
+                  </span>
+                </div>
+                {(activeCall as any).re_is_currently_leased !== undefined && (activeCall as any).re_is_currently_leased !== null && (
+                  <div>
+                    <span style={{ color: '#94A3B8' }}>Current Lease Status: </span>
+                    <span style={{ color: '#E2E8F0' }}>
+                      {(activeCall as any).re_is_currently_leased
+                        ? `Leased out${(activeCall as any).re_current_rent_received ? ` (${(activeCall as any).re_current_rent_received})` : ''}`
+                        : 'Vacant'}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Customer & Address Details */}
           <div style={{
             background: '#0F1524',
@@ -295,25 +375,85 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
             </div>
           </div>
 
-          {/* Audio Recording Player if available */}
-          {activeCall.recording_url && (
+          {/* Audio Recording Player if available, or carrier processing state */}
+          {activeCall.recording_url ? (
             <div style={{
               background: '#0F1524',
-              border: '1px solid rgba(56, 189, 248, 0.2)',
+              border: '1px solid rgba(56, 189, 248, 0.25)',
               borderRadius: 12,
-              padding: 14,
+              padding: 16,
+              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)',
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                <Volume2 size={16} color="#38BDF8" />
-                <span style={{ fontSize: '0.84rem', fontWeight: 600, color: '#FFFFFF' }}>
-                  Call Audio Recording
-                </span>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Volume2 size={17} color="#38BDF8" />
+                  <span style={{ fontSize: '0.86rem', fontWeight: 700, color: '#FFFFFF' }}>
+                    Call Audio Recording
+                  </span>
+                  {activeCall.recording_duration_seconds && (
+                    <span style={{ fontSize: '0.74rem', color: '#94A3B8', background: 'rgba(255, 255, 255, 0.06)', padding: '2px 8px', borderRadius: 4 }}>
+                      {Math.floor(activeCall.recording_duration_seconds / 60)}:{(activeCall.recording_duration_seconds % 60).toString().padStart(2, '0')}
+                    </span>
+                  )}
+                </div>
+                <a
+                  href={activeCall.recording_url}
+                  download={`call-${activeCall.id}.mp3`}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    fontSize: '0.76rem',
+                    color: '#38BDF8',
+                    textDecoration: 'none',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    padding: '4px 10px',
+                    borderRadius: 6,
+                    background: 'rgba(56, 189, 248, 0.1)',
+                    border: '1px solid rgba(56, 189, 248, 0.25)',
+                  }}
+                >
+                  Download Audio
+                </a>
               </div>
               <audio
                 controls
                 src={activeCall.recording_url}
-                style={{ width: '100%', height: 36, outline: 'none' }}
+                style={{ width: '100%', height: 38, outline: 'none' }}
               />
+            </div>
+          ) : (
+            <div style={{
+              background: '#0F1524',
+              border: '1px dashed rgba(255, 255, 255, 0.12)',
+              borderRadius: 12,
+              padding: '12px 16px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Volume2 size={16} color="#64748B" />
+                <span style={{ fontSize: '0.82rem', color: '#94A3B8' }}>
+                  Call Recording:
+                </span>
+                <span style={{
+                  fontSize: '0.74rem',
+                  fontWeight: 600,
+                  color: activeCall.recording_download_status === 'downloading' ? '#F59E0B' : '#60A5FA',
+                  background: activeCall.recording_download_status === 'downloading' ? 'rgba(245, 158, 11, 0.12)' : 'rgba(96, 165, 250, 0.12)',
+                  padding: '2px 8px',
+                  borderRadius: 4,
+                }}>
+                  {activeCall.recording_download_status === 'downloading'
+                    ? 'Downloading from Exotel...'
+                    : 'Processing by Exotel (Ready in 1-5 mins)'}
+                </span>
+              </div>
+              <span style={{ fontSize: '0.72rem', color: '#64748B' }}>
+                Auto-syncs after call ends
+              </span>
             </div>
           )}
 

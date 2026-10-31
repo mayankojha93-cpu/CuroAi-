@@ -376,7 +376,7 @@ export const LeadImportModal: React.FC<LeadImportModalProps> = ({ isOpen, onClos
                 </h4>
 
                 <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', maxWidth: 440, margin: '0 auto' }}>
-                  Supports CSV formatted with columns: <strong style={{ color: '#fff' }}>R. Date, Check, SUBS_DEL_NO, ACCOUNT_NO, SERVICE_END, Address</strong>
+                  Supports CSV formatted with columns: <strong style={{ color: '#fff' }}>R. Date, Check, SUBS_DEL_NO, ACCOUNT_NO, SERVICE_END, Address, CONTACT_PHONE1, CONTACT_PHONE2, etc.</strong>
                 </p>
 
                 {file && (
@@ -423,7 +423,7 @@ export const LeadImportModal: React.FC<LeadImportModalProps> = ({ isOpen, onClos
                   setRawText(e.target.value);
                   processContent(e.target.value, 'CSV');
                 }}
-                placeholder="R. Date,Check,SUBS_DEL_NO,ACCOUNT_NO,SERVICE_END,Address&#10;29 Aug 26,.,01121344121_wifi,20022941256,27 Aug 26,Delhi, 110011, burari, sant nagar"
+                placeholder="R. Date,Check,SUBS_DEL_NO,ACCOUNT_NO,SERVICE_END,Address,SERVICE_CITY,CONTACT_PHONE1,CONTACT_PHONE2,CUST_EMAIL,DISCONNECTION_REASON,TOWN_FLAG,CUSTOMER_IDENTIFER,SUBS_NAME,CIRCLE_NEW,CIRCLE_NEW20,Pin code,Zone,Allocated to&#10;29 Aug 26,-,01121344121_wifi,20022941256,27 Aug 26,&quot;Delhi, 110011, burari, sant nagar&quot;,,8899855225,9999954242,xyz@gmail.com,,NON LCO,POSTPAID,Raja Nayak,DEL,,110011,North,LOGISTIEX"
                 style={{
                   width: '100%',
                   padding: '12px',

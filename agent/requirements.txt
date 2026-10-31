@@ -1,6 +1,7 @@
 livekit-agents>=1.8.8
 livekit-plugins-sarvam>=1.8.8
 livekit-plugins-groq>=1.8.8
+livekit-plugins-openai>=1.8.8
 livekit-plugins-silero>=1.8.8
 python-dotenv>=1.0.1
 requests>=2.32.3

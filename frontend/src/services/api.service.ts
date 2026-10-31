@@ -315,7 +315,7 @@ export async function startCampaignCalls(campaignId: string): Promise<{
  */
 export async function uploadCampaignContacts(
   campaignId: string,
-  contacts: (string | { phone: string; name?: string; email?: string })[]
+  contacts: (string | any)[]
 ): Promise<{
   success: boolean;
   message: string;
@@ -401,9 +401,15 @@ export interface CampaignReportRow {
   customer_name: string;
   product_name: string;
   address: string;
+  pincode?: string;
+  service_end?: string;
+  account_no?: string;
+  zone?: string;
+  town_flag?: string;
   status: string;
   attempts_count: number;
   connected_attempts_count: number;
+  first_call_time?: string;
   last_call_time: string;
   attempt_1_disposition: string;
   attempt_2_disposition: string;
@@ -429,4 +435,46 @@ export async function fetchCampaignReport(campaignId: string): Promise<CampaignR
   const data = await res.json();
   return data.report || [];
 }
+
+/**
+ * Real Estate Pipeline APIs (My Estate Finder)
+ */
+export async function fetchRealEstateLeads(status?: string): Promise<any[]> {
+  const q = status ? `?status=${encodeURIComponent(status)}` : '';
+  const res = await authFetch(`${API_BASE}/api/real-estate/leads${q}`);
+  if (!res.ok) throw new Error(`Failed to fetch RE leads: ${res.statusText}`);
+  const data = await res.json();
+  return data.leads || [];
+}
+
+export async function fetchRealEstateProperties(category?: string, intent?: string): Promise<any[]> {
+  const params = new URLSearchParams();
+  if (category) params.set('category', category);
+  if (intent) params.set('intent', intent);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  const res = await authFetch(`${API_BASE}/api/real-estate/properties${qs}`);
+  if (!res.ok) throw new Error(`Failed to fetch properties: ${res.statusText}`);
+  const data = await res.json();
+  return data.properties || [];
+}
+
+export async function initiateRealEstateTestCall(input: {
+  phone: string;
+  owner_name?: string;
+  name?: string;
+  language?: string;
+  notes?: string;
+}): Promise<any> {
+  const res = await authFetch(`${API_BASE}/api/real-estate/calls/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to initiate RE test call: ${res.statusText}`);
+  }
+  return res.json();
+}
+
 
