@@ -1,9 +1,11 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import fs from 'fs';
 import path from 'path';
+import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 import { query } from '../db/index.js';
 import { env } from '../config/env.js';
+import { authService, UserPayload } from '../services/authService.js';
 import { callService } from '../services/callService.js';
 import { realEstateCallService } from '../services/realEstateCallService.js';
 import { validateRequest } from '../middleware/validate.js';
@@ -54,6 +56,11 @@ callsRouter.post(
   validateRequest(initiateCallSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      if (req.user?.assigned_pipeline && req.user.assigned_pipeline !== 'all' && req.user.assigned_pipeline !== 'airtel') {
+        return res.status(403).json({
+          error: 'Forbidden: Your account is not authorized to initiate Airtel telecom campaign calls.',
+        });
+      }
       const { customerId } = req.body;
       const call = await callService.initiateCall(customerId);
       return res.status(201).json({
@@ -95,14 +102,30 @@ callsRouter.post(
   validateRequest(testCallSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const userPipeline = req.user?.assigned_pipeline;
       const script = (req.body.script || '').toLowerCase();
       const company = (req.body.company_name || '').toLowerCase();
-      if (
+      const isRealEstateScript =
         script.includes('estate') ||
         script.includes('sagar') ||
         script.includes('property') ||
-        company.includes('estate')
-      ) {
+        company.includes('estate');
+
+      // Strict multi-tenant isolation check
+      if (userPipeline && userPipeline !== 'all') {
+        if (userPipeline === 'airtel' && isRealEstateScript) {
+          return res.status(403).json({
+            error: 'Forbidden: Your account (Airtel Telecom) is not authorized to place Real Estate test calls.',
+          });
+        }
+        if (userPipeline === 'real_estate' && !isRealEstateScript) {
+          return res.status(403).json({
+            error: 'Forbidden: Your account (My Estate Finder) is not authorized to place Airtel Telecom test calls.',
+          });
+        }
+      }
+
+      if (isRealEstateScript) {
         const { call, lead } = await realEstateCallService.initiateTestCall({
           phone: req.body.phone,
           owner_name: req.body.customer_name || req.body.name,
@@ -161,6 +184,11 @@ callsRouter.post(
   '/api/leads/import',
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      if (req.user?.assigned_pipeline && req.user.assigned_pipeline !== 'all' && req.user.assigned_pipeline !== 'airtel') {
+        return res.status(403).json({
+          error: 'Forbidden: Your account is not authorized to import Airtel telecom leads.',
+        });
+      }
       let leadsToImport: any[] = [];
 
       // If raw text or string CSV was sent
@@ -198,6 +226,11 @@ callsRouter.post(
   '/api/leads/upload-csv',
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      if (req.user?.assigned_pipeline && req.user.assigned_pipeline !== 'all' && req.user.assigned_pipeline !== 'airtel') {
+        return res.status(403).json({
+          error: 'Forbidden: Your account is not authorized to import Airtel telecom leads.',
+        });
+      }
       const csvContent = typeof req.body === 'string' ? req.body : req.body?.csv;
       if (!csvContent || typeof csvContent !== 'string' || !csvContent.trim()) {
         return res.status(400).json({ error: 'Missing CSV content in request body' });
@@ -224,9 +257,9 @@ callsRouter.post(
 );
 
 // GET /api/campaign/summary - Audit dashboard summary (Image 1)
-callsRouter.get('/api/campaign/summary', async (_req: Request, res: Response, next: NextFunction) => {
+callsRouter.get('/api/campaign/summary', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const summary = await callService.getCampaignSummary();
+    const summary = await callService.getCampaignSummary(req.user?.assigned_pipeline);
     return res.json({ success: true, summary });
   } catch (err) {
     return next(err);
@@ -234,9 +267,9 @@ callsRouter.get('/api/campaign/summary', async (_req: Request, res: Response, ne
 });
 
 // GET /api/retries/pending - View queue of customers awaiting retry
-callsRouter.get('/api/retries/pending', async (_req: Request, res: Response, next: NextFunction) => {
+callsRouter.get('/api/retries/pending', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const pending = await callService.getPendingRetries();
+    const pending = await callService.getPendingRetries(50, req.user?.assigned_pipeline);
     return res.json({ success: true, count: pending.length, pending });
   } catch (err) {
     return next(err);
@@ -244,9 +277,9 @@ callsRouter.get('/api/retries/pending', async (_req: Request, res: Response, nex
 });
 
 // GET /api/customers - List all leads/customers
-callsRouter.get('/api/customers', async (_req: Request, res: Response, next: NextFunction) => {
+callsRouter.get('/api/customers', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const customers = await callService.listCustomers(100);
+    const customers = await callService.listCustomers(100, req.user?.assigned_pipeline);
     return res.json({ success: true, count: customers.length, customers });
   } catch (err) {
     return next(err);
@@ -259,7 +292,7 @@ callsRouter.get(
   validateRequest(getCallSchema),
   async (req: Request<{ id: string }>, res: Response, next: NextFunction) => {
     try {
-      const call = await callService.getCall(req.params.id);
+      const call = await callService.getCall(req.params.id, req.user?.assigned_pipeline);
       return res.json({ call });
     } catch (err) {
       return next(err);
@@ -273,26 +306,24 @@ callsRouter.get(['/calls', '/api/calls'], async (req: Request, res: Response, ne
     const status = req.query.status as string | undefined;
     const isTest = req.query.is_test === 'true';
     const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 100;
-    const calls = await callService.listRecentCalls(limit, status, isTest || undefined);
+    const calls = await callService.listRecentCalls(limit, status, isTest || undefined, req.user?.assigned_pipeline);
     return res.json({ calls, count: calls.length });
   } catch (err) {
     return next(err);
   }
 });
 
-
-
-
 // GET /api/calls/test-history - Get test call history with full transcripts and details
 callsRouter.get('/api/calls/test-history', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const status = req.query.status as string | undefined;
     const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 100;
+    const pipeline = req.user?.assigned_pipeline;
     // Look up test calls first
-    let calls = await callService.listRecentCalls(limit, status, true);
+    let calls = await callService.listRecentCalls(limit, status, true, pipeline);
     // If no test-specific calls found, fall back to recent calls so user always has real data
     if (calls.length === 0) {
-      calls = await callService.listRecentCalls(limit, status);
+      calls = await callService.listRecentCalls(limit, status, undefined, pipeline);
     }
     return res.json({ calls, count: calls.length });
   } catch (err) {
@@ -327,9 +358,32 @@ callsRouter.get('/api/calls/:id/audio', async (req: Request<{ id: string }>, res
       return res.status(400).json({ error: 'Invalid call ID format' });
     }
 
-    const callRes = await query('SELECT id, recording_url, recording_download_status FROM calls WHERE id = $1', [callId]);
+    const callRes = await query('SELECT id, recording_url, recording_download_status, pipeline FROM calls WHERE id = $1', [callId]);
     if (callRes.rows.length === 0) {
       return res.status(404).json({ error: 'Call not found' });
+    }
+
+    const call = callRes.rows[0];
+
+    // Pipeline isolation check for audio recordings
+    let requestingUser = req.user;
+    if (!requestingUser) {
+      const authHeader = req.headers.authorization;
+      const token = (authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null) || (req.query.token as string);
+      if (token) {
+        try {
+          const decoded = jwt.verify(token, env.JWT_SECRET) as UserPayload;
+          const u = await authService.getUserById(decoded.id);
+          if (u) requestingUser = u;
+        } catch {}
+      }
+    }
+
+    if (requestingUser?.assigned_pipeline && requestingUser.assigned_pipeline !== 'all') {
+      const callPipeline = call.pipeline || 'airtel';
+      if (callPipeline !== requestingUser.assigned_pipeline) {
+        return res.status(403).json({ error: 'Access forbidden: You cannot access audio recordings from another pipeline' });
+      }
     }
 
     const storageDir = getRecordingsDir();
