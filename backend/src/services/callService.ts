@@ -769,7 +769,31 @@ export class CallService {
   /**
    * Fetches pending customers for retries.
    */
-  async getPendingRetries(limit = 50) {
+  async getPendingRetries(limit = 50, pipeline?: string) {
+    if (pipeline === 'real_estate') {
+      const res = await query(
+        `SELECT id, owner_name as name, phone, preferred_language as language, total_attempts, max_attempts, next_attempt_time, notes, current_disposition
+         FROM real_estate_leads
+         WHERE total_attempts < max_attempts
+           AND (lead_status = 'CALLBACK' OR next_attempt_time <= NOW() OR lead_status = 'NEW')
+         ORDER BY next_attempt_time ASC NULLS FIRST
+         LIMIT $1`,
+        [limit]
+      );
+      return res.rows.map((r: any) => ({
+        id: r.id,
+        name: r.name,
+        phone: r.phone,
+        address: r.notes || 'Property Owner Record',
+        language: r.language,
+        total_attempts: r.total_attempts,
+        max_attempts: r.max_attempts,
+        next_attempt_time: r.next_attempt_time,
+        current_disposition: r.current_disposition,
+        is_closed: false,
+      }));
+    }
+
     const res = await query(
       `SELECT * FROM customers
        WHERE is_closed = FALSE
@@ -871,14 +895,64 @@ export class CallService {
   }
 
   /**
-   * Generates the campaign summary: "Airtel IP TV Urgent Campaign Summary"
+   * Generates the campaign summary: "Airtel IP TV Urgent Campaign Summary" or "Real Estate Intake Summary"
    */
-  async getCampaignSummary() {
+  async getCampaignSummary(pipeline?: string) {
+    if (pipeline === 'real_estate') {
+      const leadsRes = await query('SELECT COUNT(*) as count, COUNT(DISTINCT phone) as unique_contacts FROM real_estate_leads');
+      const callsRes = await query(
+        `SELECT COUNT(*) as attempts,
+                COUNT(*) FILTER (WHERE status IN ('answered', 'completed', 'COMPLETED')) as connected
+         FROM calls
+         WHERE pipeline = 'real_estate' OR re_lead_id IS NOT NULL`
+      );
+      const dispRes = await query(`
+        SELECT final_disposition, COUNT(*) as count
+        FROM real_estate_outcomes
+        GROUP BY final_disposition
+      `);
+      const dispMap: Record<string, number> = {};
+      for (const r of dispRes.rows) {
+        dispMap[r.final_disposition] = parseInt(r.count, 10);
+      }
+      const sourceRows = parseInt(leadsRes.rows[0]?.count || '0', 10);
+      const uniqueContacts = parseInt(leadsRes.rows[0]?.unique_contacts || '0', 10);
+      const connectedCalls = parseInt(callsRes.rows[0]?.connected || '0', 10);
+      const totalAttempts = parseInt(callsRes.rows[0]?.attempts || '0', 10);
+      const dispositionedContacts = Object.values(dispMap).reduce((a, b) => a + b, 0);
+
+      return {
+        overview: { sourceRows, uniqueContacts, connectedCalls, totalAttempts, dispositionedContacts },
+        categories: [
+          {
+            category: 'Qualified & Actionable Leads',
+            dispositions: [
+              { name: 'Qualified Lead', count: dispMap['Qualified Lead'] || 0 },
+              { name: 'Advisor Callback Booked', count: dispMap['Advisor Callback Booked'] || 0 },
+              { name: 'Schedule Callback', count: dispMap['Schedule Callback'] || 0 },
+              { name: 'WhatsApp Info Requested', count: dispMap['WhatsApp Info Requested'] || 0 },
+            ],
+          },
+          {
+            category: 'Non-Actionable & Suppression',
+            dispositions: [
+              { name: 'Not Interested', count: dispMap['Not Interested'] || 0 },
+              { name: 'Do Not Call', count: dispMap['Do Not Call'] || 0 },
+              { name: 'Wrong Number', count: dispMap['Wrong Number'] || 0 },
+              { name: 'Not Connected (No Answer)', count: dispMap['Not Connected (No Answer)'] || 0 },
+              { name: 'Abruptly Disconnected Call', count: dispMap['Abruptly Disconnected Call'] || 0 },
+            ],
+          },
+        ],
+      };
+    }
+
     const totalCustomersRes = await query('SELECT COUNT(*) as count, COUNT(DISTINCT phone) as unique_contacts FROM customers');
     const totalCallsRes = await query(
       `SELECT COUNT(*) as attempts,
               COUNT(*) FILTER (WHERE status IN ('answered', 'completed', 'COMPLETED')) as connected
-       FROM calls`
+       FROM calls
+       WHERE COALESCE(pipeline, 'airtel') = 'airtel' AND re_lead_id IS NULL`
     );
     const dispositionedRes = await query(
       `SELECT COUNT(*) as count FROM customers
@@ -1061,7 +1135,7 @@ export class CallService {
   /**
    * Fetches a call with customer details and outcome.
    */
-  async getCall(callId: string) {
+  async getCall(callId: string, pipeline?: string) {
     const res = await query(
       `SELECT c.*,
               COALESCE(cust.name, rl.owner_name) as customer_name,
@@ -1101,10 +1175,16 @@ export class CallService {
     const row = res.rows[0];
     const isRealEstate = Boolean(
       row.re_lead_id ||
+      (row.pipeline || '').toLowerCase() === 'real_estate' ||
       (row.script || '').toLowerCase().includes('estate') ||
       (row.script || '').toLowerCase().includes('sagar') ||
       (row.company_name || '').toLowerCase().includes('estate')
     );
+
+    const callPipeline = isRealEstate ? 'real_estate' : 'airtel';
+    if (pipeline && pipeline !== callPipeline) {
+      throw new AppError('Unauthorized: You do not have permission to access calls from this pipeline', 403);
+    }
 
     const finalDisp = isRealEstate
       ? matchRealEstateDisposition(row.final_disposition || row.call_status || row.status, row.duration_seconds, row.status)
@@ -1116,12 +1196,34 @@ export class CallService {
     };
   }
 
-  async listCustomers(limit = 100) {
+  async listCustomers(limit = 100, pipeline?: string) {
+    if (pipeline === 'real_estate') {
+      const res = await query(
+        `SELECT id, owner_name as name, phone, preferred_language as language, total_attempts, max_attempts, current_disposition, notes, created_at
+         FROM real_estate_leads
+         ORDER BY created_at DESC LIMIT $1`,
+        [limit]
+      );
+      return res.rows.map((r: any) => ({
+        id: r.id,
+        name: r.name,
+        phone: r.phone,
+        address: r.notes || 'Property Owner',
+        language: r.language,
+        account_no: 'RE-LEAD',
+        subs_del_no: 'OWNER',
+        total_attempts: r.total_attempts,
+        max_attempts: r.max_attempts,
+        current_disposition: r.current_disposition,
+        is_closed: false,
+        created_at: r.created_at,
+      }));
+    }
     const res = await query(`SELECT * FROM customers ORDER BY created_at DESC LIMIT $1`, [limit]);
     return res.rows.map((r: any) => serializeCustomer(r));
   }
 
-  async listRecentCalls(limit = 100, status?: string, isTest?: boolean) {
+  async listRecentCalls(limit = 100, status?: string, isTest?: boolean, pipeline?: string) {
     let q = `
       SELECT c.*,
               COALESCE(cust.name, rl.owner_name) as customer_name,
@@ -1151,6 +1253,25 @@ export class CallService {
     `;
     const params: any[] = [];
     const whereConditions: string[] = [];
+
+    // Pipeline isolation: strictly isolate calls between Airtel and Real Estate pipelines
+    if (pipeline === 'real_estate') {
+      whereConditions.push(`(
+        c.pipeline = 'real_estate' OR
+        c.re_lead_id IS NOT NULL OR
+        LOWER(COALESCE(c.script, '')) LIKE '%estate%' OR
+        LOWER(COALESCE(c.script, '')) LIKE '%sagar%' OR
+        LOWER(COALESCE(c.company_name, '')) LIKE '%estate%'
+      )`);
+    } else if (pipeline === 'airtel') {
+      whereConditions.push(`(
+        COALESCE(c.pipeline, 'airtel') = 'airtel' AND
+        c.re_lead_id IS NULL AND
+        LOWER(COALESCE(c.script, '')) NOT LIKE '%estate%' AND
+        LOWER(COALESCE(c.script, '')) NOT LIKE '%sagar%' AND
+        LOWER(COALESCE(c.company_name, '')) NOT LIKE '%estate%'
+      )`);
+    }
 
     if (isTest) {
       whereConditions.push('c.is_test_call = TRUE');
