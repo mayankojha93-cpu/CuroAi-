@@ -13,7 +13,8 @@
     "trunk:inbound:create": "tsx scripts/create-inbound-trunk.ts",
     "trunk:list": "tsx scripts/list-trunks.ts",
     "trunk:dial": "tsx scripts/test-dial.ts",
-    "call:test": "tsx scripts/test-agent-call.ts"
+    "call:test": "tsx scripts/test-agent-call.ts",
+    "re:test": "tsx scripts/test-real-estate-call.ts"
   },
   "dependencies": {
     "@livekit/protocol": "^1.51.0",

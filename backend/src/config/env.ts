@@ -24,6 +24,7 @@ const envSchema = z.object({
   LIVEKIT_API_KEY: z.string().optional().default(''),
   LIVEKIT_API_SECRET: z.string().optional().default(''),
   AGENT_NAME: z.string().default('telecom-router-pickup-agent'),
+  REAL_ESTATE_AGENT_NAME: z.string().default('my-estate-finder-agent'),
 
   // Exotel SIP Outbound & Inbound Trunk credentials
   SIP_PROVIDER: z.string().default('exotel'),

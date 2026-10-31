@@ -20,6 +20,7 @@ import {
   RotateCcw
 } from 'lucide-react';
 import type { CampaignItem, CallRecord } from '../../types';
+import { parseAudienceCsv, generateCampaignAuditedReportCsv, downloadCampaignAudienceSampleCsv } from '../../utils/csvHelper';
 import { 
   fetchCampaignCalls, 
   startCampaignCalls, 
@@ -577,50 +578,13 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
           throw new Error('Selected CSV file is empty.');
         }
 
-        const lines = text
-          .split(/\r?\n/)
-          .map((l) => l.trim())
-          .filter(Boolean);
+        const { validContacts } = parseAudienceCsv(text);
 
-        if (lines.length === 0) {
-          throw new Error('No contact records found in CSV.');
-        }
-
-        let phoneCol = 0;
-        let nameCol = -1;
-        let dataStart = 0;
-
-        const headers = lines[0].split(',').map((h) => h.trim().toLowerCase().replace(/^["']|["']$/g, ''));
-        const hasHeader = headers.some((h) => 
-          h.includes('phone') || h.includes('mobile') || h.includes('number') || h.includes('contact')
-        );
-
-        if (hasHeader) {
-          dataStart = 1;
-          headers.forEach((h, idx) => {
-            if (h.includes('phone') || h.includes('mobile') || h.includes('number') || h.includes('contact')) {
-              phoneCol = idx;
-            } else if (h.includes('name') || h.includes('customer') || h.includes('subscriber')) {
-              nameCol = idx;
-            }
-          });
-        }
-
-        const parsedContacts: { phone: string; name?: string }[] = [];
-        for (let i = dataStart; i < lines.length; i++) {
-          const cols = lines[i].split(',').map((c) => c.trim().replace(/^["']|["']$/g, ''));
-          const p = cols[phoneCol];
-          const n = nameCol >= 0 ? cols[nameCol] : undefined;
-          if (p) {
-            parsedContacts.push({ phone: p, name: n });
-          }
-        }
-
-        if (parsedContacts.length === 0) {
+        if (validContacts.length === 0) {
           throw new Error('No valid phone numbers found in CSV.');
         }
 
-        const res = await uploadCampaignContacts(currentCampaign.id, parsedContacts);
+        const res = await uploadCampaignContacts(currentCampaign.id, validContacts);
         setCurrentCampaign(res.campaign);
         setActionNotification({
           type: 'success',
@@ -869,69 +833,7 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
   const handleDownloadCsv = async () => {
     try {
       const reportData: CampaignReportRow[] = await fetchCampaignReport(currentCampaign.id);
-
-      const headers = [
-        'S.No.',
-        'Lead Id',
-        'SUBS DEL NO',
-        'Mobile',
-        'Customer Name',
-        'Product Name',
-        'Address',
-        'Status',
-        'Attempts Count',
-        'Connected Attempts Count',
-        'Last Call Time',
-        'Attempt 1 Disposition',
-        'Attempt 2 Disposition',
-        'Attempt 3 Disposition',
-        'Attempt 4 Disposition',
-        'Attempt 5 Disposition',
-        'Attempt 6 Disposition',
-        'Attempt 7 Disposition',
-        'Attempt 8 Disposition',
-        'Final Disposition',
-        'Conclusion Date',
-        'Recording',
-      ];
-
-      const escapeCsvField = (field: string | number | null | undefined): string => {
-        const str = String(field ?? '');
-        if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-          return `"${str.replace(/"/g, '""')}"`;
-        }
-        return str;
-      };
-
-      const csvRows = [headers.join(',')];
-      for (const row of reportData) {
-        csvRows.push([
-          escapeCsvField(row.sno),
-          escapeCsvField(row.lead_id),
-          escapeCsvField(row.subs_del_no),
-          escapeCsvField(row.mobile),
-          escapeCsvField(row.customer_name),
-          escapeCsvField(row.product_name),
-          escapeCsvField(row.address),
-          escapeCsvField(row.status),
-          escapeCsvField(row.attempts_count),
-          escapeCsvField(row.connected_attempts_count),
-          escapeCsvField(row.last_call_time),
-          escapeCsvField(row.attempt_1_disposition),
-          escapeCsvField(row.attempt_2_disposition),
-          escapeCsvField(row.attempt_3_disposition),
-          escapeCsvField(row.attempt_4_disposition),
-          escapeCsvField(row.attempt_5_disposition),
-          escapeCsvField(row.attempt_6_disposition),
-          escapeCsvField(row.attempt_7_disposition),
-          escapeCsvField(row.attempt_8_disposition),
-          escapeCsvField(row.final_disposition),
-          escapeCsvField(row.conclusion_date),
-          escapeCsvField(row.recording),
-        ].join(','));
-      }
-
-      const csvContent = csvRows.join('\n');
+      const csvContent = generateCampaignAuditedReportCsv(reportData);
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -941,8 +843,11 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-    } catch (err) {
-      console.error('Failed to download report:', err);
+    } catch (err: any) {
+      setActionNotification({
+        type: 'error',
+        message: err.message || 'Failed to download report CSV.',
+      });
     }
   };
 
@@ -1223,6 +1128,38 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
               >
                 <Upload size={14} />
                 <span>{isUploadingAudience ? 'Uploading...' : 'Upload Audience (CSV)'}</span>
+              </button>
+
+              {/* Sample Format download button */}
+              <button
+                type="button"
+                onClick={() => downloadCampaignAudienceSampleCsv()}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '9px 14px',
+                  borderRadius: 8,
+                  background: 'rgba(56, 189, 248, 0.08)',
+                  border: '1px solid rgba(56, 189, 248, 0.25)',
+                  color: '#38BDF8',
+                  fontSize: '0.84rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'rgba(56, 189, 248, 0.18)';
+                  e.currentTarget.style.borderColor = 'rgba(56, 189, 248, 0.45)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'rgba(56, 189, 248, 0.08)';
+                  e.currentTarget.style.borderColor = 'rgba(56, 189, 248, 0.25)';
+                }}
+                title="Download CSV format template with all 19 columns"
+              >
+                <Download size={14} />
+                <span>Sample Format</span>
               </button>
 
               {/* 1. When RUNNING: Show ONLY "Pause" */}

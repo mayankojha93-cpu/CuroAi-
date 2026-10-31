@@ -24,7 +24,36 @@ const createCampaignSchema = {
     expected_dispositions: z.array(z.string()).optional(),
     total_contacts: z.number().int().nonnegative().optional().default(0),
     total_credits: z.number().int().nonnegative().optional(),
-    contacts: z.array(z.string()).optional(),
+    contacts: z.array(
+      z.union([
+        z.string(),
+        z.object({
+          phone: z.string(),
+          name: z.string().optional(),
+          address: z.string().optional(),
+          cust_email: z.string().optional(),
+          email: z.string().optional(),
+          customer_identifier: z.string().optional(),
+          account_no: z.string().optional(),
+          subs_del_no: z.string().optional(),
+          service_end_date: z.string().optional(),
+          r_date: z.string().optional(),
+          alternate_phones: z.array(z.string()).optional(),
+          alternate_phone: z.string().optional(),
+          pincode: z.string().optional(),
+          zone: z.string().optional(),
+          town_flag: z.string().optional(),
+          service_city: z.string().optional(),
+          disconnection_reason: z.string().optional(),
+          circle_new: z.string().optional(),
+          circle_new20: z.string().optional(),
+          allocated_to: z.string().optional(),
+          check_status: z.string().optional(),
+          check: z.string().optional(),
+          product_name: z.string().optional(),
+        }).passthrough(),
+      ])
+    ).optional(),
   }),
 };
 

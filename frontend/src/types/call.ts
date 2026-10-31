@@ -28,6 +28,9 @@ export interface CallRecord {
   median_latency_ms?: number;
   cost_estimate_inr?: string | number;
   recording_url?: string | null;
+  recording_download_status?: 'pending' | 'downloading' | 'done' | 'failed' | string;
+  recording_duration_seconds?: number | null;
+  exotel_call_sid?: string | null;
   script?: string;
   company_name?: string;
   voice_pipeline?: string;
