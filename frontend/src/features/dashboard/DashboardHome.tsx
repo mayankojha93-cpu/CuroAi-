@@ -77,36 +77,6 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
   const campaignsList = (propCampaigns && propCampaigns.length > 0) ? propCampaigns : internalCampaigns;
   const currentCredits = typeof propCredits === 'number' ? propCredits : internalCredits;
 
-  const overview = summary?.overview || {
-    sourceRows: 0,
-    uniqueContacts: 0,
-    connectedCalls: 0,
-    totalAttempts: 0,
-    dispositionedContacts: 0,
-  };
-
-  // Real Card 1: Actual total campaigns and active/paused count from DB
-  const totalCampaigns = campaignsList.length;
-  const activeOrPausedCount = campaignsList.filter((c) =>
-    ['RUNNING', 'PAUSED'].includes((c.status || '').toUpperCase())
-  ).length;
-
-  // Real Card 2: Actual total contacts across all campaigns (or customers table)
-  const totalCampaignContacts = campaignsList.reduce((acc, c) => acc + (c.total_contacts || 0), 0);
-  const totalContacts = totalCampaignContacts > 0
-    ? totalCampaignContacts
-    : (overview.uniqueContacts || overview.sourceRows || customersCount || 0);
-
-  // Real Card 3: Actual success rate (successful calls / total call attempts * 100)
-  const totalCallsCount = overview.totalAttempts || recentCalls.length || 0;
-  const successfulCallsCount = overview.connectedCalls || recentCalls.filter((c) => getCallStatus(c) === 'SUCCESSFUL').length || 0;
-  const successRate = totalCallsCount > 0
-    ? Math.min(100, Math.round((successfulCallsCount / totalCallsCount) * 100))
-    : 0;
-
-  // Real Card 4: Credits balance from billing accounts in DB
-  const displayCredits = currentCredits;
-
   // Mask phone number for security & display like the screenshot: +91 84****** 16
   const formatMaskedPhone = (phone?: string) => {
     if (!phone) return '—';
@@ -132,8 +102,6 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
       hour12: true,
     });
   };
-
-  const displayCalls = recentCalls.slice(0, 6);
 
   const getCallStatus = (call: any): 'SUCCESSFUL' | 'FAILED' | 'NO_ANSWER' => {
     const s = (call.status || call.call_status || '').toLowerCase();
@@ -171,6 +139,38 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
     if (lang === 'en' || lang === 'english') return 'English';
     return call.customer_language || call.language || '—';
   };
+
+  const displayCalls = recentCalls.slice(0, 6);
+
+  const overview = summary?.overview || {
+    sourceRows: 0,
+    uniqueContacts: 0,
+    connectedCalls: 0,
+    totalAttempts: 0,
+    dispositionedContacts: 0,
+  };
+
+  // Real Card 1: Actual total campaigns and active/paused count from DB
+  const totalCampaigns = campaignsList.length;
+  const activeOrPausedCount = campaignsList.filter((c) =>
+    ['RUNNING', 'PAUSED'].includes((c.status || '').toUpperCase())
+  ).length;
+
+  // Real Card 2: Actual total contacts across all campaigns (or customers table)
+  const totalCampaignContacts = campaignsList.reduce((acc, c) => acc + (c.total_contacts || 0), 0);
+  const totalContacts = totalCampaignContacts > 0
+    ? totalCampaignContacts
+    : (overview.uniqueContacts || overview.sourceRows || customersCount || 0);
+
+  // Real Card 3: Actual success rate (successful calls / total call attempts * 100)
+  const totalCallsCount = overview.totalAttempts || recentCalls.length || 0;
+  const successfulCallsCount = overview.connectedCalls || recentCalls.filter((c) => getCallStatus(c) === 'SUCCESSFUL').length || 0;
+  const successRate = totalCallsCount > 0
+    ? Math.min(100, Math.round((successfulCallsCount / totalCallsCount) * 100))
+    : 0;
+
+  // Real Card 4: Credits balance from billing accounts in DB
+  const displayCredits = currentCredits;
 
   const adminName = user?.name || 'CuroAI Admin';
 
