@@ -69,6 +69,7 @@ export interface CampaignDbRow {
   credits_used: number;
   total_credits: number;
   execution_date: string;
+  pipeline?: string;
   script?: string;
   language?: string;
   voice_pipeline?: string;
@@ -105,9 +106,9 @@ function normalizePhoneNumber(raw: string): string | null {
 
 export class CampaignService {
   /**
-   * List all campaigns with optional status filter and search query
+   * List all campaigns with optional status filter, search query, and pipeline isolation
    */
-  async listCampaigns(status?: string, search?: string): Promise<CampaignDbRow[]> {
+  async listCampaigns(status?: string, search?: string, pipeline?: string): Promise<CampaignDbRow[]> {
     let query = `
       SELECT 
         c.*,
@@ -130,6 +131,11 @@ export class CampaignService {
     `;
     const params: any[] = [];
 
+    if (pipeline && pipeline !== 'all') {
+      params.push(pipeline);
+      query += ` AND c.pipeline = $${params.length}`;
+    }
+
     if (status && status !== 'ALL') {
       params.push(status.toUpperCase());
       query += ` AND UPPER(c.status) = $${params.length}`;
@@ -147,10 +153,10 @@ export class CampaignService {
   }
 
   /**
-   * Get single campaign by ID
+   * Get single campaign by ID with optional pipeline isolation
    */
-  async getCampaign(id: string): Promise<CampaignDbRow | null> {
-    const query = `
+  async getCampaign(id: string, pipeline?: string): Promise<CampaignDbRow | null> {
+    let query = `
       SELECT 
         c.*,
         COALESCE(cs.total_talk_time_seconds, 0)::INT as total_talk_time_seconds,
@@ -170,7 +176,12 @@ export class CampaignService {
       ) cs ON c.id = cs.campaign_id
       WHERE c.id = $1
     `;
-    const res = await pool.query(query, [id]);
+    const params: any[] = [id];
+    if (pipeline && pipeline !== 'all') {
+      params.push(pipeline);
+      query += ` AND c.pipeline = $2`;
+    }
+    const res = await pool.query(query, params);
     return res.rows[0] || null;
   }
 
@@ -181,6 +192,7 @@ export class CampaignService {
     name: string;
     description?: string;
     status?: string;
+    pipeline?: string;
     script?: string;
     language?: string;
     voice_pipeline?: string;
@@ -210,6 +222,7 @@ export class CampaignService {
     })[];
   }): Promise<CampaignDbRow> {
     const status = (data.status || 'RUNNING').toUpperCase();
+    const campaignPipeline = data.pipeline || 'airtel';
     
     // Deduplicate phone numbers and discard any < 10 digits
     const rawList = Array.isArray(data.contacts) ? data.contacts : [];
@@ -238,9 +251,9 @@ export class CampaignService {
         name, description, status, total_contacts, total_credits, remaining_calls,
         script, language, voice_pipeline, schedule_start_time, schedule_end_time,
         operating_days, max_concurrent_calls, calls_per_minute, retry_attempts,
-        retry_delay_minutes, max_call_duration_minutes, expected_dispositions
+        retry_delay_minutes, max_call_duration_minutes, expected_dispositions, pipeline
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
       RETURNING *
     `;
     const res = await pool.query(query, [
@@ -262,6 +275,7 @@ export class CampaignService {
       retryDelayMinutes,
       maxDuration,
       JSON.stringify(data.expected_dispositions || CANONICAL_DISPOSITIONS),
+      campaignPipeline,
     ]);
     const campaign = res.rows[0];
 
