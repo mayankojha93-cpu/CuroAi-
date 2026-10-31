@@ -22,6 +22,10 @@ from .config import (
     TTS_LANGUAGE_HI,
     TTS_LANGUAGE_EN,
     TTS_SPEAKER,
+    TTS_PACE,
+    TTS_TEMPERATURE,
+    TTS_PITCH,
+    TTS_LOUDNESS,
     BACKEND_URL,
     INTERNAL_SECRET,
 )
@@ -82,7 +86,7 @@ def post_re_outcome_sync(state: RealEstateState) -> bool:
         "immediate_occupancy": state.immediate_occupancy,
         "agent_summary": state.agent_summary,
         "transcript": state.transcript,
-        "duration_seconds": int(time.time() - state.start_time),
+        "duration_seconds": int(time.time() - state.start_time) if state.callee_connected else 0,
         "median_latency_ms": int(sum(state.latency_samples) / len(state.latency_samples) * 1000) if state.latency_samples else None,
     }
 
@@ -151,14 +155,23 @@ async def entrypoint(ctx: agents.JobContext):
         target_language_code=TTS_LANGUAGE_EN if preferred_language == "en" else TTS_LANGUAGE_HI,
         model="bulbul:v3",
         speaker=TTS_SPEAKER,
+        pace=TTS_PACE,
+        temperature=TTS_TEMPERATURE,
+        pitch=TTS_PITCH,
+        loudness=TTS_LOUDNESS,
+        enable_preprocessing=True,
         api_key=SARVAM_API_KEY,
     )
 
     def _set_tts_language(lang: str):
         code = TTS_LANGUAGE_EN if lang == "en" else TTS_LANGUAGE_HI
         try:
-            tts.update_options(target_language_code=code)
-            logger.info(f"TTS language updated -> {code}")
+            tts.update_options(
+                target_language_code=code,
+                pace=TTS_PACE,
+                temperature=TTS_TEMPERATURE,
+            )
+            logger.info(f"TTS language updated -> {code} (pace={TTS_PACE})")
         except Exception as e:
             logger.warning(f"TTS update failed: {e}")
 
@@ -311,6 +324,7 @@ async def entrypoint(ctx: agents.JobContext):
             if not p.identity.startswith("phone-") or call_status == "active":
                 logger.info(f"🎉 Callee answered! (Identity: {p.identity}, Status: {call_status}). Starting dialogue.")
                 callee_connected = True
+                state.callee_connected = True
                 state.start_time = time.time()
                 break
             elif call_status in ("failed", "busy", "rejected", "hangup"):
@@ -337,9 +351,9 @@ async def entrypoint(ctx: agents.JobContext):
 
     # 3. Queue opening greeting
     greeting = (
-        "Hello, I’m Sagar, calling from My Estate Finder. We help property owners sell their properties. Are you considering selling or renting a property?"
+        "Hello, I’m Sagar, calling from My Estate Finder. Sir, we help property owners to sell or rent their properties. Are you also considering selling or renting a property of yours?"
         if state.reply_lang == "en"
-        else "Hello, main Sagar bol raha hoon My Estate Finder se. Hum property owners ko unki property sell ya rent karne mein help karte hain. Kya aap koi property sell ya rent karne ka soch rahe hain?"
+        else "Hello, main Sagar bol raha hoon My Estate Finder se. Sir, hum property owners ko unki property sell ya rent karne mein help karte hain. Kya aap bhi apni koi property sell ya rent karne ka soch rahe hain?"
     )
 
     state.last_activity_time = time.time()
