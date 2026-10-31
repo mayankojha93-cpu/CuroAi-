@@ -18,6 +18,7 @@ import {
   CANONICAL_DISPOSITIONS,
   TERMINAL_DISPOSITIONS,
 } from '../utils/dispositions.js';
+import { matchRealEstateDisposition } from '../utils/realEstateDispositions.js';
 
 export interface CallRecord {
   id: string;
@@ -1088,7 +1089,7 @@ export class CallService {
        LEFT JOIN campaigns camp ON c.campaign_id = camp.id
        LEFT JOIN call_outcomes co ON c.id = co.call_id
        LEFT JOIN real_estate_outcomes ro ON c.id = ro.call_id
-       LEFT JOIN real_estate_properties rp ON ro.property_id = rp.id
+       LEFT JOIN real_estate_properties rp ON (rp.id = COALESCE(ro.property_id, (SELECT id FROM real_estate_properties WHERE call_id = c.id LIMIT 1)))
        WHERE c.id = $1`,
       [callId]
     );
@@ -1098,13 +1099,20 @@ export class CallService {
     }
 
     const row = res.rows[0];
+    const isRealEstate = Boolean(
+      row.re_lead_id ||
+      (row.script || '').toLowerCase().includes('estate') ||
+      (row.script || '').toLowerCase().includes('sagar') ||
+      (row.company_name || '').toLowerCase().includes('estate')
+    );
+
+    const finalDisp = isRealEstate
+      ? matchRealEstateDisposition(row.final_disposition || row.call_status || row.status, row.duration_seconds, row.status)
+      : matchCanonicalDisposition(row.final_disposition || row.call_status || row.status, row.duration_seconds, row.status);
+
     return {
       ...row,
-      final_disposition: matchCanonicalDisposition(
-        row.final_disposition || row.call_status || row.status,
-        row.duration_seconds,
-        row.status
-      ),
+      final_disposition: finalDisp,
     };
   }
 
@@ -1123,13 +1131,23 @@ export class CallService {
               camp.id as campaign_id, camp.name as campaign_name,
               COALESCE(co.final_disposition, ro.final_disposition) as final_disposition,
               co.confirmed_date, co.pickup_date,
-              COALESCE(co.transcript, ro.transcript) as transcript
+              COALESCE(co.transcript, ro.transcript) as transcript,
+              COALESCE(co.customer_note, ro.agent_summary) as customer_note,
+              rp.category as re_category, rp.intent as re_intent,
+              rp.project_or_society as re_project_or_society, rp.sector_or_location as re_sector_or_location,
+              rp.unit_number as re_unit_number, rp.floor_number as re_floor_number,
+              rp.bhk_config as re_bhk_config, rp.commercial_type as re_commercial_type,
+              rp.approx_area_sqft as re_approx_area_sqft, rp.furnishing_status as re_furnishing_status,
+              rp.expected_sale_price as re_expected_sale_price, rp.expected_monthly_rent as re_expected_monthly_rent,
+              rp.is_currently_leased as re_is_currently_leased, rp.current_rent_received as re_current_rent_received,
+              rp.immediate_occupancy as re_immediate_occupancy
        FROM calls c
        LEFT JOIN customers cust ON c.customer_id = cust.id
        LEFT JOIN real_estate_leads rl ON c.re_lead_id = rl.id
        LEFT JOIN campaigns camp ON c.campaign_id = camp.id
        LEFT JOIN call_outcomes co ON c.id = co.call_id
        LEFT JOIN real_estate_outcomes ro ON c.id = ro.call_id
+       LEFT JOIN real_estate_properties rp ON (rp.id = COALESCE(ro.property_id, (SELECT id FROM real_estate_properties WHERE call_id = c.id LIMIT 1)))
     `;
     const params: any[] = [];
     const whereConditions: string[] = [];
@@ -1157,14 +1175,24 @@ export class CallService {
     params.push(limit);
 
     const res = await query(q, params);
-    return res.rows.map((row: any) => ({
-      ...row,
-      final_disposition: matchCanonicalDisposition(
-        row.final_disposition || row.call_status || row.status,
-        row.duration_seconds,
-        row.status
-      ),
-    }));
+    return res.rows.map((row: any) => {
+      const isRealEstate = Boolean(
+        row.re_lead_id ||
+        (row.script || '').toLowerCase().includes('estate') ||
+        (row.script || '').toLowerCase().includes('sagar') ||
+        (row.company_name || '').toLowerCase().includes('estate') ||
+        (row.voice_pipeline || '').toLowerCase().includes('aditya')
+      );
+
+      const finalDisp = isRealEstate
+        ? matchRealEstateDisposition(row.final_disposition || row.call_status || row.status, row.duration_seconds, row.status)
+        : matchCanonicalDisposition(row.final_disposition || row.call_status || row.status, row.duration_seconds, row.status);
+
+      return {
+        ...row,
+        final_disposition: finalDisp,
+      };
+    });
   }
 }
 
