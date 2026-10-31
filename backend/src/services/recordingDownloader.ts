@@ -127,15 +127,30 @@ export async function fetchExotelRecordingByPhone(phone: string): Promise<{ reco
   });
 }
 
+export function getRecordingsDir(): string {
+  if (env.RECORDING_STORAGE_DIR && fs.existsSync(env.RECORDING_STORAGE_DIR)) {
+    return env.RECORDING_STORAGE_DIR;
+  }
+  const candidates = [
+    path.resolve(process.cwd(), 'recordings'),
+    path.resolve(process.cwd(), '../recordings'),
+    path.resolve(__dirname, '../../../recordings'),
+    path.resolve(__dirname, '../../recordings'),
+  ];
+  for (const dir of candidates) {
+    if (fs.existsSync(dir)) return dir;
+  }
+  const fallback = path.resolve(process.cwd(), 'recordings');
+  fs.mkdirSync(fallback, { recursive: true });
+  return fallback;
+}
+
 /**
  * Downloads a recording from `url` and saves it to local private storage.
  * Returns the public HTTP streaming URL (/api/calls/:callId/audio) for frontend playback.
  */
 export async function saveRecordingLocally(url: string, callId: string): Promise<string | null> {
-  const storageDir = env.RECORDING_STORAGE_DIR || path.join(process.cwd(), 'recordings');
-  if (!fs.existsSync(storageDir)) {
-    fs.mkdirSync(storageDir, { recursive: true });
-  }
+  const storageDir = getRecordingsDir();
 
   const filename = `${callId}.mp3`;
   const filePath = path.join(storageDir, filename);

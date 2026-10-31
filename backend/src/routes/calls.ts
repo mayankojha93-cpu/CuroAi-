@@ -299,16 +299,39 @@ callsRouter.get('/api/calls/test-history', async (req: Request, res: Response, n
   }
 });
 
+// Helper to locate recordings directory across root or backend cwd
+function getRecordingsDir(): string {
+  if (env.RECORDING_STORAGE_DIR && fs.existsSync(env.RECORDING_STORAGE_DIR)) {
+    return env.RECORDING_STORAGE_DIR;
+  }
+  const candidates = [
+    path.resolve(process.cwd(), 'recordings'),
+    path.resolve(process.cwd(), '../recordings'),
+    path.resolve(__dirname, '../../../recordings'),
+    path.resolve(__dirname, '../../recordings'),
+  ];
+  for (const dir of candidates) {
+    if (fs.existsSync(dir)) return dir;
+  }
+  const fallback = path.resolve(process.cwd(), 'recordings');
+  fs.mkdirSync(fallback, { recursive: true });
+  return fallback;
+}
+
 // GET /api/calls/:id/audio - Stream seekable audio recording for playback
 callsRouter.get('/api/calls/:id/audio', async (req: Request<{ id: string }>, res: Response, next: NextFunction) => {
   try {
     const { id: callId } = req.params;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(callId)) {
+      return res.status(400).json({ error: 'Invalid call ID format' });
+    }
+
     const callRes = await query('SELECT id, recording_url, recording_download_status FROM calls WHERE id = $1', [callId]);
     if (callRes.rows.length === 0) {
       return res.status(404).json({ error: 'Call not found' });
     }
 
-    const storageDir = env.RECORDING_STORAGE_DIR || path.join(process.cwd(), 'recordings');
+    const storageDir = getRecordingsDir();
     const possibleFiles = [
       path.join(storageDir, `${callId}.mp3`),
       path.join(storageDir, `${callId}.wav`),
@@ -332,6 +355,11 @@ callsRouter.get('/api/calls/:id/audio', async (req: Request<{ id: string }>, res
         error: 'Recording audio file is still being processed or unavailable',
         status: callRes.rows[0].recording_download_status || 'pending',
       });
+    }
+
+    // Auto-sync database record if audio exists
+    if (callRes.rows[0].recording_url !== `/api/calls/${callId}/audio` || callRes.rows[0].recording_download_status !== 'done') {
+      await query(`UPDATE calls SET recording_url = $1, recording_download_status = 'done' WHERE id = $2`, [`/api/calls/${callId}/audio`, callId]).catch(() => {});
     }
 
     const stat = fs.statSync(filePath);
