@@ -1,3 +1,4 @@
+import re
 import logging
 import asyncio
 from typing import Optional, List, Dict, Any
@@ -121,7 +122,12 @@ class RealEstateTools:
             self.state.commercial_type = commercial_type.strip()
         if approx_area_sqft is not None:
             try:
-                self.state.approx_area_sqft = float(approx_area_sqft)
+                if isinstance(approx_area_sqft, (int, float)):
+                    self.state.approx_area_sqft = float(approx_area_sqft)
+                else:
+                    m = re.search(r'([0-9]+(?:\.[0-9]+)?)', str(approx_area_sqft).replace(',', ''))
+                    if m:
+                        self.state.approx_area_sqft = float(m.group(1))
             except (ValueError, TypeError):
                 pass
         if furnishing_status:
@@ -131,11 +137,19 @@ class RealEstateTools:
         if expected_monthly_rent:
             self.state.expected_monthly_rent = str(expected_monthly_rent).strip()
         if is_currently_leased is not None:
-            self.state.is_currently_leased = is_currently_leased
+            if isinstance(is_currently_leased, bool):
+                self.state.is_currently_leased = is_currently_leased
+            else:
+                s = str(is_currently_leased).lower().strip()
+                self.state.is_currently_leased = s in ("true", "yes", "1", "leased", "rented")
         if current_rent_received:
             self.state.current_rent_received = str(current_rent_received).strip()
         if immediate_occupancy is not None:
-            self.state.immediate_occupancy = immediate_occupancy
+            if isinstance(immediate_occupancy, bool):
+                self.state.immediate_occupancy = immediate_occupancy
+            else:
+                s = str(immediate_occupancy).lower().strip()
+                self.state.immediate_occupancy = s in ("true", "yes", "1", "immediate", "ready")
 
         logger.info(
             f"Updated slots: society={self.state.project_or_society}, "
@@ -160,7 +174,7 @@ class RealEstateTools:
         """Call when all property details have been collected to wrap up."""
         cat = (self.state.category or "Residential").title()
         intn = "Sale" if self.state.intent == "sale" else "Lease"
-        self.state.final_disposition = f"Qualified - {cat} {intn}"
+        self.state.final_disposition = "Qualified Lead"
 
         details = [f"{cat} {intn}"]
         if self.state.project_or_society:
@@ -209,9 +223,8 @@ class RealEstateTools:
         """Call when customer asks to call back later or specifies a preferred day/time slot."""
         slot = f"{preferred_day or ''} {time_slot or ''}".strip() or "General"
         self.state.callback_time_slot = slot
-        self.state.final_disposition = f"Schedule Callback ({slot})"
-        if not self.state.agent_summary:
-            self.state.agent_summary = f"Callback scheduled for: {slot}"
+        self.state.final_disposition = "Schedule Callback"
+        self.state.agent_summary = f"Callback scheduled for: {slot}"
         await self._go(RealEstateStep.CLOSING)
         return f"Callback scheduled for {slot}. Confirm with customer and speak closing."
 
@@ -225,10 +238,8 @@ class RealEstateTools:
         self.state.impatient_detected = "impatient" in reason.lower()
         self.state.advisor_handoff_reason = reason.strip()
         self.state.callback_time_slot = preferred_time
-        clean_reason = reason.replace(" ", "_")[:25]
-        self.state.final_disposition = f"Advisor Callback Booked ({clean_reason})"
-        if not self.state.agent_summary:
-            self.state.agent_summary = f"Advisor handoff booked: {reason}"
+        self.state.final_disposition = "Advisor Callback Booked"
+        self.state.agent_summary = f"Advisor handoff booked: {reason}"
         await self._go(RealEstateStep.CLOSING)
         return "Senior advisor callback booked. Acknowledge politely and speak closing."
 
@@ -252,7 +263,7 @@ class RealEstateTools:
     ) -> str:
         """Call when customer says 'mujhe call mat karna', requests Do Not Call, or asks to remove their number."""
         self.state.is_dnc = True
-        self.state.final_disposition = "Do Not Call / DNC"
+        self.state.final_disposition = "Do Not Call"
         self.state.agent_summary = f"Customer added to DNC list ({reason or 'Customer requested no further calls'})"
         await self._go(RealEstateStep.CLOSING)
         return "Customer added to Do Not Call (DNC) list. Apologize sincerely and speak closing."
