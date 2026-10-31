@@ -221,14 +221,32 @@ export const RecentCalls: React.FC<RecentCallsProps> = ({ calls, onSelectCall })
               </tr>
             ) : (
               filteredCalls.map((call, idx) => {
+                const isRealEstateCall = Boolean(
+                  (call as any).re_lead_id ||
+                  (call as any).re_category ||
+                  (call as any).re_project_or_society ||
+                  (call.script || '').toLowerCase().includes('estate') ||
+                  (call.script || '').toLowerCase().includes('sagar') ||
+                  (call.company_name || '').toLowerCase().includes('estate') ||
+                  ((call as any).voice_pipeline || '').toLowerCase().includes('aditya')
+                );
+
                 const phoneDisplay = maskPhone(call.customer_phone || (call as any).phone);
-                const refId = call.subs_del_no || (call as any).contact_ref || '—';
-                const campName = (call as any).campaign_name || 'Direct Voice Outreach';
+                const contactHeader = isRealEstateCall && call.customer_name ? `${call.customer_name}` : phoneDisplay;
+                const contactSub = isRealEstateCall && call.customer_name
+                  ? `${phoneDisplay} • ${(call as any).re_project_or_society || (call as any).re_category || 'Property Intake'}`
+                  : (call.subs_del_no || (call as any).contact_ref || '—');
+
+                const campName = (call as any).campaign_name || (isRealEstateCall ? 'My Estate Finder' : 'Direct Voice Outreach');
                 const rawResult = call.final_disposition || (call as any).call_result || call.call_status;
                 const normStatus = normalizeStatus(call.status, rawResult);
-                const resultText = rawResult
-                  ? matchCanonicalDisposition(rawResult, call.duration_seconds, call.status)
-                  : (normStatus === 'SUCCESSFUL' ? 'Confirmed For Pickup' : (normStatus === 'NO_ANSWER' ? 'Not Connected (No Answer)' : 'Not Connected (Failed)'));
+
+                const resultText = isRealEstateCall
+                  ? (rawResult || (normStatus === 'SUCCESSFUL' ? 'Qualified Lead' : (normStatus === 'NO_ANSWER' ? 'Not Connected (No Answer)' : 'Abruptly Disconnected Call')))
+                  : (rawResult
+                    ? matchCanonicalDisposition(rawResult, call.duration_seconds, call.status)
+                    : (normStatus === 'SUCCESSFUL' ? 'Confirmed For Pickup' : (normStatus === 'NO_ANSWER' ? 'Not Connected (No Answer)' : 'Not Connected (Failed)')));
+
                 const langText = (call as any).language === 'en' || (call as any).customer_language === 'en' ? 'English' : 'Hindi';
                 const durationText = formatDuration(call.duration_seconds);
                 const timeText = (call as any).formatted_time || formatTime(call.created_at);
@@ -248,10 +266,10 @@ export const RecentCalls: React.FC<RecentCallsProps> = ({ calls, onSelectCall })
                     {/* Contact */}
                     <td style={{ padding: '14px 16px' }}>
                       <div style={{ color: '#FFFFFF', fontWeight: 700, fontSize: '0.88rem', letterSpacing: '0.01em' }}>
-                        {phoneDisplay}
+                        {contactHeader}
                       </div>
                       <div style={{ color: '#64748B', fontSize: '0.74rem', marginTop: 2 }}>
-                        {refId}
+                        {contactSub}
                       </div>
                     </td>
 
