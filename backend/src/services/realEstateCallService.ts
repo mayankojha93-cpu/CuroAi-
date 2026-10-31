@@ -391,10 +391,12 @@ export class RealEstateCallService {
     // 4. Update lead status if lead exists
     if (leadId) {
       let leadStatus = 'CONTACTED';
-      if (data.is_interested) leadStatus = 'QUALIFIED';
+      if (disp.includes('dnc') || disp.includes('do not call')) leadStatus = 'DNC';
+      else if (disp.includes('whatsapp')) leadStatus = 'WHATSAPP_REQUESTED';
+      else if (disp.includes('advisor') || disp.includes('callback')) leadStatus = 'CALLBACK';
+      else if (data.is_interested) leadStatus = 'QUALIFIED';
       else if (disp.includes('not interested')) leadStatus = 'NOT_INTERESTED';
       else if (disp.includes('wrong number')) leadStatus = 'WRONG_NUMBER';
-      else if (disp.includes('callback')) leadStatus = 'CALLBACK';
 
       await query(
         `UPDATE real_estate_leads
