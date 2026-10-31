@@ -17,6 +17,7 @@ import { billingRouter } from './routes/billing.js';
 import { realEstateRouter } from './routes/realEstate.js';
 import { requireAuth } from './middleware/auth.js';
 import { authService } from './services/authService.js';
+import { realEstateCallService } from './services/realEstateCallService.js';
 
 export const app = express();
 
@@ -49,7 +50,7 @@ app.use(express.text({ type: ['text/csv', 'text/plain'], limit: '10mb' }));
 app.use(healthRouter);
 app.use(internalRouter);
 app.use(authRouter);
-app.use(realEstateRouter);
+app.use(requireAuth, realEstateRouter);
 app.use(requireAuth, callsRouter);
 app.use(requireAuth, campaignsRouter);
 app.use(requireAuth, billingRouter);
@@ -76,6 +77,11 @@ if (process.env.NODE_ENV !== 'test') {
     // Ensure default admin user is seeded
     authService.ensureDefaultAdmin().catch((err: any) => {
       logger.error({ err }, 'Error checking/seeding default admin');
+    });
+
+    // Auto-backfill any missing real estate property details from call transcripts
+    realEstateCallService.autoBackfillMissingDetails().catch((err: any) => {
+      logger.error({ err }, 'Error auto-backfilling real estate property details');
     });
 
     // Start stuck calls sweeper every 30 seconds
