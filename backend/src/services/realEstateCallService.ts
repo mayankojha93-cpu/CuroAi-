@@ -10,6 +10,7 @@ import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { normalizePhone } from '../utils/csvParser.js';
+import { matchRealEstateDisposition, RealEstateCanonicalDisposition } from '../utils/realEstateDispositions.js';
 
 export interface RealEstateLeadRecord {
   id: string;
@@ -76,7 +77,8 @@ export class RealEstateCallService {
     language?: string;
     notes?: string;
   }) {
-    const ownerName = data.owner_name || data.name || 'Test Property Owner';
+    const passedName = data.owner_name || data.name;
+    const ownerName = passedName || 'Test Property Owner';
     const normalizedPhone = normalizePhone(data.phone);
 
     // Reuse existing lead or create new lead
@@ -89,16 +91,18 @@ export class RealEstateCallService {
          SET owner_name = COALESCE($1, owner_name),
              preferred_language = COALESCE($2, preferred_language),
              notes = COALESCE($3, notes),
+             total_attempts = COALESCE(total_attempts, 0) + 1,
+             last_called_at = NOW(),
              updated_at = NOW()
          WHERE id = $4
          RETURNING *`,
-        [ownerName, data.language || 'en', data.notes || 'Developer Test Call', existingLead.rows[0].id]
+        [passedName || null, data.language || 'en', data.notes || 'Developer Test Call', existingLead.rows[0].id]
       );
       lead = upd.rows[0];
     } else {
       const ins = await query(
-        `INSERT INTO real_estate_leads (owner_name, phone, preferred_language, notes, total_attempts, max_attempts)
-         VALUES ($1, $2, $3, $4, 0, 3)
+        `INSERT INTO real_estate_leads (owner_name, phone, preferred_language, notes, total_attempts, max_attempts, last_called_at)
+         VALUES ($1, $2, $3, $4, 1, 3, NOW())
          RETURNING *`,
         [ownerName, normalizedPhone, data.language || 'en', data.notes || 'Developer Test Call']
       );
@@ -113,10 +117,10 @@ export class RealEstateCallService {
          id, re_lead_id, status, call_status, attempt_number, room_name, direction,
          script, company_name, voice_pipeline, is_test_call
        )
-       VALUES ($1, $2, 'initiated', 'initiated', 1, $3, 'outbound',
+       VALUES ($1, $2, 'initiated', 'initiated', $3, $4, 'outbound',
                'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Aditya - hi-IN)', TRUE)
        RETURNING *`,
-      [callId, lead?.id || null, roomName]
+      [callId, lead?.id || null, lead?.total_attempts || 1, roomName]
     );
     const call = insertCall.rows[0];
 
@@ -253,8 +257,73 @@ export class RealEstateCallService {
     // 1. Insert or update property details if any slot was captured
     let propertyId: string | null = null;
     const hasPropertyInfo = Boolean(
-      data.category || data.intent || data.project_or_society || data.bhk_config || data.commercial_type
+      data.category ||
+      data.intent ||
+      data.project_or_society ||
+      data.sector_or_location ||
+      data.unit_number ||
+      data.floor_number ||
+      data.bhk_config ||
+      data.commercial_type ||
+      data.approx_area_sqft ||
+      data.expected_sale_price ||
+      data.expected_monthly_rent
     );
+
+    // Sanitize category & intent to strictly adhere to Postgres CHECK constraints
+    let cleanCategory: string | null = null;
+    if (data.category) {
+      cleanCategory = data.category.toLowerCase().includes('comm') ? 'commercial' : 'residential';
+    }
+    let cleanIntent: string | null = null;
+    if (data.intent) {
+      cleanIntent = (data.intent.toLowerCase().includes('rent') || data.intent.toLowerCase().includes('lease')) ? 'lease' : 'sale';
+    }
+
+    // Defensive parsing for numeric area
+    let cleanArea: number | null = null;
+    if (data.approx_area_sqft !== undefined && data.approx_area_sqft !== null) {
+      if (typeof data.approx_area_sqft === 'number') {
+        cleanArea = isNaN(data.approx_area_sqft) ? null : data.approx_area_sqft;
+      } else {
+        const match = String(data.approx_area_sqft).replace(/,/g, '').match(/([0-9]+(?:\.[0-9]+)?)/);
+        cleanArea = match ? parseFloat(match[1]) : null;
+      }
+    }
+
+    // Defensive boolean parsing for lease status & immediate occupancy
+    let cleanIsLeased: boolean | null = null;
+    if (data.is_currently_leased !== undefined && data.is_currently_leased !== null) {
+      if (typeof data.is_currently_leased === 'boolean') {
+        cleanIsLeased = data.is_currently_leased;
+      } else {
+        const s = String(data.is_currently_leased).toLowerCase().trim();
+        cleanIsLeased = s === 'true' || s === 'yes' || s === '1' || s.includes('leased') || s.includes('rented');
+      }
+    }
+
+    let cleanImmOcc: boolean | null = null;
+    if (data.immediate_occupancy !== undefined && data.immediate_occupancy !== null) {
+      if (typeof data.immediate_occupancy === 'boolean') {
+        cleanImmOcc = data.immediate_occupancy;
+      } else {
+        const s = String(data.immediate_occupancy).toLowerCase().trim();
+        cleanImmOcc = s === 'true' || s === 'yes' || s === '1' || s.includes('immediate') || s.includes('ready');
+      }
+    }
+
+    // Defensively slice strings to adhere to database column limits
+    const safeSociety = data.project_or_society ? data.project_or_society.trim().slice(0, 255) : null;
+    const safeLocation = data.sector_or_location ? data.sector_or_location.trim().slice(0, 255) : null;
+    const safeUnit = data.unit_number ? String(data.unit_number).trim().slice(0, 64) : null;
+    const safeFloor = data.floor_number ? String(data.floor_number).trim().slice(0, 64) : null;
+    const safeBhk = data.bhk_config ? data.bhk_config.trim().slice(0, 64) : null;
+    const safeCommercialType = data.commercial_type ? data.commercial_type.trim().slice(0, 64) : null;
+    const safeFurnishing = data.furnishing_status ? data.furnishing_status.trim().slice(0, 64) : null;
+    const safePrice = data.expected_sale_price ? String(data.expected_sale_price).trim().slice(0, 128) : null;
+    const safeRent = data.expected_monthly_rent ? String(data.expected_monthly_rent).trim().slice(0, 128) : null;
+    const safeCurrentRent = data.current_rent_received ? String(data.current_rent_received).trim().slice(0, 128) : null;
+    const safeOwnerConfirmed = data.owner_name_confirmed ? data.owner_name_confirmed.trim().slice(0, 255) : null;
 
     if (hasPropertyInfo) {
       const existingProp = await query(`SELECT id FROM real_estate_properties WHERE call_id = $1 LIMIT 1`, [callId]);
@@ -280,21 +349,21 @@ export class RealEstateCallService {
                raw_notes = COALESCE($16, raw_notes)
            WHERE id = $17`,
           [
-            data.category || null,
-            data.intent || null,
-            data.project_or_society || null,
-            data.sector_or_location || null,
-            data.unit_number || null,
-            data.floor_number || null,
-            data.bhk_config || null,
-            data.commercial_type || null,
-            data.approx_area_sqft || null,
-            data.furnishing_status || null,
-            data.expected_sale_price || null,
-            data.expected_monthly_rent || null,
-            data.is_currently_leased ?? null,
-            data.current_rent_received || null,
-            data.immediate_occupancy ?? null,
+            cleanCategory,
+            cleanIntent,
+            safeSociety,
+            safeLocation,
+            safeUnit,
+            safeFloor,
+            safeBhk,
+            safeCommercialType,
+            cleanArea,
+            safeFurnishing,
+            safePrice,
+            safeRent,
+            cleanIsLeased,
+            safeCurrentRent,
+            cleanImmOcc,
             data.agent_summary || null,
             propertyId,
           ]
@@ -312,21 +381,21 @@ export class RealEstateCallService {
           [
             leadId || null,
             callId,
-            data.category || null,
-            data.intent || null,
-            data.project_or_society || null,
-            data.sector_or_location || null,
-            data.unit_number || null,
-            data.floor_number || null,
-            data.bhk_config || null,
-            data.commercial_type || null,
-            data.approx_area_sqft || null,
-            data.furnishing_status || null,
-            data.expected_sale_price || null,
-            data.expected_monthly_rent || null,
-            data.is_currently_leased ?? false,
-            data.current_rent_received || null,
-            data.immediate_occupancy ?? true,
+            cleanCategory,
+            cleanIntent,
+            safeSociety,
+            safeLocation,
+            safeUnit,
+            safeFloor,
+            safeBhk,
+            safeCommercialType,
+            cleanArea,
+            safeFurnishing,
+            safePrice,
+            safeRent,
+            cleanIsLeased ?? false,
+            safeCurrentRent,
+            cleanImmOcc ?? true,
             data.agent_summary || null,
           ]
         );
@@ -334,7 +403,14 @@ export class RealEstateCallService {
       }
     }
 
-    // 2. Save real_estate_outcomes
+    // 2. Standardize disposition to 2nd pipeline Canonical Dispositions
+    const canonicalDisp: RealEstateCanonicalDisposition = matchRealEstateDisposition(
+      data.final_disposition,
+      data.duration_seconds,
+      call.status
+    );
+
+    // 3. Save real_estate_outcomes
     const transcriptJson = data.transcript ? JSON.stringify(data.transcript) : null;
     const outcomeRes = await query(
       `INSERT INTO real_estate_outcomes (
@@ -357,9 +433,9 @@ export class RealEstateCallService {
         callId,
         leadId || null,
         propertyId,
-        data.final_disposition,
+        canonicalDisp,
         data.is_interested ?? null,
-        data.owner_name_confirmed || null,
+        safeOwnerConfirmed,
         transcriptJson,
         data.agent_summary || null,
         data.duration_seconds || 0,
@@ -367,12 +443,11 @@ export class RealEstateCallService {
       ]
     );
 
-    // 3. Update call record status
+    // 4. Update call record status
     let mappedStatus = 'completed';
-    const disp = data.final_disposition.toLowerCase();
-    if (disp.includes('not connected') || disp.includes('no answer')) {
+    if (canonicalDisp === 'Not Connected (No Answer)') {
       mappedStatus = 'no_answer';
-    } else if (disp.includes('failed') || disp.includes('wrong number')) {
+    } else if (canonicalDisp === 'Wrong Number') {
       mappedStatus = 'failed';
     }
 
@@ -385,18 +460,19 @@ export class RealEstateCallService {
            answered_at = COALESCE(answered_at, CASE WHEN $3 > 0 THEN NOW() - ($3 || ' seconds')::interval ELSE NOW() END),
            ended_at = NOW()
        WHERE id = $5`,
-      [mappedStatus, data.final_disposition, data.duration_seconds || 0, data.median_latency_ms || null, callId]
+      [mappedStatus, canonicalDisp, data.duration_seconds || 0, data.median_latency_ms || null, callId]
     );
 
-    // 4. Update lead status if lead exists
+    // 5. Update lead status if lead exists
     if (leadId) {
       let leadStatus = 'CONTACTED';
-      if (disp.includes('dnc') || disp.includes('do not call')) leadStatus = 'DNC';
-      else if (disp.includes('whatsapp')) leadStatus = 'WHATSAPP_REQUESTED';
-      else if (disp.includes('advisor') || disp.includes('callback')) leadStatus = 'CALLBACK';
-      else if (data.is_interested) leadStatus = 'QUALIFIED';
-      else if (disp.includes('not interested')) leadStatus = 'NOT_INTERESTED';
-      else if (disp.includes('wrong number')) leadStatus = 'WRONG_NUMBER';
+      if (canonicalDisp === 'Qualified Lead') leadStatus = 'QUALIFIED';
+      else if (canonicalDisp === 'Schedule Callback' || canonicalDisp === 'Advisor Callback Booked') leadStatus = 'CALLBACK';
+      else if (canonicalDisp === 'WhatsApp Info Requested') leadStatus = 'WHATSAPP_REQUESTED';
+      else if (canonicalDisp === 'Not Interested') leadStatus = 'NOT_INTERESTED';
+      else if (canonicalDisp === 'Do Not Call') leadStatus = 'DNC';
+      else if (canonicalDisp === 'Wrong Number') leadStatus = 'WRONG_NUMBER';
+      else if (canonicalDisp === 'Not Connected (No Answer)') leadStatus = 'NO_ANSWER';
 
       await query(
         `UPDATE real_estate_leads
@@ -405,7 +481,7 @@ export class RealEstateCallService {
              owner_name = COALESCE($3, owner_name),
              updated_at = NOW()
          WHERE id = $4`,
-        [leadStatus, data.final_disposition, data.owner_name_confirmed || null, leadId]
+        [leadStatus, canonicalDisp, data.owner_name_confirmed || null, leadId]
       );
     }
 
@@ -430,7 +506,12 @@ export class RealEstateCallService {
     args.push(limit, offset);
 
     const res = await query(sql, args);
-    return res.rows;
+    return res.rows.map((row: any) => ({
+      ...row,
+      current_disposition: row.current_disposition
+        ? matchRealEstateDisposition(row.current_disposition)
+        : null,
+    }));
   }
 
   /**
@@ -461,7 +542,12 @@ export class RealEstateCallService {
     args.push(limit);
 
     const res = await query(sql, args);
-    return res.rows;
+    return res.rows.map((row: any) => ({
+      ...row,
+      final_disposition: row.final_disposition
+        ? matchRealEstateDisposition(row.final_disposition, row.duration_seconds)
+        : null,
+    }));
   }
 }
 
