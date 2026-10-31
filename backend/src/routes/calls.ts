@@ -286,20 +286,6 @@ callsRouter.get('/api/customers', async (req: Request, res: Response, next: Next
   }
 });
 
-// GET /calls/:id or /api/calls/:id - Get specific call outcome and details
-callsRouter.get(
-  ['/calls/:id', '/api/calls/:id'],
-  validateRequest(getCallSchema),
-  async (req: Request<{ id: string }>, res: Response, next: NextFunction) => {
-    try {
-      const call = await callService.getCall(req.params.id, req.user?.assigned_pipeline);
-      return res.json({ call });
-    } catch (err) {
-      return next(err);
-    }
-  }
-);
-
 // GET /calls or /api/calls - Get latest calls across all campaigns with optional status filter
 callsRouter.get(['/calls', '/api/calls'], async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -330,6 +316,20 @@ callsRouter.get('/api/calls/test-history', async (req: Request, res: Response, n
     return next(err);
   }
 });
+
+// GET /calls/:id or /api/calls/:id - Get specific call outcome and details
+callsRouter.get(
+  ['/calls/:id', '/api/calls/:id'],
+  validateRequest(getCallSchema),
+  async (req: Request<{ id: string }>, res: Response, next: NextFunction) => {
+    try {
+      const call = await callService.getCall(req.params.id, req.user?.assigned_pipeline);
+      return res.json({ call });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
 
 // Helper to locate recordings directory across root or backend cwd
 function getRecordingsDir(): string {
