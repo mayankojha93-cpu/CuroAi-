@@ -22,6 +22,10 @@ from .config import (
     TTS_LANGUAGE_HI,
     TTS_LANGUAGE_EN,
     TTS_SPEAKER,
+    TTS_PACE,
+    TTS_TEMPERATURE,
+    TTS_PITCH,
+    TTS_LOUDNESS,
     BACKEND_URL,
     INTERNAL_SECRET,
 )
@@ -82,7 +86,7 @@ def post_re_outcome_sync(state: RealEstateState) -> bool:
         "immediate_occupancy": state.immediate_occupancy,
         "agent_summary": state.agent_summary,
         "transcript": state.transcript,
-        "duration_seconds": int(time.time() - state.start_time),
+        "duration_seconds": int(time.time() - state.start_time) if state.callee_connected else 0,
         "median_latency_ms": int(sum(state.latency_samples) / len(state.latency_samples) * 1000) if state.latency_samples else None,
     }
 
@@ -151,14 +155,23 @@ async def entrypoint(ctx: agents.JobContext):
         target_language_code=TTS_LANGUAGE_EN if preferred_language == "en" else TTS_LANGUAGE_HI,
         model="bulbul:v3",
         speaker=TTS_SPEAKER,
+        pace=TTS_PACE,
+        temperature=TTS_TEMPERATURE,
+        pitch=TTS_PITCH,
+        loudness=TTS_LOUDNESS,
+        enable_preprocessing=True,
         api_key=SARVAM_API_KEY,
     )
 
     def _set_tts_language(lang: str):
         code = TTS_LANGUAGE_EN if lang == "en" else TTS_LANGUAGE_HI
         try:
-            tts.update_options(target_language_code=code)
-            logger.info(f"TTS language updated -> {code}")
+            tts.update_options(
+                target_language_code=code,
+                pace=TTS_PACE,
+                temperature=TTS_TEMPERATURE,
+            )
+            logger.info(f"TTS language updated -> {code} (pace={TTS_PACE})")
         except Exception as e:
             logger.warning(f"TTS update failed: {e}")
 
@@ -205,14 +218,28 @@ async def entrypoint(ctx: agents.JobContext):
         turn_handling=TurnHandlingOptions(**turn_opts),
     )
 
+    _room_deleted = False
+    _shutdown_in_progress = False
+
     async def _end_room():
+        nonlocal _room_deleted
+        if _room_deleted:
+            return
+        _room_deleted = True
         try:
             await ctx.api.room.delete_room(api.DeleteRoomRequest(room=ctx.room.name))
             logger.info(f"Room {ctx.room.name} deleted: call terminated cleanly.")
         except Exception as e:
-            logger.warning(f"delete_room failed: {e}")
+            if "not_found" in str(e).lower() or "404" in str(e):
+                logger.debug(f"Room {ctx.room.name} was already deleted.")
+            else:
+                logger.warning(f"delete_room failed: {e}")
 
     async def _save_and_shutdown():
+        nonlocal _shutdown_in_progress
+        if _shutdown_in_progress:
+            return
+        _shutdown_in_progress = True
         if not state.outcome_posted and state.call_id:
             await asyncio.to_thread(post_re_outcome_sync, state)
             state.outcome_posted = True
@@ -311,6 +338,8 @@ async def entrypoint(ctx: agents.JobContext):
             if not p.identity.startswith("phone-") or call_status == "active":
                 logger.info(f"🎉 Callee answered! (Identity: {p.identity}, Status: {call_status}). Starting dialogue.")
                 callee_connected = True
+                state.callee_connected = True
+                state.start_time = time.time()
                 break
             elif call_status in ("failed", "busy", "rejected", "hangup"):
                 logger.warning(f"Call ended before pickup: {call_status}")
@@ -336,9 +365,9 @@ async def entrypoint(ctx: agents.JobContext):
 
     # 3. Queue opening greeting
     greeting = (
-        "Hello, I’m Sagar, calling from My Estate Finder. We help property owners sell their properties. Are you considering selling or renting a property?"
+        "Hello, I’m Sagar, calling from My Estate Finder. Sir, we help property owners to sell or rent their properties. Are you also considering selling or renting a property of yours?"
         if state.reply_lang == "en"
-        else "नमस्ते, मैं माय एस्टेट फाइंडर से सागर बात कर रहा हूँ। हम प्रॉपर्टी ओनर्स को प्रॉपर्टी बेचने या रेंट पर देने में मदद करते हैं। क्या आप कोई प्रॉपर्टी बेचने या रेंट पर देने की सोच रहे हैं?"
+        else "Hello, main Sagar bol raha hoon My Estate Finder se. Sir, hum property owners ko unki property sell ya rent karne mein help karte hain. Kya aap bhi apni koi property sell ya rent karne ka soch rahe hain?"
     )
 
     state.last_activity_time = time.time()
@@ -360,7 +389,7 @@ async def entrypoint(ctx: agents.JobContext):
                     reprompt = (
                         "Are you still with me? Could you hear me?"
                         if state.reply_lang == "en"
-                        else "क्या आप लाइन पर हैं? क्या आप मुझे सुन पा रहे हैं?"
+                        else "Kya aap line par hain? Kya aap mujhe sun pa rahe hain?"
                     )
                     try:
                         session.say(reprompt, allow_interruptions=True)
@@ -370,7 +399,7 @@ async def entrypoint(ctx: agents.JobContext):
                     goodbye = (
                         "I cannot hear you at the moment. We will call you back later. Have a great day!"
                         if state.reply_lang == "en"
-                        else "मुझे आपकी आवाज़ नहीं आ रही है। हम आपसे बाद में संपर्क करेंगे। आपका दिन शुभ हो!"
+                        else "Mujhe aapki aawaz nahi aa rahi hai. Hum aapse baad mein connect karenge. Have a great day!"
                     )
                     try:
                         speech = session.say(goodbye, allow_interruptions=False)
@@ -385,6 +414,38 @@ async def entrypoint(ctx: agents.JobContext):
                 consecutive_silence = 0
 
     asyncio.create_task(silence_watchdog())
+
+    # 5. Call Duration Cap Watchdog (Cap at ~3 minutes = 180s)
+    async def call_duration_watchdog():
+        while not state.hangup_started:
+            await asyncio.sleep(2.0)
+            if state.hangup_started:
+                break
+            elapsed = time.time() - state.start_time
+            # At 165s (~2m45s), initiate graceful wrap-up to conclude within 3 minutes
+            if elapsed >= 165.0 and state.step != RealEstateStep.CLOSING:
+                logger.info(f"⏳ Call reached {int(elapsed)}s (3-minute cap). Gracefully wrapping up with advisor callback...")
+                state.step = RealEstateStep.CLOSING
+                disp_lower = state.final_disposition.lower()
+                if not ("qualified" in disp_lower or "dnc" in disp_lower or "whatsapp" in disp_lower):
+                    state.final_disposition = "Advisor Callback Booked (3-Min Cap)"
+                    if not state.agent_summary:
+                        state.agent_summary = "Call capped at 3 minutes; advisor follow-up scheduled"
+                wrapup_line = (
+                    "Thank you for your time! I’ve noted the essential details, and our senior property advisor will follow up with you to finalize everything. Have a great day!"
+                    if state.reply_lang == "en"
+                    else "Apna time dene ke liye thank you! Maine main details note kar li hain, aur hamare senior property advisor aapse baki details ke liye follow-up karenge. Have a great day!"
+                )
+                try:
+                    speech = session.say(wrapup_line, allow_interruptions=False)
+                    state.add_transcript("assistant", wrapup_line)
+                    await asyncio.wait_for(speech.wait_for_playout(), timeout=6.5)
+                except Exception as e:
+                    logger.warning(f"Duration cap wrapup playout error: {e}")
+                await _save_and_shutdown()
+                break
+
+    asyncio.create_task(call_duration_watchdog())
 
     try:
         await asyncio.wait_for(opening_speech.wait_for_playout(), timeout=8.0)

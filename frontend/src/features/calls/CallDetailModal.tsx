@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { X, Phone, User, Bot, MessageSquare, Volume2, ShieldAlert } from 'lucide-react';
 import type { CallRecord } from '../../types';
 import { fetchCallDetail } from '../../services/api.service';
+import { cleanEnglishOnly } from '../../utils/textUtils';
 
 interface CallDetailModalProps {
   call: CallRecord | null;
@@ -117,6 +118,16 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
 
   const phoneDisplay = activeCall.customer_phone || (activeCall as any).phone || '—';
   const campaignName = (activeCall as any).campaign_name || 'Campaign';
+
+  const isRealEstate = Boolean(
+    (activeCall as any).re_lead_id ||
+    (activeCall as any).re_category ||
+    (activeCall as any).re_project_or_society ||
+    (activeCall.script || '').toLowerCase().includes('estate') ||
+    (activeCall.script || '').toLowerCase().includes('sagar') ||
+    (activeCall.company_name || '').toLowerCase().includes('estate') ||
+    ((activeCall as any).voice_pipeline || '').toLowerCase().includes('aditya')
+  );
 
   return (
     <div
@@ -264,7 +275,7 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
           </div>
 
           {/* Real Estate Property Intake Dossier (if real-estate call) */}
-          {Boolean((activeCall as any).re_category || (activeCall as any).re_project_or_society || (activeCall.script || '').includes('Estate')) && (
+          {isRealEstate && (
             <div style={{
               background: '#0F1524',
               border: '1px solid rgba(139, 92, 246, 0.25)',
@@ -302,12 +313,14 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
                 <div>
                   <span style={{ color: '#94A3B8' }}>Unit & Floor: </span>
                   <span style={{ color: '#E2E8F0' }}>
-                    {[(activeCall as any).re_unit_number, (activeCall as any).re_floor_number ? `Floor ${(activeCall as any).re_floor_number}` : ''].filter(Boolean).join(', ') || '—'}
+                    {[(activeCall as any).re_unit_number ? `Unit ${(activeCall as any).re_unit_number}` : '', (activeCall as any).re_floor_number ? `Floor ${(activeCall as any).re_floor_number}` : ''].filter(Boolean).join(', ') || '—'}
                   </span>
                 </div>
                 <div>
                   <span style={{ color: '#94A3B8' }}>Config / Type: </span>
-                  <span style={{ color: '#38BDF8', fontWeight: 600 }}>{(activeCall as any).re_bhk_config || (activeCall as any).re_commercial_type || '—'}</span>
+                  <span style={{ color: '#38BDF8', fontWeight: 600 }}>
+                    {(activeCall as any).re_bhk_config || (activeCall as any).re_commercial_type || ((activeCall as any).re_category === 'commercial' ? 'Commercial Unit' : ((activeCall as any).re_category === 'residential' ? 'Residential Property' : '—'))}
+                  </span>
                 </div>
                 <div>
                   <span style={{ color: '#94A3B8' }}>Approx Area: </span>
@@ -351,20 +364,28 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
             padding: 16,
           }}>
             <h4 style={{ fontSize: '0.76rem', color: '#64748B', textTransform: 'uppercase', marginBottom: 12, fontWeight: 700, letterSpacing: '0.05em' }}>
-              Customer Verification & Destination
+              {isRealEstate ? 'Property Owner & Contact Info' : 'Customer Verification & Destination'}
             </h4>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, fontSize: '0.84rem' }}>
               <div>
-                <span style={{ color: '#94A3B8' }}>Customer: </span>
-                <strong style={{ color: '#FFFFFF' }}>{activeCall.customer_name || '—'}</strong> ({phoneDisplay})
+                <span style={{ color: '#94A3B8' }}>{isRealEstate ? 'Owner: ' : 'Customer: '}</span>
+                <strong style={{ color: '#FFFFFF' }}>{cleanEnglishOnly(activeCall.customer_name) || activeCall.customer_name || '—'}</strong> ({phoneDisplay})
               </div>
               <div>
-                <span style={{ color: '#94A3B8' }}>Contact Ref: </span>
-                <span style={{ color: '#38BDF8', fontWeight: 600 }}>{(activeCall as any).subs_del_no || (activeCall as any).contact_ref || '—'}</span>
+                <span style={{ color: '#94A3B8' }}>{isRealEstate ? 'Source / Pipeline: ' : 'Contact Ref: '}</span>
+                <span style={{ color: '#38BDF8', fontWeight: 600 }}>
+                  {isRealEstate
+                    ? ((activeCall as any).voice_pipeline || 'My Estate Finder')
+                    : ((activeCall as any).subs_del_no || (activeCall as any).contact_ref || '—')}
+                </span>
               </div>
               <div style={{ gridColumn: '1 / -1' }}>
-                <span style={{ color: '#94A3B8' }}>Address: </span>
-                <span style={{ color: '#E2E8F0' }}>{(activeCall as any).new_address || activeCall.customer_address || '—'}</span>
+                <span style={{ color: '#94A3B8' }}>{isRealEstate ? 'Location / Address: ' : 'Address: '}</span>
+                <span style={{ color: '#E2E8F0' }}>
+                  {isRealEstate
+                    ? ([cleanEnglishOnly((activeCall as any).re_project_or_society), cleanEnglishOnly((activeCall as any).re_sector_or_location)].filter(Boolean).join(', ') || cleanEnglishOnly((activeCall as any).new_address || activeCall.customer_address) || '—')
+                    : (cleanEnglishOnly((activeCall as any).new_address || activeCall.customer_address) || '—')}
+                </span>
               </div>
               {(activeCall as any).customer_note && (
                 <div style={{ gridColumn: '1 / -1', background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.2)', padding: 10, borderRadius: 8 }}>
@@ -459,18 +480,33 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
 
           {/* Turn-by-Turn Transcript */}
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-              <MessageSquare size={16} color="#C084FC" />
-              <h4 style={{ fontSize: '0.9rem', fontWeight: 700, color: '#FFFFFF', margin: 0 }}>
-                Full Turn-by-Turn Voice Transcript
-              </h4>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <MessageSquare size={16} color="#C084FC" />
+                <h4 style={{ fontSize: '0.9rem', fontWeight: 700, color: '#FFFFFF', margin: 0 }}>
+                  Full Turn-by-Turn Voice Transcript
+                </h4>
+                {transcriptList.length > 0 && (
+                  <span style={{
+                    fontSize: '0.72rem',
+                    background: 'rgba(192, 132, 252, 0.15)',
+                    color: '#C084FC',
+                    border: '1px solid rgba(192, 132, 252, 0.3)',
+                    padding: '2px 8px',
+                    borderRadius: 12,
+                    fontWeight: 600,
+                  }}>
+                    {transcriptList.length} turns
+                  </span>
+                )}
+              </div>
             </div>
 
             <div style={{
               display: 'flex',
               flexDirection: 'column',
               gap: 12,
-              maxHeight: 280,
+              maxHeight: 380,
               overflowY: 'auto',
               padding: 14,
               background: '#090D16',
@@ -531,13 +567,17 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
                       }}>
                         {isBot ? (
                           <>
-                            <Bot size={13} color="#38BDF8" />
-                            <span style={{ color: '#38BDF8', fontWeight: 600 }}>CuroAI Voice Agent</span>
+                            <Bot size={13} color={isRealEstate ? "#A78BFA" : "#38BDF8"} />
+                            <span style={{ color: isRealEstate ? "#A78BFA" : "#38BDF8", fontWeight: 600 }}>
+                              {isRealEstate ? 'Sagar (My Estate Finder)' : 'Airtel Voice Agent'}
+                            </span>
                           </>
                         ) : (
                           <>
                             <User size={13} color="#10B981" />
-                            <span style={{ color: '#10B981', fontWeight: 600 }}>Customer</span>
+                            <span style={{ color: '#10B981', fontWeight: 600 }}>
+                              {isRealEstate ? (activeCall.customer_name || 'Property Owner') : 'Customer'}
+                            </span>
                           </>
                         )}
                       </div>

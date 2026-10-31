@@ -19,6 +19,17 @@ const requireInternalSecret = (req: Request, _res: Response, next: NextFunction)
   next();
 };
 
+// Enforce pipeline permission: Real Estate admin or superadmin ('all') only
+realEstateRouter.use('/api/real-estate', (req: Request, res: Response, next: NextFunction) => {
+  const userPipeline = req.user?.assigned_pipeline;
+  if (userPipeline && userPipeline !== 'all' && userPipeline !== 'real_estate') {
+    return res.status(403).json({
+      error: 'Forbidden: Your account does not have access to the Real Estate (My Estate Finder) pipeline.',
+    });
+  }
+  next();
+});
+
 const testCallSchema = {
   body: z.object({
     phone: z.string().min(8, { message: 'Valid phone number is required' }),

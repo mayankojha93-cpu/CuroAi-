@@ -3,6 +3,7 @@ export interface AuthUser {
   email: string;
   name: string;
   role: string;
+  assigned_pipeline?: string;
 }
 
 export interface LoginResponse {

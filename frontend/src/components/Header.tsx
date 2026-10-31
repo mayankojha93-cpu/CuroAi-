@@ -68,15 +68,31 @@ export const Header: React.FC<HeaderProps> = ({
                 letterSpacing: '-0.025em',
                 lineHeight: 1.2,
               }}>
-                Curo <span style={{ color: 'var(--curo-sage)' }}>Voice AI</span>
+                Curo <span style={{ color: user?.assigned_pipeline === 'real_estate' ? '#38BDF8' : 'var(--curo-sage)' }}>
+                  {user?.assigned_pipeline === 'real_estate' ? 'Estate AI' : 'Voice AI'}
+                </span>
               </h1>
-              <span className="badge badge-green" style={{ fontSize: '0.68rem', padding: '2px 8px' }}>
-                <span className="pulse-indicator"></span>
-                Agent: Priya
+              <span className="badge" style={{
+                fontSize: '0.68rem',
+                padding: '2px 8px',
+                background: user?.assigned_pipeline === 'real_estate' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(156, 195, 169, 0.15)',
+                color: user?.assigned_pipeline === 'real_estate' ? '#38BDF8' : 'var(--curo-sage)',
+                border: user?.assigned_pipeline === 'real_estate' ? '1px solid rgba(56, 189, 248, 0.3)' : '1px solid rgba(156, 195, 169, 0.3)',
+                borderRadius: 12,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 5,
+              }}>
+                <span className="pulse-indicator" style={{
+                  background: user?.assigned_pipeline === 'real_estate' ? '#38BDF8' : 'var(--curo-sage)',
+                }}></span>
+                {user?.assigned_pipeline === 'real_estate' ? 'Pipeline: My Estate Finder (Sagar)' : 'Pipeline: Airtel Telecom (Priya)'}
               </span>
             </div>
             <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-              Enterprise Voice Care & Outbound Router Campaign Engine
+              {user?.assigned_pipeline === 'real_estate'
+                ? 'My Estate Finder — Property Intake & Seller Outreach Engine'
+                : 'Enterprise Voice Care & Outbound Router Campaign Engine'}
             </p>
           </div>
         </div>
@@ -203,14 +219,23 @@ export const Header: React.FC<HeaderProps> = ({
               gap: 8,
               padding: '6px 12px',
               borderRadius: 'var(--radius-md)',
-              background: 'rgba(156, 195, 169, 0.08)',
-              border: '1px solid var(--border-subtle)',
+              background: user.assigned_pipeline === 'real_estate' ? 'rgba(56, 189, 248, 0.08)' : 'rgba(156, 195, 169, 0.08)',
+              border: user.assigned_pipeline === 'real_estate' ? '1px solid rgba(56, 189, 248, 0.25)' : '1px solid var(--border-subtle)',
               fontSize: '0.8rem',
             }}>
-              <User size={14} color="var(--curo-sage)" />
+              <User size={14} color={user.assigned_pipeline === 'real_estate' ? '#38BDF8' : 'var(--curo-sage)'} />
               <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{user.name}</span>
-              <span className="badge badge-neutral" style={{ fontSize: '0.68rem', padding: '1px 6px', textTransform: 'uppercase' }}>
-                {user.role}
+              <span style={{
+                fontSize: '0.66rem',
+                padding: '2px 6px',
+                borderRadius: 4,
+                fontWeight: 600,
+                textTransform: 'uppercase',
+                background: user.assigned_pipeline === 'real_estate' ? 'rgba(56, 189, 248, 0.18)' : 'rgba(156, 195, 169, 0.18)',
+                color: user.assigned_pipeline === 'real_estate' ? '#38BDF8' : 'var(--curo-sage)',
+                border: user.assigned_pipeline === 'real_estate' ? '1px solid rgba(56, 189, 248, 0.3)' : '1px solid rgba(156, 195, 169, 0.3)',
+              }}>
+                {user.assigned_pipeline === 'real_estate' ? 'Real Estate' : 'Airtel Telecom'}
               </span>
             </div>
           )}

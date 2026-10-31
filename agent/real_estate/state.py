@@ -37,6 +37,7 @@ class RealEstateState:
         self.direction = direction
 
         self.reply_lang: str = "en" if preferred_language == "en" else "hi"
+        self.callee_connected: bool = False
         self.start_time: float = time.time()
         self.last_activity_time: float = time.time()
         self.latency_samples: List[float] = []
@@ -75,6 +76,13 @@ class RealEstateState:
         self.outcome_posted: bool = False
         self.silence_count: int = 0
 
+        # Objections, callbacks & handoff tracking
+        self.callback_time_slot: Optional[str] = None
+        self.whatsapp_number: Optional[str] = None
+        self.is_dnc: bool = False
+        self.advisor_handoff_reason: Optional[str] = None
+        self.impatient_detected: bool = False
+
         # Transcript tracking
         self.transcript: List[Dict[str, Any]] = []
 
@@ -104,42 +112,42 @@ class RealEstateState:
                     "id": "society_sector",
                     "label": "Society name and sector",
                     "question_en": "Could you share the society name and sector?",
-                    "question_hi": "क्या आप सोसाइटी का नाम और सेक्टर बता सकते हैं?",
+                    "question_hi": "Kya aap society ka naam aur sector bata sakte hain?",
                 })
             if not (self.unit_number or self.floor_number):
                 missing.append({
                     "id": "unit_floor",
                     "label": "Unit number and floor",
                     "question_en": "What are the unit number and floor?",
-                    "question_hi": "यूनिट नंबर और फ्लोर कौन सा है?",
+                    "question_hi": "Unit number aur floor kaun sa hai?",
                 })
             if not self.bhk_config:
                 missing.append({
                     "id": "bhk_config",
                     "label": "2, 3 BHK, or another configuration",
                     "question_en": "Is it a 2, 3 BHK, or another configuration?",
-                    "question_hi": "यह 2 बीएचके, 3 बीएचके या कोई और कॉन्फ़िगरेशन है?",
+                    "question_hi": "Yeh 2 BHK, 3 BHK, ya koi aur configuration hai?",
                 })
             if not self.approx_area_sqft:
                 missing.append({
                     "id": "approx_area",
                     "label": "Approximate area in square feet",
                     "question_en": "What is the approximate area in square feet?",
-                    "question_hi": "इसका लगभग एरिया स्क्वायर फीट में कितना है?",
+                    "question_hi": "Iska approximate area square feet mein kitna hai?",
                 })
             if not self.furnishing_status:
                 missing.append({
                     "id": "furnishing",
                     "label": "Unfurnished, semi-furnished, or fully furnished",
                     "question_en": "Is the property unfurnished, semi-furnished, or fully furnished?",
-                    "question_hi": "प्रॉपर्टी अनफर्निश्ड, सेमी-फर्निश्ड या फुली फर्निश्ड है?",
+                    "question_hi": "Property unfurnished, semi-furnished, ya fully furnished hai?",
                 })
             if not self.expected_sale_price:
                 missing.append({
                     "id": "sale_price",
                     "label": "Expected sale price",
                     "question_en": "What sale price are you expecting?",
-                    "question_hi": "आप क्या सेलिंग प्राइस एक्सपेक्ट कर रहे हैं?",
+                    "question_hi": "Aap kya selling price expect kar rahe hain?",
                 })
 
         elif self.step == RealEstateStep.RESIDENTIAL_LEASE:
@@ -149,49 +157,49 @@ class RealEstateState:
                     "id": "society_sector",
                     "label": "Society name and sector",
                     "question_en": "Could you share the society name and sector?",
-                    "question_hi": "क्या आप सोसाइटी का नाम और सेक्टर बता सकते हैं?",
+                    "question_hi": "Kya aap society ka naam aur sector bata sakte hain?",
                 })
             if not (self.unit_number or self.floor_number):
                 missing.append({
                     "id": "unit_floor",
                     "label": "Unit number and floor",
                     "question_en": "What are the unit number and floor?",
-                    "question_hi": "यूनिट नंबर और फ्लोर कौन सा है?",
+                    "question_hi": "Unit number aur floor kaun sa hai?",
                 })
             if not self.bhk_config:
                 missing.append({
                     "id": "bhk_config",
                     "label": "2, 3 BHK, or another configuration",
                     "question_en": "Is it a 2, 3 BHK, or another configuration?",
-                    "question_hi": "यह 2 बीएचके, 3 बीएचके या कोई और कॉन्फ़िगरेशन है?",
+                    "question_hi": "Yeh 2 BHK, 3 BHK, ya koi aur configuration hai?",
                 })
             if not self.approx_area_sqft:
                 missing.append({
                     "id": "approx_area",
                     "label": "Approximate area in square feet",
                     "question_en": "What is the approximate area in square feet?",
-                    "question_hi": "इसका लगभग एरिया स्क्वायर फीट में कितना है?",
+                    "question_hi": "Iska approximate area square feet mein kitna hai?",
                 })
             if not self.furnishing_status:
                 missing.append({
                     "id": "furnishing",
                     "label": "Unfurnished, semi-furnished, or fully furnished",
                     "question_en": "Is the property unfurnished, semi-furnished, or fully furnished?",
-                    "question_hi": "प्रॉपर्टी अनफर्निश्ड, सेमी-फर्निश्ड या फुली फर्निश्ड है?",
+                    "question_hi": "Property unfurnished, semi-furnished, ya fully furnished hai?",
                 })
             if not self.expected_monthly_rent:
                 missing.append({
                     "id": "monthly_rent",
                     "label": "Expected monthly rent",
                     "question_en": "What monthly rent are you expecting?",
-                    "question_hi": "आप कितना मंथली रेंट एक्सपेक्ट कर रहे हैं?",
+                    "question_hi": "Aap kitna monthly rent expect kar rahe hain?",
                 })
             if self.immediate_occupancy is None:
                 missing.append({
                     "id": "immediate_occupancy",
                     "label": "Available for immediate occupancy",
                     "question_en": "Is the property available for immediate occupancy?",
-                    "question_hi": "क्या यह प्रॉपर्टी तुरंत रहने के लिए उपलब्ध है?",
+                    "question_hi": "Kya yeh property immediate occupancy ke liye available hai?",
                 })
 
         elif self.step == RealEstateStep.COMMERCIAL_SALE:
@@ -201,56 +209,56 @@ class RealEstateState:
                     "id": "project_sector",
                     "label": "Project or building name and sector",
                     "question_en": "Could you share the project or building name and sector?",
-                    "question_hi": "क्या आप प्रोजेक्ट या बिल्डिंग का नाम और सेक्टर बता सकते हैं?",
+                    "question_hi": "Kya aap project ya building ka naam aur sector bata sakte hain?",
                 })
             if not (self.unit_number or self.floor_number):
                 missing.append({
                     "id": "unit_floor",
                     "label": "Unit number and floor",
                     "question_en": "What are the unit number and floor?",
-                    "question_hi": "यूनिट नंबर और फ्लोर कौन सा है?",
+                    "question_hi": "Unit number aur floor kaun sa hai?",
                 })
             if not self.commercial_type:
                 missing.append({
                     "id": "commercial_type",
                     "label": "Office space, retail shop, or another commercial unit",
                     "question_en": "Is it an office space, retail shop or another commercial unit?",
-                    "question_hi": "यह ऑफिस स्पेस, रिटेल शॉप या कोई अन्य कमर्शियल यूनिट है?",
+                    "question_hi": "Yeh office space, retail shop, ya koi doosra commercial unit hai?",
                 })
             if self.is_currently_leased is None:
                 missing.append({
                     "id": "leased_status",
                     "label": "Already leased out or vacant",
                     "question_en": "Is the property already leased out or vacant?",
-                    "question_hi": "क्या प्रॉपर्टी पहले से लीज पर दी हुई है या खाली है?",
+                    "question_hi": "Kya property pehle se leased out hai ya vacant hai?",
                 })
             elif self.is_currently_leased is True and not self.current_rent_received:
                 missing.append({
                     "id": "current_rent",
                     "label": "Current rent received (if leased)",
                     "question_en": "Could you share what rent you are getting?",
-                    "question_hi": "अगर लीज पर है, तो अभी आपको कितना रेंट मिल रहा है?",
+                    "question_hi": "Agar lease par hai, toh abhi aapko kitna rent mil raha hai?",
                 })
             if not self.approx_area_sqft:
                 missing.append({
                     "id": "approx_area",
                     "label": "Approximate area in square feet",
                     "question_en": "What is the approximate area in square feet?",
-                    "question_hi": "इसका लगभग एरिया स्क्वायर फीट में कितना है?",
+                    "question_hi": "Iska approximate area square feet mein kitna hai?",
                 })
             if not self.furnishing_status:
                 missing.append({
                     "id": "furnishing",
                     "label": "Unfurnished, semi-furnished, or fully furnished",
                     "question_en": "Is the property unfurnished, semi-furnished, or fully furnished?",
-                    "question_hi": "प्रॉपर्टी अनफर्निश्ड, सेमी-फर्निश्ड या फुली फर्निश्ड है?",
+                    "question_hi": "Property unfurnished, semi-furnished, ya fully furnished hai?",
                 })
             if not self.expected_sale_price:
                 missing.append({
                     "id": "sale_price",
                     "label": "Expected sale price",
                     "question_en": "What sale price are you expecting?",
-                    "question_hi": "आप क्या सेलिंग प्राइस एक्सपेक्ट कर रहे हैं?",
+                    "question_hi": "Aap kya selling price expect kar rahe hain?",
                 })
 
         elif self.step == RealEstateStep.COMMERCIAL_LEASE:
@@ -260,49 +268,49 @@ class RealEstateState:
                     "id": "project_sector",
                     "label": "Project or building name and sector",
                     "question_en": "Could you share the project or building name and sector?",
-                    "question_hi": "क्या आप प्रोजेक्ट या बिल्डिंग का नाम और सेक्टर बता सकते हैं?",
+                    "question_hi": "Kya aap project ya building ka naam aur sector bata sakte hain?",
                 })
             if not (self.unit_number or self.floor_number):
                 missing.append({
                     "id": "unit_floor",
                     "label": "Unit number and floor",
                     "question_en": "What are the unit number and floor?",
-                    "question_hi": "यूनिट नंबर और फ्लोर कौन सा है?",
+                    "question_hi": "Unit number aur floor kaun sa hai?",
                 })
             if not self.commercial_type:
                 missing.append({
                     "id": "commercial_type",
                     "label": "Office space, retail shop, or another commercial unit",
                     "question_en": "Is it an office space, retail shop or another commercial unit?",
-                    "question_hi": "यह ऑफिस स्पेस, रिटेल शॉप या कोई अन्य कमर्शियल यूनिट है?",
+                    "question_hi": "Yeh office space, retail shop, ya koi doosra commercial unit hai?",
                 })
             if not self.approx_area_sqft:
                 missing.append({
                     "id": "approx_area",
                     "label": "Approximate area in square feet",
                     "question_en": "What is the approximate area in square feet?",
-                    "question_hi": "इसका लगभग एरिया स्क्वायर फीट में कितना है?",
+                    "question_hi": "Iska approximate area square feet mein kitna hai?",
                 })
             if not self.furnishing_status:
                 missing.append({
                     "id": "furnishing",
                     "label": "Unfurnished, semi-furnished, or fully furnished",
                     "question_en": "Is the property unfurnished, semi-furnished, or fully furnished?",
-                    "question_hi": "प्रॉपर्टी अनफर्निश्ड, सेमी-फर्निश्ड या फुली फर्निश्ड है?",
+                    "question_hi": "Property unfurnished, semi-furnished, ya fully furnished hai?",
                 })
             if not self.expected_monthly_rent:
                 missing.append({
                     "id": "monthly_rent",
                     "label": "Expected monthly rent",
                     "question_en": "What monthly rent are you expecting?",
-                    "question_hi": "आप कितना मंथली रेंट एक्सपेक्ट कर रहे हैं?",
+                    "question_hi": "Aap kitna monthly rent expect kar rahe hain?",
                 })
             if self.immediate_occupancy is None:
                 missing.append({
                     "id": "immediate_occupancy",
                     "label": "Available for immediate occupancy",
                     "question_en": "Is the property available for immediate occupancy?",
-                    "question_hi": "क्या यह प्रॉपर्टी तुरंत ऑक्यूपेंसी के लिए उपलब्ध है?",
+                    "question_hi": "Kya yeh property immediate occupancy ke liye available hai?",
                 })
 
         return missing

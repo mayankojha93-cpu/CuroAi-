@@ -13,6 +13,8 @@ import {
 import type { CallRecord } from '../../types';
 import { initiateTestCall, fetchTestCallHistory } from '../../services/api.service';
 import { CallDetailModal } from './CallDetailModal';
+import { useAuth } from '../../context/AuthContext';
+import { cleanEnglishOnly } from '../../utils/textUtils';
 
 interface TestCallViewProps {
   onSelectCall?: (call: CallRecord) => void;
@@ -42,16 +44,51 @@ const PIPELINES = [
 ];
 
 export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
+  const { user } = useAuth();
+  const assignedPipeline = user?.assigned_pipeline || 'airtel';
+  const isRealEstate = assignedPipeline === 'real_estate';
+
+  const availableScripts = SCRIPTS.filter((s) => {
+    if (assignedPipeline === 'all') return true;
+    if (isRealEstate) {
+      return s.id === 'my_estate_finder' || s.id === 'trump_towers';
+    } else {
+      return s.id === 'airtel_return' || s.id === 'ratnafin' || s.id === 'direct_outreach';
+    }
+  });
+
   const [activeTab, setActiveTab] = useState<'MAKE_CALL' | 'CALL_HISTORY'>('MAKE_CALL');
   
   // Form fields matching user screenshot & prompt:
   // phone no, Customer name, Company Org name, Script, Language, Voice pipeline
   const [phone, setPhone] = useState('');
   const [customerName, setCustomerName] = useState('');
-  const [companyName, setCompanyName] = useState('');
-  const [selectedScript, setSelectedScript] = useState('Trump Towers India — Real Estate');
-  const [selectedLanguage, setSelectedLanguage] = useState('Multilingual');
-  const [selectedPipeline, setSelectedPipeline] = useState('Sarvam AI (Priya - hi-IN)');
+  const [companyName, setCompanyName] = useState(() =>
+    isRealEstate ? 'My Estate Finder' : 'Airtel Telecom'
+  );
+  const [selectedScript, setSelectedScript] = useState(() =>
+    isRealEstate ? 'My Estate Finder — Property Intake (Sagar)' : 'Airtel Wi-Fi Router Return'
+  );
+  const [selectedLanguage, setSelectedLanguage] = useState(() =>
+    isRealEstate ? 'Hinglish' : 'Multilingual'
+  );
+  const [selectedPipeline, setSelectedPipeline] = useState(() =>
+    isRealEstate ? 'Sarvam AI (Aditya - hi-IN)' : 'Sarvam AI (Priya - hi-IN)'
+  );
+
+  useEffect(() => {
+    if (isRealEstate) {
+      setSelectedScript('My Estate Finder — Property Intake (Sagar)');
+      setCompanyName('My Estate Finder');
+      setSelectedPipeline('Sarvam AI (Aditya - hi-IN)');
+      setSelectedLanguage('Hinglish');
+    } else {
+      setSelectedScript('Airtel Wi-Fi Router Return');
+      setCompanyName('Airtel Telecom');
+      setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
+      setSelectedLanguage('Multilingual');
+    }
+  }, [isRealEstate]);
 
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -63,6 +100,9 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
       setCompanyName(found.defaultOrg);
       if (found.id === 'my_estate_finder') {
         setSelectedPipeline('Sarvam AI (Aditya - hi-IN)');
+        if (selectedLanguage === 'Hindi') {
+          setSelectedLanguage('Hinglish');
+        }
       } else if (found.id === 'airtel_return') {
         setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
       }
@@ -82,6 +122,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
   const [historyCalls, setHistoryCalls] = useState<CallRecord[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [selectedCallForModal, setSelectedCallForModal] = useState<CallRecord | null>(null);
+  const [dispositionFilter, setDispositionFilter] = useState<string>('ALL');
 
   const loadHistory = async () => {
     setLoadingHistory(true);
@@ -117,7 +158,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
     const formattedPhone = cleanPhone.startsWith('+') ? cleanPhone : `+91${cleanPhone.replace(/\D/g, '')}`;
 
     try {
-      const langCode = selectedLanguage === 'Hindi' ? 'hi' : (selectedLanguage === 'English' ? 'en' : 'en');
+      const langCode = (selectedLanguage === 'Hindi' || selectedLanguage === 'Hinglish') ? 'hi' : 'en';
       const res = await initiateTestCall({
         phone: formattedPhone,
         customer_name: customerName.trim() || undefined,
@@ -188,10 +229,162 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
   };
 
 
-  // Status badge styling
+  // Status & Canonical Disposition badge styling
   const renderStatusBadge = (status?: string, disposition?: string) => {
     const s = (status || '').toUpperCase();
     const d = (disposition || '').toUpperCase();
+
+    // 1. Qualified Lead
+    if (d.includes('QUALIFIED')) {
+      return (
+        <span style={{
+          display: 'inline-block',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.68rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          background: 'rgba(16, 185, 129, 0.15)',
+          border: '1px solid rgba(16, 185, 129, 0.35)',
+          color: '#10B981',
+        }}>
+          QUALIFIED
+        </span>
+      );
+    }
+
+    // 2. Advisor Callback Booked
+    if (d.includes('ADVISOR')) {
+      return (
+        <span style={{
+          display: 'inline-block',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.68rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          background: 'rgba(168, 85, 247, 0.15)',
+          border: '1px solid rgba(168, 85, 247, 0.35)',
+          color: '#C084FC',
+        }}>
+          ADVISOR
+        </span>
+      );
+    }
+
+    // 3. Schedule Callback
+    if (d.includes('CALLBACK')) {
+      return (
+        <span style={{
+          display: 'inline-block',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.68rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          background: 'rgba(56, 189, 248, 0.15)',
+          border: '1px solid rgba(56, 189, 248, 0.35)',
+          color: '#38BDF8',
+        }}>
+          CALLBACK
+        </span>
+      );
+    }
+
+    // 4. WhatsApp Info Requested
+    if (d.includes('WHATSAPP')) {
+      return (
+        <span style={{
+          display: 'inline-block',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.68rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          background: 'rgba(6, 182, 212, 0.15)',
+          border: '1px solid rgba(6, 182, 212, 0.35)',
+          color: '#22D3EE',
+        }}>
+          WHATSAPP
+        </span>
+      );
+    }
+
+    // 5. Not Interested
+    if (d.includes('NOT INTERESTED')) {
+      return (
+        <span style={{
+          display: 'inline-block',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.68rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          background: 'rgba(148, 163, 184, 0.15)',
+          border: '1px solid rgba(148, 163, 184, 0.35)',
+          color: '#94A3B8',
+        }}>
+          NOT INTERESTED
+        </span>
+      );
+    }
+
+    // 6. Do Not Call
+    if (d.includes('DO NOT CALL') || d.includes('DNC')) {
+      return (
+        <span style={{
+          display: 'inline-block',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.68rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          background: 'rgba(244, 63, 94, 0.15)',
+          border: '1px solid rgba(244, 63, 94, 0.35)',
+          color: '#FB7185',
+        }}>
+          DO NOT CALL
+        </span>
+      );
+    }
+
+    // 7. Wrong Number
+    if (d.includes('WRONG NUMBER')) {
+      return (
+        <span style={{
+          display: 'inline-block',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.68rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          background: 'rgba(249, 115, 22, 0.15)',
+          border: '1px solid rgba(249, 115, 22, 0.35)',
+          color: '#FB923C',
+        }}>
+          WRONG NUMBER
+        </span>
+      );
+    }
+
+    // 8. No Answer
+    if (s === 'NO_ANSWER' || s === 'NO ANSWER' || d.includes('NO ANSWER')) {
+      return (
+        <span style={{
+          display: 'inline-block',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.68rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          background: 'rgba(245, 158, 11, 0.15)',
+          border: '1px solid rgba(245, 158, 11, 0.35)',
+          color: '#F59E0B',
+        }}>
+          NO ANSWER
+        </span>
+      );
+    }
 
     if (s === 'COMPLETED' || s === 'SUCCESSFUL' || s === 'ANSWERED' || d.includes('GOAL') || d.includes('PICKUP')) {
       return (
@@ -224,23 +417,6 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
           color: '#EF4444',
         }}>
           BUSY
-        </span>
-      );
-    }
-    if (s === 'NO_ANSWER' || s === 'NO ANSWER' || d.includes('NO ANSWER')) {
-      return (
-        <span style={{
-          display: 'inline-block',
-          padding: '4px 10px',
-          borderRadius: 4,
-          fontSize: '0.68rem',
-          fontWeight: 700,
-          letterSpacing: '0.04em',
-          background: 'rgba(245, 158, 11, 0.12)',
-          border: '1px solid rgba(245, 158, 11, 0.28)',
-          color: '#F59E0B',
-        }}>
-          NO ANSWER
         </span>
       );
     }
@@ -386,32 +562,52 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                 Quick Test Presets
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {[
-                  {
-                    title: '🏠 Estate Finder (Sagar)',
-                    name: 'Vikramaditya Singhania',
-                    phone: '+919811122233',
-                    script: 'My Estate Finder — Property Intake (Sagar)',
-                    pipeline: 'Sarvam AI (Arvind - hi-IN)',
-                    company: 'My Estate Finder',
-                  },
-                  {
-                    title: '🏢 Commercial Lease',
-                    name: 'Ananya Deshmukh',
-                    phone: '+919845012345',
-                    script: 'My Estate Finder — Property Intake (Sagar)',
-                    pipeline: 'Sarvam AI (Arvind - hi-IN)',
-                    company: 'My Estate Finder',
-                  },
-                  {
-                    title: '📶 Airtel Wi-Fi Return',
-                    name: 'Rajan Nayak',
-                    phone: '+919811122233',
-                    script: 'Airtel Wi-Fi Router Return',
-                    pipeline: 'Sarvam AI (Priya - hi-IN)',
-                    company: 'Airtel Telecom',
-                  },
-                ].map((p, idx) => (
+                {(isRealEstate
+                  ? [
+                      {
+                        title: '🏠 Estate Finder (Sagar)',
+                        name: 'Vikramaditya Singhania',
+                        phone: '+919811122233',
+                        script: 'My Estate Finder — Property Intake (Sagar)',
+                        pipeline: 'Sarvam AI (Arvind - hi-IN)',
+                        company: 'My Estate Finder',
+                      },
+                      {
+                        title: '🏢 Commercial Lease',
+                        name: 'Ananya Deshmukh',
+                        phone: '+919845012345',
+                        script: 'My Estate Finder — Property Intake (Sagar)',
+                        pipeline: 'Sarvam AI (Arvind - hi-IN)',
+                        company: 'My Estate Finder',
+                      },
+                    ]
+                  : [
+                      {
+                        title: '📶 Airtel Wi-Fi Return',
+                        name: 'Rajan Nayak',
+                        phone: '+919811122233',
+                        script: 'Airtel Wi-Fi Router Return',
+                        pipeline: 'Sarvam AI (Priya - hi-IN)',
+                        company: 'Airtel Telecom',
+                      },
+                      {
+                        title: '💳 Ratnafin Loan',
+                        name: 'Pooja Verma',
+                        phone: '+919876543210',
+                        script: 'Ratnafin — Machinery Loan',
+                        pipeline: 'Sarvam AI (Priya - hi-IN)',
+                        company: 'Ratnafin',
+                      },
+                      {
+                        title: '📞 Voice Outreach',
+                        name: 'Karan Mehra',
+                        phone: '+919988776655',
+                        script: 'Direct Voice Outreach',
+                        pipeline: 'Sarvam AI (Priya - hi-IN)',
+                        company: 'Direct Voice',
+                      },
+                    ]
+                ).map((p, idx) => (
                   <button
                     key={idx}
                     type="button"
@@ -557,7 +753,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                         overflow: 'hidden',
                       }}
                     >
-                      {SCRIPTS.map((s) => (
+                      {availableScripts.map((s) => (
                         <option key={s.id} value={s.label} style={{ background: '#0B0F19', color: '#FFFFFF' }}>
                           {s.label}
                         </option>
@@ -589,7 +785,13 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                         cursor: 'pointer',
                       }}
                     >
-                      {LANGUAGES.map((l) => (
+                      {LANGUAGES.filter((l) => {
+                        // For 2nd pipeline (Estate Finder), keep only English and Hinglish (remove Hindi)
+                        if (selectedScript.includes('Estate Finder') && l.id === 'hi') {
+                          return false;
+                        }
+                        return true;
+                      }).map((l) => (
                         <option key={l.id} value={l.label} style={{ background: '#0B0F19', color: '#FFFFFF' }}>
                           {l.label}
                         </option>
@@ -731,6 +933,74 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
             </div>
           </div>
 
+          {/* Real Estate & Campaign Canonical Disposition Filter Bar */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            overflowX: 'auto',
+            paddingBottom: 4,
+            marginBottom: 14,
+          }}>
+            {[
+              { id: 'ALL', label: 'All Dispositions', count: historyCalls.length, color: '#3B82F6' },
+              { id: 'QUALIFIED', label: 'Qualified Lead', count: historyCalls.filter((c) => ((c.final_disposition || '') as string).toUpperCase().includes('QUALIFIED')).length, color: '#10B981' },
+              { id: 'CALLBACK', label: 'Schedule Callback', count: historyCalls.filter((c) => {
+                const d = ((c.final_disposition || '') as string).toUpperCase();
+                return d.includes('CALLBACK') && !d.includes('ADVISOR');
+              }).length, color: '#38BDF8' },
+              { id: 'ADVISOR', label: 'Advisor Callback', count: historyCalls.filter((c) => ((c.final_disposition || '') as string).toUpperCase().includes('ADVISOR')).length, color: '#A855F7' },
+              { id: 'WHATSAPP', label: 'WhatsApp Sent', count: historyCalls.filter((c) => ((c.final_disposition || '') as string).toUpperCase().includes('WHATSAPP')).length, color: '#06B6D4' },
+              { id: 'NOT_INTERESTED', label: 'Not Interested', count: historyCalls.filter((c) => ((c.final_disposition || '') as string).toUpperCase().includes('NOT INTERESTED')).length, color: '#94A3B8' },
+              { id: 'DNC', label: 'Do Not Call', count: historyCalls.filter((c) => {
+                const d = ((c.final_disposition || '') as string).toUpperCase();
+                return d.includes('DO NOT CALL') || d.includes('DNC');
+              }).length, color: '#F43F5E' },
+            ].map((pill) => {
+              const isSelected = dispositionFilter === pill.id;
+              return (
+                <button
+                  key={pill.id}
+                  type="button"
+                  onClick={() => setDispositionFilter(pill.id)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '6px 12px',
+                    borderRadius: 20,
+                    fontSize: '0.76rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                    border: `1px solid ${isSelected ? pill.color : 'rgba(255, 255, 255, 0.08)'}`,
+                    background: isSelected ? `${pill.color}20` : 'rgba(255, 255, 255, 0.03)',
+                    color: isSelected ? '#FFFFFF' : '#94A3B8',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  <span style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: '50%',
+                    background: pill.color,
+                  }} />
+                  <span>{pill.label}</span>
+                  <span style={{
+                    background: 'rgba(255, 255, 255, 0.1)',
+                    padding: '1px 6px',
+                    borderRadius: 10,
+                    fontSize: '0.7rem',
+                    fontWeight: 700,
+                    color: isSelected ? '#FFFFFF' : '#CBD5E1',
+                  }}>
+                    {pill.count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
           {/* List of Calls */}
           {loadingHistory && historyCalls.length === 0 ? (
             <div style={{ padding: 48, textAlign: 'center', color: '#64748B' }}>
@@ -749,21 +1019,40 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {historyCalls.map((call, idx) => {
+              {historyCalls.filter((c) => {
+                if (dispositionFilter === 'ALL') return true;
+                const disp = ((c.final_disposition || (c as any).call_result || '') as string).toUpperCase();
+                if (dispositionFilter === 'QUALIFIED') return disp.includes('QUALIFIED');
+                if (dispositionFilter === 'CALLBACK') return disp.includes('CALLBACK') && !disp.includes('ADVISOR');
+                if (dispositionFilter === 'ADVISOR') return disp.includes('ADVISOR');
+                if (dispositionFilter === 'WHATSAPP') return disp.includes('WHATSAPP');
+                if (dispositionFilter === 'NOT_INTERESTED') return disp.includes('NOT INTERESTED');
+                if (dispositionFilter === 'DNC') return disp.includes('DO NOT CALL') || disp.includes('DNC');
+                return true;
+              }).map((call, idx) => {
                 const phoneDisplay = call.customer_phone || (call as any).phone || '+919330188999';
                 const timeDisplay = formatTimestamp(call.created_at);
+                const rawName = call.customer_name || (call as any).name || (call as any).owner_name_confirmed || (call as any).owner_name;
+                const userName = cleanEnglishOnly(rawName);
                 
-                // Format script display: e.g. Trump_towers_india (English)
+                // Format script display: e.g. My Estate Finder (Sagar) or Trump_towers_india (English)
                 const rawScript = call.script || (call as any).campaign_name || 'Trump_towers_india';
-                const normalizedScriptKey = rawScript.includes('Trump') 
-                  ? 'Trump_towers_india' 
-                  : (rawScript.includes('Ratnafin') ? 'Ratnafin_machinery_loan' : 'airtel_router_return');
-                const langName = (call as any).language === 'hi' || (call as any).customer_language === 'hi' ? 'Hindi' : 'English';
-                const scriptDisplay = `${normalizedScriptKey} (${langName})`;
+                let normalizedScriptKey = 'Trump_towers_india';
+                if (rawScript.includes('Estate') || rawScript.includes('my_estate') || rawScript.includes('sagar') || rawScript.includes('Property')) {
+                  normalizedScriptKey = 'My Estate Finder (Sagar)';
+                } else if (rawScript.includes('Trump')) {
+                  normalizedScriptKey = 'Trump_towers_india';
+                } else if (rawScript.includes('Ratnafin')) {
+                  normalizedScriptKey = 'Ratnafin_machinery_loan';
+                } else if (rawScript.includes('airtel') || rawScript.includes('router')) {
+                  normalizedScriptKey = 'Airtel Wi-Fi Router Return';
+                }
+                const langName = (call as any).language === 'hi' || (call as any).customer_language === 'hi' ? 'Hinglish' : 'English';
+                const scriptDisplay = normalizedScriptKey.includes('(') ? normalizedScriptKey : `${normalizedScriptKey} (${langName})`;
 
                 const durationSec = call.duration_seconds || 0;
                 const durationDisplay = durationSec > 0 ? `${durationSec}s` : '-';
-                const rawDisp = call.final_disposition || (call as any).call_result || (call.status === 'completed' ? 'Goal completed' : '—');
+                const rawDisp = call.final_disposition || (call as any).call_result || (call.status === 'completed' ? 'Qualified Lead' : '—');
 
                 return (
                   <div
@@ -774,7 +1063,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                       borderRadius: 10,
                       padding: '16px 20px',
                       display: 'grid',
-                      gridTemplateColumns: '1.4fr 1.8fr 0.8fr 1fr 1.6fr 1.2fr',
+                      gridTemplateColumns: '1.5fr 1.7fr 0.8fr 1fr 1.6fr 1.2fr',
                       alignItems: 'center',
                       gap: 16,
                       transition: 'background 0.15s ease',
@@ -786,11 +1075,22 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                       e.currentTarget.style.background = '#090D16';
                     }}
                   >
-                    {/* Col 1: Phone number & Time */}
+                    {/* Col 1: Name (English only), Phone number & Time */}
                     <div>
-                      <div style={{ color: '#FFFFFF', fontWeight: 700, fontSize: '0.92rem', letterSpacing: '0.01em' }}>
-                        {phoneDisplay}
-                      </div>
+                      {userName ? (
+                        <>
+                          <div style={{ color: '#FFFFFF', fontWeight: 600, fontSize: '0.90rem', letterSpacing: '0.01em', marginBottom: 2 }}>
+                            {userName}
+                          </div>
+                          <div style={{ color: '#94A3B8', fontSize: '0.78rem', letterSpacing: '0.01em' }}>
+                            {phoneDisplay}
+                          </div>
+                        </>
+                      ) : (
+                        <div style={{ color: '#FFFFFF', fontWeight: 700, fontSize: '0.92rem', letterSpacing: '0.01em' }}>
+                          {phoneDisplay}
+                        </div>
+                      )}
                       <div style={{ color: '#64748B', fontSize: '0.74rem', marginTop: 3 }}>
                         {timeDisplay}
                       </div>

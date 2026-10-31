@@ -83,7 +83,7 @@ campaignsRouter.get('/api/campaigns', async (req: Request, res: Response, next: 
   try {
     const status = req.query.status as string | undefined;
     const search = req.query.search as string | undefined;
-    const campaigns = await campaignService.listCampaigns(status, search);
+    const campaigns = await campaignService.listCampaigns(status, search, req.user?.assigned_pipeline);
     return res.json({
       success: true,
       count: campaigns.length,
@@ -100,7 +100,7 @@ campaignsRouter.get('/api/campaigns', async (req: Request, res: Response, next: 
 campaignsRouter.get('/api/campaigns/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = String(req.params.id);
-    const campaign = await campaignService.getCampaign(id);
+    const campaign = await campaignService.getCampaign(id, req.user?.assigned_pipeline);
     if (!campaign) {
       return res.status(404).json({ error: 'Campaign not found' });
     }
@@ -116,6 +116,10 @@ campaignsRouter.get('/api/campaigns/:id', async (req: Request, res: Response, ne
 campaignsRouter.get('/api/campaigns/:id/calls', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = String(req.params.id);
+    const campaign = await campaignService.getCampaign(id, req.user?.assigned_pipeline);
+    if (!campaign) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
     const calls = await campaignService.getCampaignCalls(id);
     return res.json({ success: true, count: calls.length, calls });
   } catch (err) {
@@ -131,7 +135,8 @@ campaignsRouter.post(
   validateRequest(createCampaignSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const campaign = await campaignService.createCampaign(req.body);
+      const pipeline = req.user?.assigned_pipeline || 'airtel';
+      const campaign = await campaignService.createCampaign({ ...req.body, pipeline });
       return res.status(201).json({
         success: true,
         message: 'Campaign created successfully',
@@ -152,6 +157,10 @@ campaignsRouter.patch(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const id = String(req.params.id);
+      const existing = await campaignService.getCampaign(id, req.user?.assigned_pipeline);
+      if (!existing) {
+        return res.status(404).json({ error: 'Campaign not found' });
+      }
       const { status } = req.body;
       const campaign = await campaignService.updateCampaignStatus(id, status);
       return res.json({
@@ -174,6 +183,10 @@ campaignsRouter.patch(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const id = String(req.params.id);
+      const existing = await campaignService.getCampaign(id, req.user?.assigned_pipeline);
+      if (!existing) {
+        return res.status(404).json({ error: 'Campaign not found' });
+      }
       const { retry_attempts, retry_delay_minutes } = req.body;
       const result = await campaignService.updateCampaignRetry(id, retry_attempts, retry_delay_minutes);
       return res.json({
@@ -194,6 +207,10 @@ campaignsRouter.patch(
 campaignsRouter.post('/api/campaigns/:id/start', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = String(req.params.id);
+    const existing = await campaignService.getCampaign(id, req.user?.assigned_pipeline);
+    if (!existing) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
     const result = await campaignService.startCampaign(id);
     return res.json({
       success: true,
@@ -212,6 +229,10 @@ campaignsRouter.post('/api/campaigns/:id/start', async (req: Request, res: Respo
 campaignsRouter.get('/api/campaigns/:id/contacts', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = String(req.params.id);
+    const existing = await campaignService.getCampaign(id, req.user?.assigned_pipeline);
+    if (!existing) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
     const contacts = await campaignService.getCampaignContacts(id);
     return res.json({
       success: true,
@@ -229,6 +250,10 @@ campaignsRouter.get('/api/campaigns/:id/contacts', async (req: Request, res: Res
 campaignsRouter.post('/api/campaigns/:id/contacts', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = String(req.params.id);
+    const existing = await campaignService.getCampaign(id, req.user?.assigned_pipeline);
+    if (!existing) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
     const contacts = Array.isArray(req.body.contacts) ? req.body.contacts : [];
     if (contacts.length === 0) {
       return res.status(400).json({ error: 'Please provide an array of contacts' });
@@ -250,6 +275,10 @@ campaignsRouter.post('/api/campaigns/:id/contacts', async (req: Request, res: Re
 campaignsRouter.get('/api/campaigns/:id/report', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = String(req.params.id);
+    const existing = await campaignService.getCampaign(id, req.user?.assigned_pipeline);
+    if (!existing) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
     const reportData = await campaignService.getCampaignReport(id);
     return res.json({ success: true, count: reportData.length, report: reportData });
   } catch (err) {
@@ -263,6 +292,10 @@ campaignsRouter.get('/api/campaigns/:id/report', async (req: Request, res: Respo
 campaignsRouter.get('/api/campaigns/:id/dispositions', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = String(req.params.id);
+    const existing = await campaignService.getCampaign(id, req.user?.assigned_pipeline);
+    if (!existing) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
     const data = await campaignService.getCampaignDispositions(id);
     return res.json({ success: true, ...data });
   } catch (err) {
@@ -276,6 +309,10 @@ campaignsRouter.get('/api/campaigns/:id/dispositions', async (req: Request, res:
 campaignsRouter.delete('/api/campaigns/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = String(req.params.id);
+    const existing = await campaignService.getCampaign(id, req.user?.assigned_pipeline);
+    if (!existing) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
     const deleted = await campaignService.deleteCampaign(id);
     if (!deleted) {
       return res.status(404).json({ error: 'Campaign not found' });
