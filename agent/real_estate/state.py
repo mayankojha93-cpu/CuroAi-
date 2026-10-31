@@ -75,6 +75,13 @@ class RealEstateState:
         self.outcome_posted: bool = False
         self.silence_count: int = 0
 
+        # Objections, callbacks & handoff tracking
+        self.callback_time_slot: Optional[str] = None
+        self.whatsapp_number: Optional[str] = None
+        self.is_dnc: bool = False
+        self.advisor_handoff_reason: Optional[str] = None
+        self.impatient_detected: bool = False
+
         # Transcript tracking
         self.transcript: List[Dict[str, Any]] = []
 
