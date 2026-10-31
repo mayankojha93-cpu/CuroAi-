@@ -24,16 +24,46 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres123}@postgres:5432/${POSTGRES_DB:-ai_calling}
       PORT: 3000
+      RECORDING_STORAGE_DIR: /app/recordings
     ports:
-      - "127.0.0.1:3000:3000"
+      - "3000:3000"
+    volumes:
+      - recordings_data:/app/recordings
     depends_on:
       postgres:
         condition: service_healthy
 
-  agent:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+    depends_on:
+      - backend
+
+  # 1st Voice Pipeline: Airtel Wi-Fi Router Return Pickup (Priya)
+  agent-telecom:
     build:
       context: ./agent
       dockerfile: Dockerfile
+    command: ["python", "agent.py", "start"]
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      BACKEND_URL: http://backend:3000
+    depends_on:
+      backend:
+        condition: service_started
+
+  # 2nd Voice Pipeline: My Estate Finder Property Intake (Sagar)
+  agent-real-estate:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    command: ["python", "agent_real_estate.py", "start"]
     restart: unless-stopped
     env_file:
       - .env
@@ -45,3 +75,4 @@ services:
 
 volumes:
   postgres_data:
+  recordings_data:
