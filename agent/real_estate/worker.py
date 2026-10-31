@@ -338,7 +338,7 @@ async def entrypoint(ctx: agents.JobContext):
     greeting = (
         "Hello, I’m Sagar, calling from My Estate Finder. We help property owners sell their properties. Are you considering selling or renting a property?"
         if state.reply_lang == "en"
-        else "नमस्ते, मैं माय एस्टेट फाइंडर से सागर बात कर रहा हूँ। हम प्रॉपर्टी ओनर्स को प्रॉपर्टी बेचने या रेंट पर देने में मदद करते हैं। क्या आप कोई प्रॉपर्टी बेचने या रेंट पर देने की सोच रहे हैं?"
+        else "Hello, main Sagar bol raha hoon My Estate Finder se. Hum property owners ko unki property sell ya rent karne mein help karte hain. Kya aap koi property sell ya rent karne ka soch rahe hain?"
     )
 
     state.last_activity_time = time.time()
@@ -360,7 +360,7 @@ async def entrypoint(ctx: agents.JobContext):
                     reprompt = (
                         "Are you still with me? Could you hear me?"
                         if state.reply_lang == "en"
-                        else "क्या आप लाइन पर हैं? क्या आप मुझे सुन पा रहे हैं?"
+                        else "Kya aap line par hain? Kya aap mujhe sun pa rahe hain?"
                     )
                     try:
                         session.say(reprompt, allow_interruptions=True)
@@ -370,7 +370,7 @@ async def entrypoint(ctx: agents.JobContext):
                     goodbye = (
                         "I cannot hear you at the moment. We will call you back later. Have a great day!"
                         if state.reply_lang == "en"
-                        else "मुझे आपकी आवाज़ नहीं आ रही है। हम आपसे बाद में संपर्क करेंगे। आपका दिन शुभ हो!"
+                        else "Mujhe aapki aawaz nahi aa rahi hai. Hum aapse baad mein connect karenge. Have a great day!"
                     )
                     try:
                         speech = session.say(goodbye, allow_interruptions=False)
