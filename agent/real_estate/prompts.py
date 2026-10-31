@@ -170,11 +170,14 @@ Captured so far:
 - Leased Status: {'Leased' if state.is_currently_leased else ('Vacant' if state.is_currently_leased is False else 'Not provided')}
 - Immediate Occupancy: {'Yes' if state.immediate_occupancy is True else ('No' if state.immediate_occupancy is False else 'Not provided')}
 
-Execution Instructions:
-1. Ask the primary next question politely.
-2. Whenever the caller answers, immediately call `save_property_details(...)`.
-3. If the caller answers multiple fields in one sentence, pass all of them into `save_property_details(...)`.
-4. DO NOT skip questions or finish intake early until all questions are answered or customer explicitly asks to wrap up.
+CRITICAL MANDATORY INSTRUCTIONS:
+1. TOOL CALL REQUIRED: Whenever the customer mentions ANY property detail (society/building, sector/location, unit number, floor, BHK/commercial type, area, price, furnishing):
+   YOU MUST CALL THE TOOL `save_property_details(...)` IN THIS EXACT TURN!
+   Example: If caller says "Estate Green Sector 81 Unit 292 4th floor", you MUST call:
+   `save_property_details(project_or_society="Estate Green", sector_or_location="Sector 81", unit_number="292", floor_number="4")`.
+2. NEVER ONLY REPEAT IT VERBALLY. If you formulate a verbal reply without calling `save_property_details`, the data is NOT stored!
+3. Ask the primary next question politely using natural Hinglish/English fillers.
+4. Capture all details provided, even if the caller shares multiple pieces of information in a single sentence.
 """
 
     if step == RealEstateStep.CLOSING:
