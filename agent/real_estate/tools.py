@@ -195,20 +195,74 @@ class RealEstateTools:
         """Call when customer is not interested in selling or renting."""
         self.state.is_interested = False
         self.state.final_disposition = "Not Interested"
+        if not self.state.agent_summary:
+            self.state.agent_summary = "Customer not interested in selling or renting property"
         await self._go(RealEstateStep.CLOSING)
         return "Customer not interested. Speak polite closing and thank them for their time."
 
     @function_tool
-    async def schedule_callback(self) -> str:
-        """Call when customer asks to call back later or is busy."""
-        self.state.final_disposition = "Schedule Callback"
+    async def schedule_callback(
+        self,
+        time_slot: Optional[str] = None,
+        preferred_day: Optional[str] = None,
+    ) -> str:
+        """Call when customer asks to call back later or specifies a preferred day/time slot."""
+        slot = f"{preferred_day or ''} {time_slot or ''}".strip() or "General"
+        self.state.callback_time_slot = slot
+        self.state.final_disposition = f"Schedule Callback ({slot})"
+        if not self.state.agent_summary:
+            self.state.agent_summary = f"Callback scheduled for: {slot}"
         await self._go(RealEstateStep.CLOSING)
-        return "Callback requested. Acknowledge politely and close the call."
+        return f"Callback scheduled for {slot}. Confirm with customer and speak closing."
+
+    @function_tool
+    async def book_advisor_handoff(
+        self,
+        reason: str,
+        preferred_time: Optional[str] = None,
+    ) -> str:
+        """Call when customer sounds impatient, asks for pricing/market valuation, or requests a human advisor."""
+        self.state.impatient_detected = "impatient" in reason.lower()
+        self.state.advisor_handoff_reason = reason.strip()
+        self.state.callback_time_slot = preferred_time
+        clean_reason = reason.replace(" ", "_")[:25]
+        self.state.final_disposition = f"Advisor Callback Booked ({clean_reason})"
+        if not self.state.agent_summary:
+            self.state.agent_summary = f"Advisor handoff booked: {reason}"
+        await self._go(RealEstateStep.CLOSING)
+        return "Senior advisor callback booked. Acknowledge politely and speak closing."
+
+    @function_tool
+    async def request_whatsapp_info(
+        self,
+        phone: Optional[str] = None,
+    ) -> str:
+        """Call when customer asks to send property details or company information on WhatsApp."""
+        self.state.whatsapp_number = (phone or self.state.phone).strip()
+        self.state.final_disposition = "WhatsApp Info Requested"
+        if not self.state.agent_summary:
+            self.state.agent_summary = f"WhatsApp info requested on: {self.state.whatsapp_number}"
+        await self._go(RealEstateStep.CLOSING)
+        return f"WhatsApp info requested for {self.state.whatsapp_number}. Acknowledge and speak closing."
+
+    @function_tool
+    async def suppress_contact_dnc(
+        self,
+        reason: Optional[str] = None,
+    ) -> str:
+        """Call when customer says 'mujhe call mat karna', requests Do Not Call, or asks to remove their number."""
+        self.state.is_dnc = True
+        self.state.final_disposition = "Do Not Call / DNC"
+        self.state.agent_summary = f"Customer added to DNC list ({reason or 'Customer requested no further calls'})"
+        await self._go(RealEstateStep.CLOSING)
+        return "Customer added to Do Not Call (DNC) list. Apologize sincerely and speak closing."
 
     @function_tool
     async def mark_wrong_number(self) -> str:
         """Call when the customer says this is the wrong number."""
         self.state.final_disposition = "Wrong Number"
+        if not self.state.agent_summary:
+            self.state.agent_summary = "Wrong number identified by caller"
         await self._go(RealEstateStep.CLOSING)
         return "Wrong number identified. Apologize politely and conclude."
 
@@ -224,20 +278,30 @@ class RealEstateTools:
 
     # ── Tool Filtering per Step ────────────────────────────────────
 
+    def _objection_tools(self) -> List[Any]:
+        return [
+            self.schedule_callback,
+            self.book_advisor_handoff,
+            self.request_whatsapp_info,
+            self.suppress_contact_dnc,
+            self.mark_not_interested,
+            self.mark_wrong_number,
+        ]
+
     def tools_for_step(self, step: RealEstateStep) -> List[Any]:
         if step == RealEstateStep.INTRODUCTION:
-            return [self.customer_interested, self.mark_not_interested, self.schedule_callback, self.mark_wrong_number]
+            return [self.customer_interested] + self._objection_tools()
         elif step == RealEstateStep.OWNER_NAME:
-            return [self.confirm_owner_name, self.mark_not_interested, self.schedule_callback, self.mark_wrong_number]
+            return [self.confirm_owner_name] + self._objection_tools()
         elif step == RealEstateStep.CATEGORY_SELECT:
-            return [self.set_category_and_intent, self.mark_not_interested, self.schedule_callback, self.mark_wrong_number]
+            return [self.set_category_and_intent] + self._objection_tools()
         elif step in (
             RealEstateStep.RESIDENTIAL_SALE,
             RealEstateStep.RESIDENTIAL_LEASE,
             RealEstateStep.COMMERCIAL_SALE,
             RealEstateStep.COMMERCIAL_LEASE,
         ):
-            return [self.save_property_details, self.finish_property_intake, self.schedule_callback, self.mark_not_interested, self.mark_wrong_number]
+            return [self.save_property_details, self.finish_property_intake] + self._objection_tools()
         elif step == RealEstateStep.CLOSING:
             # No tools in closing step: prevents LLM tool hallucinations completely
             return []
