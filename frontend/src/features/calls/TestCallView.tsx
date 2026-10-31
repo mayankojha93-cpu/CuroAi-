@@ -85,6 +85,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
   const [historyCalls, setHistoryCalls] = useState<CallRecord[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [selectedCallForModal, setSelectedCallForModal] = useState<CallRecord | null>(null);
+  const [dispositionFilter, setDispositionFilter] = useState<string>('ALL');
 
   const loadHistory = async () => {
     setLoadingHistory(true);
@@ -191,10 +192,162 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
   };
 
 
-  // Status badge styling
+  // Status & Canonical Disposition badge styling
   const renderStatusBadge = (status?: string, disposition?: string) => {
     const s = (status || '').toUpperCase();
     const d = (disposition || '').toUpperCase();
+
+    // 1. Qualified Lead
+    if (d.includes('QUALIFIED')) {
+      return (
+        <span style={{
+          display: 'inline-block',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.68rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          background: 'rgba(16, 185, 129, 0.15)',
+          border: '1px solid rgba(16, 185, 129, 0.35)',
+          color: '#10B981',
+        }}>
+          QUALIFIED
+        </span>
+      );
+    }
+
+    // 2. Advisor Callback Booked
+    if (d.includes('ADVISOR')) {
+      return (
+        <span style={{
+          display: 'inline-block',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.68rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          background: 'rgba(168, 85, 247, 0.15)',
+          border: '1px solid rgba(168, 85, 247, 0.35)',
+          color: '#C084FC',
+        }}>
+          ADVISOR
+        </span>
+      );
+    }
+
+    // 3. Schedule Callback
+    if (d.includes('CALLBACK')) {
+      return (
+        <span style={{
+          display: 'inline-block',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.68rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          background: 'rgba(56, 189, 248, 0.15)',
+          border: '1px solid rgba(56, 189, 248, 0.35)',
+          color: '#38BDF8',
+        }}>
+          CALLBACK
+        </span>
+      );
+    }
+
+    // 4. WhatsApp Info Requested
+    if (d.includes('WHATSAPP')) {
+      return (
+        <span style={{
+          display: 'inline-block',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.68rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          background: 'rgba(6, 182, 212, 0.15)',
+          border: '1px solid rgba(6, 182, 212, 0.35)',
+          color: '#22D3EE',
+        }}>
+          WHATSAPP
+        </span>
+      );
+    }
+
+    // 5. Not Interested
+    if (d.includes('NOT INTERESTED')) {
+      return (
+        <span style={{
+          display: 'inline-block',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.68rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          background: 'rgba(148, 163, 184, 0.15)',
+          border: '1px solid rgba(148, 163, 184, 0.35)',
+          color: '#94A3B8',
+        }}>
+          NOT INTERESTED
+        </span>
+      );
+    }
+
+    // 6. Do Not Call
+    if (d.includes('DO NOT CALL') || d.includes('DNC')) {
+      return (
+        <span style={{
+          display: 'inline-block',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.68rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          background: 'rgba(244, 63, 94, 0.15)',
+          border: '1px solid rgba(244, 63, 94, 0.35)',
+          color: '#FB7185',
+        }}>
+          DO NOT CALL
+        </span>
+      );
+    }
+
+    // 7. Wrong Number
+    if (d.includes('WRONG NUMBER')) {
+      return (
+        <span style={{
+          display: 'inline-block',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.68rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          background: 'rgba(249, 115, 22, 0.15)',
+          border: '1px solid rgba(249, 115, 22, 0.35)',
+          color: '#FB923C',
+        }}>
+          WRONG NUMBER
+        </span>
+      );
+    }
+
+    // 8. No Answer
+    if (s === 'NO_ANSWER' || s === 'NO ANSWER' || d.includes('NO ANSWER')) {
+      return (
+        <span style={{
+          display: 'inline-block',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.68rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          background: 'rgba(245, 158, 11, 0.15)',
+          border: '1px solid rgba(245, 158, 11, 0.35)',
+          color: '#F59E0B',
+        }}>
+          NO ANSWER
+        </span>
+      );
+    }
 
     if (s === 'COMPLETED' || s === 'SUCCESSFUL' || s === 'ANSWERED' || d.includes('GOAL') || d.includes('PICKUP')) {
       return (
@@ -227,23 +380,6 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
           color: '#EF4444',
         }}>
           BUSY
-        </span>
-      );
-    }
-    if (s === 'NO_ANSWER' || s === 'NO ANSWER' || d.includes('NO ANSWER')) {
-      return (
-        <span style={{
-          display: 'inline-block',
-          padding: '4px 10px',
-          borderRadius: 4,
-          fontSize: '0.68rem',
-          fontWeight: 700,
-          letterSpacing: '0.04em',
-          background: 'rgba(245, 158, 11, 0.12)',
-          border: '1px solid rgba(245, 158, 11, 0.28)',
-          color: '#F59E0B',
-        }}>
-          NO ANSWER
         </span>
       );
     }
@@ -740,6 +876,74 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
             </div>
           </div>
 
+          {/* Real Estate & Campaign Canonical Disposition Filter Bar */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            overflowX: 'auto',
+            paddingBottom: 4,
+            marginBottom: 14,
+          }}>
+            {[
+              { id: 'ALL', label: 'All Dispositions', count: historyCalls.length, color: '#3B82F6' },
+              { id: 'QUALIFIED', label: 'Qualified Lead', count: historyCalls.filter((c) => ((c.final_disposition || '') as string).toUpperCase().includes('QUALIFIED')).length, color: '#10B981' },
+              { id: 'CALLBACK', label: 'Schedule Callback', count: historyCalls.filter((c) => {
+                const d = ((c.final_disposition || '') as string).toUpperCase();
+                return d.includes('CALLBACK') && !d.includes('ADVISOR');
+              }).length, color: '#38BDF8' },
+              { id: 'ADVISOR', label: 'Advisor Callback', count: historyCalls.filter((c) => ((c.final_disposition || '') as string).toUpperCase().includes('ADVISOR')).length, color: '#A855F7' },
+              { id: 'WHATSAPP', label: 'WhatsApp Sent', count: historyCalls.filter((c) => ((c.final_disposition || '') as string).toUpperCase().includes('WHATSAPP')).length, color: '#06B6D4' },
+              { id: 'NOT_INTERESTED', label: 'Not Interested', count: historyCalls.filter((c) => ((c.final_disposition || '') as string).toUpperCase().includes('NOT INTERESTED')).length, color: '#94A3B8' },
+              { id: 'DNC', label: 'Do Not Call', count: historyCalls.filter((c) => {
+                const d = ((c.final_disposition || '') as string).toUpperCase();
+                return d.includes('DO NOT CALL') || d.includes('DNC');
+              }).length, color: '#F43F5E' },
+            ].map((pill) => {
+              const isSelected = dispositionFilter === pill.id;
+              return (
+                <button
+                  key={pill.id}
+                  type="button"
+                  onClick={() => setDispositionFilter(pill.id)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '6px 12px',
+                    borderRadius: 20,
+                    fontSize: '0.76rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                    border: `1px solid ${isSelected ? pill.color : 'rgba(255, 255, 255, 0.08)'}`,
+                    background: isSelected ? `${pill.color}20` : 'rgba(255, 255, 255, 0.03)',
+                    color: isSelected ? '#FFFFFF' : '#94A3B8',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  <span style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: '50%',
+                    background: pill.color,
+                  }} />
+                  <span>{pill.label}</span>
+                  <span style={{
+                    background: 'rgba(255, 255, 255, 0.1)',
+                    padding: '1px 6px',
+                    borderRadius: 10,
+                    fontSize: '0.7rem',
+                    fontWeight: 700,
+                    color: isSelected ? '#FFFFFF' : '#CBD5E1',
+                  }}>
+                    {pill.count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
           {/* List of Calls */}
           {loadingHistory && historyCalls.length === 0 ? (
             <div style={{ padding: 48, textAlign: 'center', color: '#64748B' }}>
@@ -758,21 +962,38 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {historyCalls.map((call, idx) => {
+              {historyCalls.filter((c) => {
+                if (dispositionFilter === 'ALL') return true;
+                const disp = ((c.final_disposition || (c as any).call_result || '') as string).toUpperCase();
+                if (dispositionFilter === 'QUALIFIED') return disp.includes('QUALIFIED');
+                if (dispositionFilter === 'CALLBACK') return disp.includes('CALLBACK') && !disp.includes('ADVISOR');
+                if (dispositionFilter === 'ADVISOR') return disp.includes('ADVISOR');
+                if (dispositionFilter === 'WHATSAPP') return disp.includes('WHATSAPP');
+                if (dispositionFilter === 'NOT_INTERESTED') return disp.includes('NOT INTERESTED');
+                if (dispositionFilter === 'DNC') return disp.includes('DO NOT CALL') || disp.includes('DNC');
+                return true;
+              }).map((call, idx) => {
                 const phoneDisplay = call.customer_phone || (call as any).phone || '+919330188999';
                 const timeDisplay = formatTimestamp(call.created_at);
                 
-                // Format script display: e.g. Trump_towers_india (English)
+                // Format script display: e.g. My Estate Finder (Sagar) or Trump_towers_india (English)
                 const rawScript = call.script || (call as any).campaign_name || 'Trump_towers_india';
-                const normalizedScriptKey = rawScript.includes('Trump') 
-                  ? 'Trump_towers_india' 
-                  : (rawScript.includes('Ratnafin') ? 'Ratnafin_machinery_loan' : 'airtel_router_return');
-                const langName = (call as any).language === 'hi' || (call as any).customer_language === 'hi' ? 'Hindi' : 'English';
-                const scriptDisplay = `${normalizedScriptKey} (${langName})`;
+                let normalizedScriptKey = 'Trump_towers_india';
+                if (rawScript.includes('Estate') || rawScript.includes('my_estate') || rawScript.includes('sagar') || rawScript.includes('Property')) {
+                  normalizedScriptKey = 'My Estate Finder (Sagar)';
+                } else if (rawScript.includes('Trump')) {
+                  normalizedScriptKey = 'Trump_towers_india';
+                } else if (rawScript.includes('Ratnafin')) {
+                  normalizedScriptKey = 'Ratnafin_machinery_loan';
+                } else if (rawScript.includes('airtel') || rawScript.includes('router')) {
+                  normalizedScriptKey = 'Airtel Wi-Fi Router Return';
+                }
+                const langName = (call as any).language === 'hi' || (call as any).customer_language === 'hi' ? 'Hinglish' : 'English';
+                const scriptDisplay = normalizedScriptKey.includes('(') ? normalizedScriptKey : `${normalizedScriptKey} (${langName})`;
 
                 const durationSec = call.duration_seconds || 0;
                 const durationDisplay = durationSec > 0 ? `${durationSec}s` : '-';
-                const rawDisp = call.final_disposition || (call as any).call_result || (call.status === 'completed' ? 'Goal completed' : '—');
+                const rawDisp = call.final_disposition || (call as any).call_result || (call.status === 'completed' ? 'Qualified Lead' : '—');
 
                 return (
                   <div
