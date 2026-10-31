@@ -311,6 +311,7 @@ async def entrypoint(ctx: agents.JobContext):
             if not p.identity.startswith("phone-") or call_status == "active":
                 logger.info(f"🎉 Callee answered! (Identity: {p.identity}, Status: {call_status}). Starting dialogue.")
                 callee_connected = True
+                state.start_time = time.time()
                 break
             elif call_status in ("failed", "busy", "rejected", "hangup"):
                 logger.warning(f"Call ended before pickup: {call_status}")
@@ -385,6 +386,38 @@ async def entrypoint(ctx: agents.JobContext):
                 consecutive_silence = 0
 
     asyncio.create_task(silence_watchdog())
+
+    # 5. Call Duration Cap Watchdog (Cap at ~3 minutes = 180s)
+    async def call_duration_watchdog():
+        while not state.hangup_started:
+            await asyncio.sleep(2.0)
+            if state.hangup_started:
+                break
+            elapsed = time.time() - state.start_time
+            # At 165s (~2m45s), initiate graceful wrap-up to conclude within 3 minutes
+            if elapsed >= 165.0 and state.step != RealEstateStep.CLOSING:
+                logger.info(f"⏳ Call reached {int(elapsed)}s (3-minute cap). Gracefully wrapping up with advisor callback...")
+                state.step = RealEstateStep.CLOSING
+                disp_lower = state.final_disposition.lower()
+                if not ("qualified" in disp_lower or "dnc" in disp_lower or "whatsapp" in disp_lower):
+                    state.final_disposition = "Advisor Callback Booked (3-Min Cap)"
+                    if not state.agent_summary:
+                        state.agent_summary = "Call capped at 3 minutes; advisor follow-up scheduled"
+                wrapup_line = (
+                    "Thank you for your time! I’ve noted the essential details, and our senior property advisor will follow up with you to finalize everything. Have a great day!"
+                    if state.reply_lang == "en"
+                    else "Apna time dene ke liye thank you! Maine main details note kar li hain, aur hamare senior property advisor aapse baki details ke liye follow-up karenge. Have a great day!"
+                )
+                try:
+                    speech = session.say(wrapup_line, allow_interruptions=False)
+                    state.add_transcript("assistant", wrapup_line)
+                    await asyncio.wait_for(speech.wait_for_playout(), timeout=6.5)
+                except Exception as e:
+                    logger.warning(f"Duration cap wrapup playout error: {e}")
+                await _save_and_shutdown()
+                break
+
+    asyncio.create_task(call_duration_watchdog())
 
     try:
         await asyncio.wait_for(opening_speech.wait_for_playout(), timeout=8.0)
