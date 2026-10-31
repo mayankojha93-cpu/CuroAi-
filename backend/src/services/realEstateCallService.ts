@@ -115,10 +115,10 @@ export class RealEstateCallService {
     const insertCall = await query(
       `INSERT INTO calls (
          id, re_lead_id, status, call_status, attempt_number, room_name, direction,
-         script, company_name, voice_pipeline, is_test_call
+         script, company_name, voice_pipeline, is_test_call, pipeline
        )
        VALUES ($1, $2, 'initiated', 'initiated', $3, $4, 'outbound',
-               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Aditya - hi-IN)', TRUE)
+               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Aditya - hi-IN)', TRUE, 'real_estate')
        RETURNING *`,
       [callId, lead?.id || null, lead?.total_attempts || 1, roomName]
     );
@@ -158,10 +158,10 @@ export class RealEstateCallService {
     const insCall = await query(
       `INSERT INTO calls (
          id, re_lead_id, campaign_id, status, call_status, attempt_number, room_name, direction,
-         script, company_name, voice_pipeline
+         script, company_name, voice_pipeline, pipeline
        )
        VALUES ($1, $2, $3, 'initiated', 'initiated', $4, $5, 'outbound',
-               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Aditya - hi-IN)')
+               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Aditya - hi-IN)', 'real_estate')
        RETURNING *`,
       [callId, leadId, lead.campaign_id, attempt, roomName]
     );
