@@ -37,6 +37,7 @@ class RealEstateState:
         self.direction = direction
 
         self.reply_lang: str = "en" if preferred_language == "en" else "hi"
+        self.callee_connected: bool = False
         self.start_time: float = time.time()
         self.last_activity_time: float = time.time()
         self.latency_samples: List[float] = []
