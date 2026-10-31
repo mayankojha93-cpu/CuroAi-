@@ -14,6 +14,7 @@ import { downloadPendingRecordings } from './services/recordingDownloader.js';
 import { authRouter } from './routes/auth.js';
 import { campaignsRouter } from './routes/campaigns.js';
 import { billingRouter } from './routes/billing.js';
+import { realEstateRouter } from './routes/realEstate.js';
 import { requireAuth } from './middleware/auth.js';
 import { authService } from './services/authService.js';
 
@@ -46,11 +47,12 @@ app.use(express.text({ type: ['text/csv', 'text/plain'], limit: '10mb' }));
 
 // Register routes
 app.use(healthRouter);
+app.use(internalRouter);
 app.use(authRouter);
+app.use(realEstateRouter);
 app.use(requireAuth, callsRouter);
 app.use(requireAuth, campaignsRouter);
 app.use(requireAuth, billingRouter);
-app.use(internalRouter);
 
 // 404 handler
 app.use((req: Request, res: Response) => {

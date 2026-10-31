@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { callService } from '../services/callService.js';
+import { realEstateCallService } from '../services/realEstateCallService.js';
 import { validateRequest } from '../middleware/validate.js';
 import { parseCsvToLeads } from '../utils/csvParser.js';
 
@@ -89,6 +90,39 @@ callsRouter.post(
   validateRequest(testCallSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const script = (req.body.script || '').toLowerCase();
+      if (
+        script.includes('my_estate') ||
+        script.includes('estate_finder') ||
+        script.includes('sagar') ||
+        script.includes('property')
+      ) {
+        const { call, lead } = await realEstateCallService.initiateTestCall({
+          phone: req.body.phone,
+          owner_name: req.body.customer_name || req.body.name,
+          language: req.body.language,
+          notes: `Test Call: ${req.body.script || 'My Estate Finder'}`,
+        });
+        return res.status(201).json({
+          success: true,
+          message: `Test call placed successfully to ${lead.phone} via My Estate Finder Agent`,
+          call: {
+            id: call.id,
+            customerId: lead.id,
+            status: call.status,
+            roomName: call.room_name,
+            phone: lead.phone,
+            customerName: lead.owner_name,
+            companyName: (call as any).company_name || 'My Estate Finder',
+            script: (call as any).script || 'My Estate Finder — Property Intake',
+            voicePipeline: (call as any).voice_pipeline || 'Sarvam AI (Arvind - hi-IN)',
+            language: lead.preferred_language || 'en',
+            createdAt: call.created_at,
+          },
+          customer: lead,
+        });
+      }
+
       const { call, customer } = await callService.initiateTestCall(req.body);
       return res.status(201).json({
         success: true,

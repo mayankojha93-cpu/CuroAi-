@@ -16,6 +16,11 @@ declare global {
  * Middleware requiring a valid JWT Bearer token
  */
 export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
+  // Allow internal service-to-service endpoints and health check to bypass JWT
+  if (req.path.startsWith('/internal/') || req.path === '/health') {
+    return next();
+  }
+
   const authHeader = req.headers.authorization;
   const token = authHeader && authHeader.startsWith('Bearer ')
     ? authHeader.slice(7).trim()

@@ -1063,15 +1063,32 @@ export class CallService {
   async getCall(callId: string) {
     const res = await query(
       `SELECT c.*,
-              cust.name as customer_name, cust.phone as customer_phone, cust.address as customer_address,
+              COALESCE(cust.name, rl.owner_name) as customer_name,
+              COALESCE(cust.phone, rl.phone) as customer_phone,
+              cust.address as customer_address,
               cust.account_no, cust.subs_del_no, cust.service_end_date, cust.total_attempts,
               camp.id as campaign_id, camp.name as campaign_name,
-              co.outcome, co.final_disposition, co.pickup_date, co.confirmed_date,
-              co.address_confirmed, co.new_address, co.transcript, co.customer_note
+              COALESCE(co.outcome, ro.final_disposition) as outcome,
+              COALESCE(co.final_disposition, ro.final_disposition) as final_disposition,
+              co.pickup_date, co.confirmed_date,
+              co.address_confirmed, co.new_address,
+              COALESCE(co.transcript, ro.transcript) as transcript,
+              COALESCE(co.customer_note, ro.agent_summary) as customer_note,
+              rp.category as re_category, rp.intent as re_intent,
+              rp.project_or_society as re_project_or_society, rp.sector_or_location as re_sector_or_location,
+              rp.unit_number as re_unit_number, rp.floor_number as re_floor_number,
+              rp.bhk_config as re_bhk_config, rp.commercial_type as re_commercial_type,
+              rp.approx_area_sqft as re_approx_area_sqft, rp.furnishing_status as re_furnishing_status,
+              rp.expected_sale_price as re_expected_sale_price, rp.expected_monthly_rent as re_expected_monthly_rent,
+              rp.is_currently_leased as re_is_currently_leased, rp.current_rent_received as re_current_rent_received,
+              rp.immediate_occupancy as re_immediate_occupancy
        FROM calls c
        LEFT JOIN customers cust ON c.customer_id = cust.id
+       LEFT JOIN real_estate_leads rl ON c.re_lead_id = rl.id
        LEFT JOIN campaigns camp ON c.campaign_id = camp.id
        LEFT JOIN call_outcomes co ON c.id = co.call_id
+       LEFT JOIN real_estate_outcomes ro ON c.id = ro.call_id
+       LEFT JOIN real_estate_properties rp ON ro.property_id = rp.id
        WHERE c.id = $1`,
       [callId]
     );
@@ -1099,13 +1116,20 @@ export class CallService {
   async listRecentCalls(limit = 100, status?: string, isTest?: boolean) {
     let q = `
       SELECT c.*,
-              cust.name as customer_name, cust.phone as customer_phone, cust.subs_del_no, cust.language as customer_language,
+              COALESCE(cust.name, rl.owner_name) as customer_name,
+              COALESCE(cust.phone, rl.phone) as customer_phone,
+              cust.subs_del_no,
+              COALESCE(cust.language, rl.preferred_language) as customer_language,
               camp.id as campaign_id, camp.name as campaign_name,
-              co.final_disposition, co.confirmed_date, co.pickup_date, co.transcript
+              COALESCE(co.final_disposition, ro.final_disposition) as final_disposition,
+              co.confirmed_date, co.pickup_date,
+              COALESCE(co.transcript, ro.transcript) as transcript
        FROM calls c
        LEFT JOIN customers cust ON c.customer_id = cust.id
+       LEFT JOIN real_estate_leads rl ON c.re_lead_id = rl.id
        LEFT JOIN campaigns camp ON c.campaign_id = camp.id
        LEFT JOIN call_outcomes co ON c.id = co.call_id
+       LEFT JOIN real_estate_outcomes ro ON c.id = ro.call_id
     `;
     const params: any[] = [];
     const whereConditions: string[] = [];

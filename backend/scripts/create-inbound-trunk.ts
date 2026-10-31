@@ -109,9 +109,12 @@ async function main() {
     console.log(`  Name:          ${inboundTrunk.name}`);
     console.log(`  Numbers:       ${inboundTrunk.numbers?.join(', ')}\n`);
 
-    // 3. Create Dispatch Rule to auto-route incoming calls to individual rooms and dispatch Agent Priya
+    const agentIdx = args.indexOf('--agent');
+    const targetAgent = agentIdx !== -1 && args[agentIdx + 1] ? args[agentIdx + 1] : (env.REAL_ESTATE_AGENT_NAME || env.AGENT_NAME);
+
+    // 3. Create Dispatch Rule to auto-route incoming calls to individual rooms and dispatch target agent
     const ruleName = `exotel-inbound-dispatch-${Date.now().toString().slice(-4)}`;
-    logger.info({ ruleName, trunkId: inboundTrunk.sipTrunkId }, 'Creating LiveKit SIP Dispatch Rule...');
+    logger.info({ ruleName, trunkId: inboundTrunk.sipTrunkId, targetAgent }, 'Creating LiveKit SIP Dispatch Rule...');
 
     const dispatchRule = await sipClient.createSipDispatchRule(
       {
@@ -124,7 +127,7 @@ async function main() {
         roomConfig: new RoomConfiguration({
           agents: [
             new RoomAgentDispatch({
-              agentName: env.AGENT_NAME,
+              agentName: targetAgent,
               metadata: JSON.stringify({ direction: 'inbound' }),
             }),
           ],
@@ -136,7 +139,7 @@ async function main() {
     console.log(`  Rule ID:       ${dispatchRule.sipDispatchRuleId}`);
     console.log(`  Name:          ${dispatchRule.name}`);
     console.log(`  Room Prefix:   inbound-call-`);
-    console.log(`  Agent Target:  ${env.AGENT_NAME} (direction: inbound)\n`);
+    console.log(`  Agent Target:  ${targetAgent} (direction: inbound)\n`);
 
     console.log(`--------------------------------------------------`);
     console.log(`👉 Add or update in your .env file:`);
