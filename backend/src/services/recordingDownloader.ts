@@ -36,10 +36,11 @@ interface ExotelCallDetails {
  * Resolves Exotel API credentials with fallbacks
  */
 function getExotelCredentials() {
-  const sid = env.EXOTEL_SID || env.EXOTEL_ACCOUNT_SID;
-  const token = env.EXOTEL_TOKEN || env.EXOTEL_API_TOKEN || env.EXOTEL_API_KEY;
+  const accountSid = env.EXOTEL_ACCOUNT_SID || env.EXOTEL_SID;
+  const apiKey = env.EXOTEL_API_KEY || env.EXOTEL_SID;
+  const apiToken = env.EXOTEL_API_TOKEN || env.EXOTEL_TOKEN;
   const subdomain = env.EXOTEL_SUBDOMAIN || 'api.exotel.com';
-  return { sid, token, subdomain };
+  return { accountSid, apiKey, apiToken, subdomain };
 }
 
 /**
@@ -47,14 +48,14 @@ function getExotelCredentials() {
  * Exotel REST API: GET https://{subdomain}/v1/Accounts/{SID}/Calls/{CallSid}.json
  */
 export async function fetchExotelRecordingBySid(exotelCallSid: string): Promise<{ recordingUrl: string; duration?: number } | null> {
-  const { sid, token, subdomain } = getExotelCredentials();
-  if (!sid || !token) {
+  const { accountSid, apiKey, apiToken, subdomain } = getExotelCredentials();
+  if (!accountSid || !apiKey || !apiToken) {
     logger.warn('EXOTEL credentials not configured — cannot fetch recording URL by SID');
     return null;
   }
 
-  const apiUrl = `https://${subdomain}/v1/Accounts/${sid}/Calls/${exotelCallSid}.json`;
-  const auth = Buffer.from(`${sid}:${token}`).toString('base64');
+  const apiUrl = `https://${subdomain}/v1/Accounts/${accountSid}/Calls/${exotelCallSid}.json`;
+  const auth = Buffer.from(`${apiKey}:${apiToken}`).toString('base64');
 
   return new Promise((resolve) => {
     const req = https.get(apiUrl, { headers: { Authorization: `Basic ${auth}` } }, (res) => {
@@ -88,15 +89,15 @@ export async function fetchExotelRecordingBySid(exotelCallSid: string): Promise<
  * Exotel REST API: GET https://{subdomain}/v1/Accounts/{SID}/Calls.json?To={phone}
  */
 export async function fetchExotelRecordingByPhone(phone: string): Promise<{ recordingUrl: string; callSid?: string; duration?: number } | null> {
-  const { sid, token, subdomain } = getExotelCredentials();
-  if (!sid || !token) {
+  const { accountSid, apiKey, apiToken, subdomain } = getExotelCredentials();
+  if (!accountSid || !apiKey || !apiToken) {
     logger.warn('EXOTEL credentials not configured — cannot search recording by phone');
     return null;
   }
 
   const cleanPhone = phone.replace(/[^0-9+]/g, '');
-  const apiUrl = `https://${subdomain}/v1/Accounts/${sid}/Calls.json?To=${encodeURIComponent(cleanPhone)}`;
-  const auth = Buffer.from(`${sid}:${token}`).toString('base64');
+  const apiUrl = `https://${subdomain}/v1/Accounts/${accountSid}/Calls.json?To=${encodeURIComponent(cleanPhone)}`;
+  const auth = Buffer.from(`${apiKey}:${apiToken}`).toString('base64');
 
   return new Promise((resolve) => {
     const req = https.get(apiUrl, { headers: { Authorization: `Basic ${auth}` } }, (res) => {
@@ -221,8 +222,8 @@ export async function processCallRecording(
  * Main background sweeper job — runs periodically to download recordings for ended calls.
  */
 export async function downloadPendingRecordings(): Promise<void> {
-  const { sid, token } = getExotelCredentials();
-  if (!sid || !token) {
+  const { accountSid, apiKey, apiToken } = getExotelCredentials();
+  if (!accountSid || !apiKey || !apiToken) {
     return; // Exotel credentials not configured yet
   }
 
