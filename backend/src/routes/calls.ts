@@ -96,11 +96,12 @@ callsRouter.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const script = (req.body.script || '').toLowerCase();
+      const company = (req.body.company_name || '').toLowerCase();
       if (
-        script.includes('my_estate') ||
-        script.includes('estate_finder') ||
+        script.includes('estate') ||
         script.includes('sagar') ||
-        script.includes('property')
+        script.includes('property') ||
+        company.includes('estate')
       ) {
         const { call, lead } = await realEstateCallService.initiateTestCall({
           phone: req.body.phone,
