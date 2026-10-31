@@ -13,6 +13,8 @@ import {
 import type { CallRecord } from '../../types';
 import { initiateTestCall, fetchTestCallHistory } from '../../services/api.service';
 import { CallDetailModal } from './CallDetailModal';
+import { useAuth } from '../../context/AuthContext';
+import { cleanEnglishOnly } from '../../utils/textUtils';
 
 interface TestCallViewProps {
   onSelectCall?: (call: CallRecord) => void;
@@ -42,16 +44,51 @@ const PIPELINES = [
 ];
 
 export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
+  const { user } = useAuth();
+  const assignedPipeline = user?.assigned_pipeline || 'airtel';
+  const isRealEstate = assignedPipeline === 'real_estate';
+
+  const availableScripts = SCRIPTS.filter((s) => {
+    if (assignedPipeline === 'all') return true;
+    if (isRealEstate) {
+      return s.id === 'my_estate_finder' || s.id === 'trump_towers';
+    } else {
+      return s.id === 'airtel_return' || s.id === 'ratnafin' || s.id === 'direct_outreach';
+    }
+  });
+
   const [activeTab, setActiveTab] = useState<'MAKE_CALL' | 'CALL_HISTORY'>('MAKE_CALL');
   
   // Form fields matching user screenshot & prompt:
   // phone no, Customer name, Company Org name, Script, Language, Voice pipeline
   const [phone, setPhone] = useState('');
   const [customerName, setCustomerName] = useState('');
-  const [companyName, setCompanyName] = useState('');
-  const [selectedScript, setSelectedScript] = useState('Trump Towers India — Real Estate');
-  const [selectedLanguage, setSelectedLanguage] = useState('Multilingual');
-  const [selectedPipeline, setSelectedPipeline] = useState('Sarvam AI (Priya - hi-IN)');
+  const [companyName, setCompanyName] = useState(() =>
+    isRealEstate ? 'My Estate Finder' : 'Airtel Telecom'
+  );
+  const [selectedScript, setSelectedScript] = useState(() =>
+    isRealEstate ? 'My Estate Finder — Property Intake (Sagar)' : 'Airtel Wi-Fi Router Return'
+  );
+  const [selectedLanguage, setSelectedLanguage] = useState(() =>
+    isRealEstate ? 'Hinglish' : 'Multilingual'
+  );
+  const [selectedPipeline, setSelectedPipeline] = useState(() =>
+    isRealEstate ? 'Sarvam AI (Aditya - hi-IN)' : 'Sarvam AI (Priya - hi-IN)'
+  );
+
+  useEffect(() => {
+    if (isRealEstate) {
+      setSelectedScript('My Estate Finder — Property Intake (Sagar)');
+      setCompanyName('My Estate Finder');
+      setSelectedPipeline('Sarvam AI (Aditya - hi-IN)');
+      setSelectedLanguage('Hinglish');
+    } else {
+      setSelectedScript('Airtel Wi-Fi Router Return');
+      setCompanyName('Airtel Telecom');
+      setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
+      setSelectedLanguage('Multilingual');
+    }
+  }, [isRealEstate]);
 
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -525,32 +562,52 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                 Quick Test Presets
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {[
-                  {
-                    title: '🏠 Estate Finder (Sagar)',
-                    name: 'Vikramaditya Singhania',
-                    phone: '+919811122233',
-                    script: 'My Estate Finder — Property Intake (Sagar)',
-                    pipeline: 'Sarvam AI (Arvind - hi-IN)',
-                    company: 'My Estate Finder',
-                  },
-                  {
-                    title: '🏢 Commercial Lease',
-                    name: 'Ananya Deshmukh',
-                    phone: '+919845012345',
-                    script: 'My Estate Finder — Property Intake (Sagar)',
-                    pipeline: 'Sarvam AI (Arvind - hi-IN)',
-                    company: 'My Estate Finder',
-                  },
-                  {
-                    title: '📶 Airtel Wi-Fi Return',
-                    name: 'Rajan Nayak',
-                    phone: '+919811122233',
-                    script: 'Airtel Wi-Fi Router Return',
-                    pipeline: 'Sarvam AI (Priya - hi-IN)',
-                    company: 'Airtel Telecom',
-                  },
-                ].map((p, idx) => (
+                {(isRealEstate
+                  ? [
+                      {
+                        title: '🏠 Estate Finder (Sagar)',
+                        name: 'Vikramaditya Singhania',
+                        phone: '+919811122233',
+                        script: 'My Estate Finder — Property Intake (Sagar)',
+                        pipeline: 'Sarvam AI (Arvind - hi-IN)',
+                        company: 'My Estate Finder',
+                      },
+                      {
+                        title: '🏢 Commercial Lease',
+                        name: 'Ananya Deshmukh',
+                        phone: '+919845012345',
+                        script: 'My Estate Finder — Property Intake (Sagar)',
+                        pipeline: 'Sarvam AI (Arvind - hi-IN)',
+                        company: 'My Estate Finder',
+                      },
+                    ]
+                  : [
+                      {
+                        title: '📶 Airtel Wi-Fi Return',
+                        name: 'Rajan Nayak',
+                        phone: '+919811122233',
+                        script: 'Airtel Wi-Fi Router Return',
+                        pipeline: 'Sarvam AI (Priya - hi-IN)',
+                        company: 'Airtel Telecom',
+                      },
+                      {
+                        title: '💳 Ratnafin Loan',
+                        name: 'Pooja Verma',
+                        phone: '+919876543210',
+                        script: 'Ratnafin — Machinery Loan',
+                        pipeline: 'Sarvam AI (Priya - hi-IN)',
+                        company: 'Ratnafin',
+                      },
+                      {
+                        title: '📞 Voice Outreach',
+                        name: 'Karan Mehra',
+                        phone: '+919988776655',
+                        script: 'Direct Voice Outreach',
+                        pipeline: 'Sarvam AI (Priya - hi-IN)',
+                        company: 'Direct Voice',
+                      },
+                    ]
+                ).map((p, idx) => (
                   <button
                     key={idx}
                     type="button"
@@ -696,7 +753,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                         overflow: 'hidden',
                       }}
                     >
-                      {SCRIPTS.map((s) => (
+                      {availableScripts.map((s) => (
                         <option key={s.id} value={s.label} style={{ background: '#0B0F19', color: '#FFFFFF' }}>
                           {s.label}
                         </option>
@@ -975,6 +1032,8 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
               }).map((call, idx) => {
                 const phoneDisplay = call.customer_phone || (call as any).phone || '+919330188999';
                 const timeDisplay = formatTimestamp(call.created_at);
+                const rawName = call.customer_name || (call as any).name || (call as any).owner_name_confirmed || (call as any).owner_name;
+                const userName = cleanEnglishOnly(rawName);
                 
                 // Format script display: e.g. My Estate Finder (Sagar) or Trump_towers_india (English)
                 const rawScript = call.script || (call as any).campaign_name || 'Trump_towers_india';
@@ -1004,7 +1063,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                       borderRadius: 10,
                       padding: '16px 20px',
                       display: 'grid',
-                      gridTemplateColumns: '1.4fr 1.8fr 0.8fr 1fr 1.6fr 1.2fr',
+                      gridTemplateColumns: '1.5fr 1.7fr 0.8fr 1fr 1.6fr 1.2fr',
                       alignItems: 'center',
                       gap: 16,
                       transition: 'background 0.15s ease',
@@ -1016,11 +1075,22 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                       e.currentTarget.style.background = '#090D16';
                     }}
                   >
-                    {/* Col 1: Phone number & Time */}
+                    {/* Col 1: Name (English only), Phone number & Time */}
                     <div>
-                      <div style={{ color: '#FFFFFF', fontWeight: 700, fontSize: '0.92rem', letterSpacing: '0.01em' }}>
-                        {phoneDisplay}
-                      </div>
+                      {userName ? (
+                        <>
+                          <div style={{ color: '#FFFFFF', fontWeight: 600, fontSize: '0.90rem', letterSpacing: '0.01em', marginBottom: 2 }}>
+                            {userName}
+                          </div>
+                          <div style={{ color: '#94A3B8', fontSize: '0.78rem', letterSpacing: '0.01em' }}>
+                            {phoneDisplay}
+                          </div>
+                        </>
+                      ) : (
+                        <div style={{ color: '#FFFFFF', fontWeight: 700, fontSize: '0.92rem', letterSpacing: '0.01em' }}>
+                          {phoneDisplay}
+                        </div>
+                      )}
                       <div style={{ color: '#64748B', fontSize: '0.74rem', marginTop: 3 }}>
                         {timeDisplay}
                       </div>
