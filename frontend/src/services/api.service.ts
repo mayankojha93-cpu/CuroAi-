@@ -436,3 +436,45 @@ export async function fetchCampaignReport(campaignId: string): Promise<CampaignR
   return data.report || [];
 }
 
+/**
+ * Real Estate Pipeline APIs (My Estate Finder)
+ */
+export async function fetchRealEstateLeads(status?: string): Promise<any[]> {
+  const q = status ? `?status=${encodeURIComponent(status)}` : '';
+  const res = await authFetch(`${API_BASE}/api/real-estate/leads${q}`);
+  if (!res.ok) throw new Error(`Failed to fetch RE leads: ${res.statusText}`);
+  const data = await res.json();
+  return data.leads || [];
+}
+
+export async function fetchRealEstateProperties(category?: string, intent?: string): Promise<any[]> {
+  const params = new URLSearchParams();
+  if (category) params.set('category', category);
+  if (intent) params.set('intent', intent);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  const res = await authFetch(`${API_BASE}/api/real-estate/properties${qs}`);
+  if (!res.ok) throw new Error(`Failed to fetch properties: ${res.statusText}`);
+  const data = await res.json();
+  return data.properties || [];
+}
+
+export async function initiateRealEstateTestCall(input: {
+  phone: string;
+  owner_name?: string;
+  name?: string;
+  language?: string;
+  notes?: string;
+}): Promise<any> {
+  const res = await authFetch(`${API_BASE}/api/real-estate/calls/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to initiate RE test call: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+
