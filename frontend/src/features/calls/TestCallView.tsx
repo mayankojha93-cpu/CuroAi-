@@ -19,6 +19,7 @@ interface TestCallViewProps {
 }
 
 const SCRIPTS = [
+  { id: 'my_estate_finder', label: 'My Estate Finder — Property Intake (Sagar)', scriptKey: 'my_estate_finder', defaultOrg: 'My Estate Finder' },
   { id: 'trump_towers', label: 'Trump Towers India — Real Estate', scriptKey: 'Trump_towers_india', defaultOrg: 'Trump Towers India' },
   { id: 'ratnafin', label: 'Ratnafin — Machinery Loan', scriptKey: 'Ratnafin_machinery_loan', defaultOrg: 'Ratnafin' },
   { id: 'airtel_return', label: 'Airtel Wi-Fi Router Return', scriptKey: 'airtel_router_return', defaultOrg: 'Airtel Telecom' },
@@ -34,7 +35,7 @@ const LANGUAGES = [
 
 const PIPELINES = [
   { id: 'sarvam_priya', value: 'Sarvam AI (Priya - hi-IN)', label: 'Curoai 2026-0.2' },
-  { id: 'sarvam_arvind', value: 'Sarvam AI (Arvind - hi-IN)', label: 'Curoai 2026-0.3' },
+  { id: 'sarvam_aditya', value: 'Sarvam AI (Aditya - hi-IN)', label: 'Curoai 2026-0.3' },
   { id: 'openai_alloy', value: 'OpenAI Realtime (Alloy)', label: 'Curoai 2026-0.4' },
   { id: 'openai_echo', value: 'OpenAI Realtime (Echo)', label: 'Curoai 2026-0.5' },
   { id: 'elevenlabs', value: 'ElevenLabs (Rachel - Expressive)', label: 'Curoai 2026-0.6' },
@@ -54,6 +55,28 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
 
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const handleScriptChange = (label: string) => {
+    setSelectedScript(label);
+    const found = SCRIPTS.find((s) => s.label === label);
+    if (found) {
+      setCompanyName(found.defaultOrg);
+      if (found.id === 'my_estate_finder') {
+        setSelectedPipeline('Sarvam AI (Aditya - hi-IN)');
+      } else if (found.id === 'airtel_return') {
+        setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
+      }
+    }
+  };
+
+  const applyPreset = (preset: { phone: string; name: string; script: string; pipeline: string; company: string }) => {
+    setPhone(preset.phone);
+    setCustomerName(preset.name);
+    setSelectedScript(preset.script);
+    setSelectedPipeline(preset.pipeline);
+    setCompanyName(preset.company);
+    setFeedback(null);
+  };
 
   // History state
   const [historyCalls, setHistoryCalls] = useState<CallRecord[]>([]);
@@ -357,6 +380,60 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
               </div>
             )}
 
+            {/* Quick Presets Pills */}
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ fontSize: '0.76rem', color: '#64748B', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>
+                Quick Test Presets
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {[
+                  {
+                    title: '🏠 Estate Finder (Sagar)',
+                    name: 'Vikramaditya Singhania',
+                    phone: '+919811122233',
+                    script: 'My Estate Finder — Property Intake (Sagar)',
+                    pipeline: 'Sarvam AI (Arvind - hi-IN)',
+                    company: 'My Estate Finder',
+                  },
+                  {
+                    title: '🏢 Commercial Lease',
+                    name: 'Ananya Deshmukh',
+                    phone: '+919845012345',
+                    script: 'My Estate Finder — Property Intake (Sagar)',
+                    pipeline: 'Sarvam AI (Arvind - hi-IN)',
+                    company: 'My Estate Finder',
+                  },
+                  {
+                    title: '📶 Airtel Wi-Fi Return',
+                    name: 'Rajan Nayak',
+                    phone: '+919811122233',
+                    script: 'Airtel Wi-Fi Router Return',
+                    pipeline: 'Sarvam AI (Priya - hi-IN)',
+                    company: 'Airtel Telecom',
+                  },
+                ].map((p, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => applyPreset(p)}
+                    style={{
+                      background: selectedScript === p.script ? 'rgba(59, 130, 246, 0.16)' : 'rgba(255, 255, 255, 0.04)',
+                      border: `1px solid ${selectedScript === p.script ? 'rgba(59, 130, 246, 0.4)' : 'rgba(255, 255, 255, 0.08)'}`,
+                      color: selectedScript === p.script ? '#60A5FA' : '#94A3B8',
+                      borderRadius: 6,
+                      padding: '5px 10px',
+                      fontSize: '0.75rem',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease',
+                    }}
+                  >
+                    {p.title}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <form onSubmit={handleTriggerCall} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
               {/* Field 1: Phone Number with Country Flag & Code */}
               <div>
@@ -463,7 +540,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                   <div style={{ position: 'relative' }}>
                     <select
                       value={selectedScript}
-                      onChange={(e) => setSelectedScript(e.target.value)}
+                      onChange={(e) => handleScriptChange(e.target.value)}
                       style={{
                         width: '100%',
                         background: '#070A12',
