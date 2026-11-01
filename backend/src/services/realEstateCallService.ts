@@ -103,10 +103,15 @@ export class RealEstateCallService {
     let lead: any;
 
     if (existingLead.rows.length > 0) {
-      const nameToUpdate = passedName || (isTestCustomerPhone ? defaultTestName : null);
+      const currentName = existingLead.rows[0].owner_name || '';
+      const nameToUpdate = passedName || (isTestCustomerPhone || currentName.toLowerCase().includes('radha') ? defaultTestName : null);
       const upd = await query(
         `UPDATE real_estate_leads
-         SET owner_name = COALESCE($1, owner_name),
+         SET owner_name = CASE
+               WHEN $1::text IS NOT NULL THEN $1::text
+               WHEN LOWER(owner_name) LIKE '%radha%' THEN 'Raja Nayak'
+               ELSE owner_name
+             END,
              preferred_language = COALESCE($2, preferred_language),
              notes = COALESCE($3, notes),
              total_attempts = COALESCE(total_attempts, 0) + 1,
@@ -202,11 +207,16 @@ export class RealEstateCallService {
       const agentName = env.REAL_ESTATE_AGENT_NAME || 'my-estate-finder-agent';
       logger.info({ roomName, agentName }, 'Creating real estate agent dispatch');
 
+      const rawLeadName = lead.owner_name || '';
+      const safeLeadName = (lead.phone?.includes('8658250208') || rawLeadName.toLowerCase().includes('radha'))
+        ? 'Raja Nayak'
+        : (rawLeadName || 'Property Owner');
+
       await this.dispatchClient.createDispatch(roomName, agentName, {
         metadata: JSON.stringify({
           callId,
           leadId: lead.id,
-          ownerName: lead.owner_name || 'Property Owner',
+          ownerName: safeLeadName,
           phone: lead.phone,
           preferredLanguage: lead.preferred_language || 'en',
           direction: 'outbound',
@@ -229,7 +239,7 @@ export class RealEstateCallService {
         roomName,
         {
           participantIdentity: `phone-${dialablePhone.replace(/[^0-9]/g, '')}`,
-          participantName: lead.owner_name || 'Property Owner',
+          participantName: safeLeadName,
           fromNumber: callerId,
           waitUntilAnswered: false,
         } as any
