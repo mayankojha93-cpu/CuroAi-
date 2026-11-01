@@ -172,6 +172,12 @@ class RealEstateTools:
     @function_tool
     async def finish_property_intake(self) -> str:
         """Call when all property details have been collected to wrap up."""
+        missing = self.state.get_missing_fields()
+        if len(missing) > 0 and not getattr(self.state, "impatient_detected", False):
+            next_field = missing[0]
+            q = next_field["question_en"] if self.state.reply_lang == "en" else next_field["question_hi"]
+            return f"Not all details are collected yet. Still missing: {next_field['label']}. Please ask the customer: '{q}'"
+
         cat = (self.state.category or "Residential").title()
         intn = "Sale" if self.state.intent == "sale" else "Lease"
         self.state.final_disposition = "Qualified Lead"
@@ -282,8 +288,8 @@ class RealEstateTools:
         if self._hangup_scheduled:
             return
         self._hangup_scheduled = True
-        logger.info("Delayed hangup scheduled: waiting 5.5s for TTS speech playout...")
-        await asyncio.sleep(5.5)
+        logger.info("Delayed hangup scheduled: waiting 6.5s for TTS speech playout...")
+        await asyncio.sleep(6.5)
         if self.hangup_func:
             await self.hangup_func()
 
