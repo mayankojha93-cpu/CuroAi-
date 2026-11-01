@@ -25,6 +25,13 @@ _HINGLISH = {
     "bechna", "bechni", "kiraya", "kiraye", "dena", "deni", "bhai", "bhaiya", "sirji", "sahab", "apna", "apni", "apne",
 }
 
+_HINGLISH_GRAMMAR = {
+    "hai", "hain", "hoon", "hun", "tha", "thi", "the", "karna", "karni", "karenge", "kariye",
+    "kardo", "kijiye", "chahiye", "chahta", "chahte", "chahti", "raha", "rahe", "rahi",
+    "sakta", "sakte", "sakti", "bechna", "bechni", "kiraya", "kiraye", "dena", "deni",
+    "batao", "bataiye", "boliye", "bolo", "haji", "nahi", "nahin", "nhi"
+}
+
 # English markers. Words that are common in Hinglish too ("to", "do", "me", "a", "so", "main") are left out.
 _ENGLISH = {
     "yes", "yeah", "yep", "yup", "sure", "please", "tomorrow", "today", "monday", "tuesday", "wednesday",
@@ -41,14 +48,59 @@ _ENGLISH = {
 
 # English words that Hindi STT sometimes writes in Devanagari
 _DEV_ENGLISH = {
-    "यस", "येस", "नो", "प्लीज", "टुमॉरो", "टुमारो", "टुमोरो", "टुडे", "मंडे", "ट्यूसडे", "ट्यूजडे",
-    "वेडनेसडे", "थर्सडे", "फ्राइडे", "सैटरडे", "संडे", "इंग्लिश", "आई", "व्हाट", "नेक्स्ट", "वीक",
-    "कॉल", "लेटर", "बिजी", "बिज़ी", "थैंक्स", "थैंक", "यू", "सॉरी", "ऑलरेडी", "रिटर्न्ड", "एड्रेस",
-    "राइट", "करेक्ट", "स्पीकिंग", "वांट", "नॉट", "डोंट", "कैन", "आई'म",
-    "सेल", "रेंट", "टू", "माय", "अपार्टमेंट", "फ्लैट", "रेजिडेंशियल", "कमर्शियल", "प्रॉपर्टी",
-    "ऑफिस", "शॉप", "बीएचके", "नेम", "इज", "एम", "आर", "श्योर", "या", "इंटरेस्टेड",
+    # Common pronouns, determiners & demonstratives
+    "दिस", "दैट", "दीज", "दोज", "इट", "इट्स", "आई", "यू", "माय", "मी", "वी", "दे", "योर", "ही", "शी",
+    # Copulas & auxiliary verbs
+    "इज", "एम", "आर", "वाज", "वर", "विल", "कैन", "कुड", "वुड", "शुड", "हैव", "हैज", "हैड", "डू", "डज", "डिड",
+    # Prepositions & conjunctions
+    "एंड", "ऑर", "बट", "सो", "फॉर", "इन", "ऑन", "एट", "टू", "विद", "ऑफ", "बाय", "फ्रॉम",
+    # Common verbs
+    "वांट", "वांट्स", "वांटेड", "नीड", "नीड्स", "लुकिंग", "लुक", "सेल", "सेलिंग", "रेंट", "रेंटिंग", "बाय", "लीज", "कॉल", "गिव", "टेल", "स्पीकिंग",
+    # Real estate terms
+    "रेसिडेंशियल", "कमर्शियल", "प्रॉपर्टी", "अपार्टमेंट", "फ्लैट", "हाउस", "प्लॉट", "लैंड", "ऑफिस", "शॉप", "शोरूम",
+    "बीएचके", "यूनिट", "फ्लोर", "सेक्टर", "सोसाइटी", "बिल्डिंग", "प्राइस", "रेट", "कॉस्ट", "एरिया", "साइज", "स्क्वायर", "फीट", "करोड़", "लाख",
+    # Confirmations, calendar & adjectives
+    "यस", "येस", "नो", "श्योर", "प्लीज", "टुमॉरो", "टुमारो", "टुमोरो", "टुडे", "मंडे", "ट्यूसडे", "ट्यूजडे",
+    "वेडनेसडे", "थर्सडे", "फ्राइडे", "सैटरडे", "संडे", "इंग्लिश", "व्हाट", "नेक्स्ट", "वीक",
+    "लेटर", "बिजी", "बिज़ी", "थैंक्स", "थैंक", "सॉरी", "ऑलरेडी", "रिटर्न्ड", "एड्रेस",
+    "राइट", "करेक्ट", "नॉट", "डोंट", "नेम", "या", "इंटरेस्टेड", "रेडी", "अवेलेबल", "फर्निश्ड", "अनफर्निश्ड", "सेमी", "न्यू",
 }
-_DEV_NEUTRAL = {"ओके", "हेलो", "हैलो", "हाय", "हे"}
+
+# Neutral greetings and affirmations that do NOT indicate language switch preference
+_DEV_NEUTRAL = {
+    "ओके", "हेलो", "हैलो", "हाय", "हे", "हाँ", "हां", "हाँजी", "जी", "ज़रूर", "जरूर", "श्योर", "यस", "प्लीज", "अच्छा", "ठीक",
+}
+
+# Hindi-specific grammar markers in Devanagari (postpositions, auxiliary verbs, pronouns)
+_DEV_HINDI_MARKERS = {
+    # Auxiliary verbs & copulas
+    "है", "हैं", "हूँ", "हु", "था", "थी", "थे", "हो", "गा", "गे", "गी",
+    # Postpositions
+    "का", "के", "की", "को", "से", "में", "पे", "पर", "ने", "तक",
+    # Conjunctions & discourse particles
+    "और", "लेकिन", "मगर", "परन्तु", "भी", "तो", "ही", "ना",
+    # Negation
+    "नहीं", "नही", "मत",
+    # Pronouns
+    "मुझे", "मुझको", "मेरा", "मेरी", "मेरे", "मैं", "मै",
+    "आप", "आपको", "आपका", "आपकी", "आपके",
+    "हम", "हमें", "हमको", "हमारा", "हमारी", "हमारे",
+    "वह", "वो", "उसे", "उसको", "उसका", "उसकी", "उसके",
+    "यह", "ये", "इसे", "इसको", "इसका", "इसकी", "इसके",
+    # Interrogatives
+    "क्या", "क्यों", "कहाँ", "कहा", "कब", "कैसे", "कितना", "कितने", "कितनी", "कौन",
+    # Common verbs in Hindi
+    "करना", "करनी", "करो", "करें", "करेंगे", "कीजिए", "किए", "किया",
+    "देना", "देनी", "दो", "दें", "देंगे", "दीजिए", "दिया",
+    "लेना", "लेनी", "लो", "लें", "लेंगे", "लीजिए", "लिया",
+    "बेचना", "बेचनी", "बेचेंगे", "बेच",
+    "किराया", "किराए",
+    "चाहिए", "चाहता", "चाहते", "चाहती",
+    "सकता", "सकते", "सकती",
+    "रहा", "रहे", "रही",
+    "बताओ", "बताइए", "बोलिए", "बोलो", "सुनो", "सुनिए", "समझ",
+    "भाई", "भैया", "साहब", "घर", "मकान", "दुकान",
+}
 
 _ASK_EN = ("in english", "english me", "english mein", "speak english", "english please",
            "talk in english", "इंग्लिश में", "अंग्रेजी में", "अंग्रेज़ी में", "इंग्लिश मे")
@@ -68,22 +120,42 @@ def detect_language(text: Optional[str]) -> Optional[str]:
     if _DEVANAGARI.search(text):
         dev = _DEV_TOKEN.findall(text)
         has_latin = bool(_LATIN_TOKEN.findall(text))
-        # If all tokens are neutral greetings (e.g. 'हेलो', 'ओके'), keep existing language
+
+        # 1. If all tokens are neutral greetings or affirmations (e.g. 'हेलो', 'ओके', 'हाँ, ज़रूर'), preserve current language
         if dev and not has_latin and all(t in _DEV_NEUTRAL for t in dev):
             return None
-        if (
-            dev and not has_latin
-            and any(t in _DEV_ENGLISH for t in dev)
-            and all(t in _DEV_ENGLISH or t in _DEV_NEUTRAL for t in dev)
-        ):
+
+        # 2. Count Devanagari English transliterations vs Hindi markers
+        dev_en_hits = sum(1 for t in dev if t in _DEV_ENGLISH)
+        dev_hi_hits = sum(1 for t in dev if t in _DEV_HINDI_MARKERS)
+
+        latin_tokens = [t.lower() for t in _LATIN_TOKEN.findall(text)]
+        lat_en_hits = sum(1 for t in latin_tokens if t in _ENGLISH)
+        lat_hi_hits = sum(1 for t in latin_tokens if t in _HINGLISH)
+
+        total_en = dev_en_hits + lat_en_hits
+        total_hi = dev_hi_hits + lat_hi_hits
+
+        if total_en > 0 and total_hi == 0:
             return "en"
-        return "hi"
+        if total_hi > 0 and total_hi >= total_en:
+            return "hi"
+        if total_en > total_hi:
+            return "en"
+
+        # If indeterminate, do not jump to Hindi automatically; preserve current language
+        return None
 
     tokens = [t.lower() for t in _LATIN_TOKEN.findall(text)]
     if not tokens:
         return None
     hi_hits = sum(1 for t in tokens if t in _HINGLISH)
     en_hits = sum(1 for t in tokens if t in _ENGLISH)
+    has_hi_grammar = any(t in _HINGLISH_GRAMMAR for t in tokens)
+
+    # If sentence uses Hindi grammar verbs (e.g. "3 BHK flat sell karna hai"), it is Hinglish
+    if has_hi_grammar and hi_hits >= 2:
+        return "hi"
     if hi_hits > 0 and hi_hits >= en_hits:
         return "hi"
     if en_hits > 0:
