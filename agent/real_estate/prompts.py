@@ -3,12 +3,18 @@ from .state import RealEstateState, RealEstateStep
 
 
 def get_base_persona(state: RealEstateState) -> str:
-    owner_honorific = f"{state.owner_name} ji" if state.owner_name and state.owner_name != "Property Owner" else "Sir"
+    # Sanitize test customer name
+    raw_name = (state.owner_name or "").strip()
+    if not raw_name or raw_name.lower() in ("property owner", "test property owner", "radha", "radha nayak"):
+        effective_name = "Raja Nayak" if (getattr(state, "phone", None) and "8658250208" in state.phone) else raw_name
+    else:
+        effective_name = raw_name
 
     if state.reply_lang == "en":
+        owner_honorific = "Sir"
         lang_instruction = "MANDATORY LANGUAGE: You MUST speak in 100% clean, professional, and polite Indian English. NEVER speak Hindi, Hinglish, or Devanagari words. Do NOT use Hindi affirmations like 'haanji', 'theek hai', 'achha', or 'ji'. Use clear English affirmations: 'Sure, Sir', 'Got it', 'Perfect, Sir', 'Understood, Sir'."
         script_restriction = "SCRIPT LANGUAGE RESTRICTION: Keep all speech in 100% clean Indian English. Do NOT use any Hindi words."
-        fillers = 'Address the customer respectfully as "Sir" or by name. Use natural English affirmations: "Sure, Sir", "Got it", "Perfect, Sir", "Understood, Sir".'
+        fillers = 'Address the customer respectfully as "Sir". Use natural English affirmations: "Sure, Sir", "Got it", "Perfect, Sir", "Understood, Sir".'
         objections = """Objection Handling Guide (Always respond politely in English and execute corresponding tool):
 - 'Not looking to sell/rent':
   Accept politely: "Understood, no problem at all! May we connect with you in the future if your plans change?"
@@ -38,6 +44,7 @@ def get_base_persona(state: RealEstateState) -> str:
   Explain transparent terms: "Our advisor will discuss transparent terms once the property details are noted. We do not charge any upfront fees."
 """
     else:
+        owner_honorific = f"{effective_name} ji" if effective_name and effective_name != "Property Owner" else "Sir"
         lang_instruction = "Speak in natural, conversational Hinglish (Hindi words written using ONLY English / Latin letters, e.g. 'Haanji, main samajh gaya'). NEVER output Devanagari script."
         script_restriction = "SCRIPT LANGUAGE RESTRICTION: Keep all speech in natural conversational Hinglish using the English/Latin alphabet. NEVER use Hindi Devanagari script under any circumstances."
         fillers = f'Address the customer respectfully as "Sir" or by name with "ji" (e.g. "{owner_honorific}"). Use natural conversational fillers smoothly: "Ji sir", "Achha", "Haanji", "Theek hai sir", "Perfect sir", "Got it".'
@@ -120,11 +127,14 @@ Goal: Greet the customer and determine if they are considering selling or rentin
 
 {intro_text}
 
-Handling customer responses:
-- YES / Interested: call `customer_interested(intent=...)`. If they specified 'sell' or 'rent/lease', pass it; if they only said 'yes', omit intent.
-- NO / Not considering / Not interested: call `mark_not_interested()`.
-- Wrong number: call `mark_wrong_number()`.
-- Call later / busy: call `schedule_callback()`.
+MANDATORY INSTRUCTIONS:
+- If the customer indicates interest (e.g. "Yes", "I want to sell", "Residential property to sell", "Rent par dena hai"):
+  YOU MUST EXECUTE `customer_interested(intent=..., category=...)`.
+  - Pass intent="sale" or intent="lease" if mentioned.
+  - Pass category="residential" or category="commercial" if mentioned.
+- If NOT interested / not looking to sell or rent: call `mark_not_interested()`.
+- If wrong number: call `mark_wrong_number()`.
+- If busy / callback requested: call `schedule_callback()`.
 """
 
     if step == RealEstateStep.OWNER_NAME:
@@ -135,12 +145,15 @@ Handling customer responses:
         )
         return base + f"""
 Current Step: 2. OWNER NAME CONFIRMATION
-Goal: Thank the customer and ask for their name for records.
+Goal: Ask for customer name for records and call `confirm_owner_name(name=...)`.
 
 {say_name}
 
-When they give their name, call `confirm_owner_name(name=...)`.
-If they say use existing name or decline to give name, call `confirm_owner_name(name="{state.owner_name}")`.
+MANDATORY INSTRUCTIONS:
+- When the customer provides their name or confirms it:
+  YOU MUST EXECUTE `confirm_owner_name(name=...)`.
+- If they decline to share name or say continue:
+  Call `confirm_owner_name(name="{state.owner_name or 'Sir'}")`.
 """
 
     if step == RealEstateStep.CATEGORY_SELECT:
@@ -214,13 +227,16 @@ Captured so far:
 - Immediate Occupancy: {'Yes' if state.immediate_occupancy is True else ('No' if state.immediate_occupancy is False else 'Not provided')}
 
 CRITICAL MANDATORY INSTRUCTIONS:
-1. TOOL CALL REQUIRED: Whenever the customer mentions ANY property detail (society/building, sector/location, unit number, floor, BHK/commercial type, area, price, furnishing):
-   YOU MUST CALL THE TOOL `save_property_details(...)` IN THIS EXACT TURN!
-   Example: If caller says "Estate Green Sector 81 Unit 292 4th floor", you MUST call:
-   `save_property_details(project_or_society="Estate Green", sector_or_location="Sector 81", unit_number="292", floor_number="4")`.
-2. NEVER ONLY REPEAT IT VERBALLY. If you formulate a verbal reply without calling `save_property_details`, the data is NOT stored!
-3. Ask the primary next question politely using natural Hinglish/English fillers.
-4. Capture all details provided, even if the caller shares multiple pieces of information in a single sentence.
+1. STRICT ZERO-HALLUCINATION RULE:
+   - You MUST NEVER invent, assume, or guess any property detail (NO fake societies, unit numbers, floor numbers, BHKs, square-footage, or prices).
+   - ONLY call `save_property_details(...)` when the customer in their current or previous utterance ACTUALLY STATES a specific property detail!
+   - If the customer merely responds with an affirmation ("Yes", "Sure", "Haan", "Ji", "Okay", "Zaroor") or general chatter WITHOUT naming a specific society, unit, or price:
+     DO NOT CALL `save_property_details`! Instead, simply ask the next specific question to elicit that detail.
+2. PARTIAL EXTRACTION:
+   - Whenever the customer shares ANY actual detail (e.g. society name, unit, BHK, area, price), call `save_property_details(...)` passing ONLY the fields explicitly mentioned by the caller. Leave all unmentioned fields empty/null.
+3. NEXT QUESTION TO ASK:
+   Ask the primary next question politely:
+   "{next_q}"
 """
 
     if step == RealEstateStep.CLOSING:
