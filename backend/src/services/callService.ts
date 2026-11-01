@@ -1074,6 +1074,8 @@ export class CallService {
         // The agent registers the call itself; nothing to update yet.
         return { handled: false, reason: 'inbound_call_not_registered_yet' };
       }
+    } else if (roomName.startsWith('re-call-')) {
+      callId = roomName.replace('re-call-', '');
     } else if (roomName.startsWith('call-')) {
       callId = roomName.replace('call-', '');
     } else {

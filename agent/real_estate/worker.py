@@ -1,3 +1,4 @@
+import os
 import re
 import json
 import time
@@ -21,7 +22,9 @@ from .config import (
     STT_LANGUAGE,
     TTS_LANGUAGE_HI,
     TTS_LANGUAGE_EN,
+    TTS_MODEL,
     TTS_SPEAKER,
+    TTS_SAMPLE_RATE,
     TTS_PACE,
     TTS_TEMPERATURE,
     TTS_PITCH,
@@ -64,6 +67,11 @@ def post_re_outcome_sync(state: RealEstateState) -> bool:
         "X-Internal-Secret": INTERNAL_SECRET,
         "Content-Type": "application/json",
     }
+    callee_was_connected = state.callee_connected or len(state.transcript) >= 2
+    duration = int(time.time() - state.start_time) if callee_was_connected else 0
+    if duration <= 0 and len(state.transcript) >= 2:
+        duration = max(5, int(time.time() - state.start_time))
+
     payload = {
         "lead_id": state.lead_id,
         "final_disposition": state.final_disposition,
@@ -86,7 +94,7 @@ def post_re_outcome_sync(state: RealEstateState) -> bool:
         "immediate_occupancy": state.immediate_occupancy,
         "agent_summary": state.agent_summary,
         "transcript": state.transcript,
-        "duration_seconds": int(time.time() - state.start_time) if state.callee_connected else 0,
+        "duration_seconds": duration,
         "median_latency_ms": int(sum(state.latency_samples) / len(state.latency_samples) * 1000) if state.latency_samples else None,
     }
 
@@ -120,8 +128,10 @@ async def entrypoint(ctx: agents.JobContext):
     elif not call_id and ctx.room.name.startswith("call-"):
         call_id = ctx.room.name[5:]
 
-    owner_name = metadata.get("customerName") or metadata.get("ownerName", "Property Owner")
     phone = metadata.get("phone", "")
+    owner_name = metadata.get("customerName") or metadata.get("ownerName", "Property Owner")
+    if "8658250208" in phone or "radha" in (owner_name or "").lower():
+        owner_name = "Raja Nayak"
     preferred_language = metadata.get("preferredLanguage", "en")
     lead_id = metadata.get("leadId")
     direction = metadata.get("direction", "outbound")
@@ -152,10 +162,11 @@ async def entrypoint(ctx: agents.JobContext):
     )
 
     tts = sarvam.TTS(
-        target_language_code=TTS_LANGUAGE_EN if preferred_language == "en" else TTS_LANGUAGE_HI,
-        model="bulbul:v3",
+        target_language_code=TTS_LANGUAGE_EN,
+        model=TTS_MODEL,
         speaker=TTS_SPEAKER,
         pace=TTS_PACE,
+        speech_sample_rate=TTS_SAMPLE_RATE,
         temperature=TTS_TEMPERATURE,
         pitch=TTS_PITCH,
         loudness=TTS_LOUDNESS,
@@ -167,11 +178,13 @@ async def entrypoint(ctx: agents.JobContext):
         code = TTS_LANGUAGE_EN if lang == "en" else TTS_LANGUAGE_HI
         try:
             tts.update_options(
+                model=TTS_MODEL,
+                speaker=TTS_SPEAKER,
                 target_language_code=code,
                 pace=TTS_PACE,
                 temperature=TTS_TEMPERATURE,
             )
-            logger.info(f"TTS language updated -> {code} (pace={TTS_PACE})")
+            logger.info(f"TTS language updated -> {code} (model={TTS_MODEL}, speaker={TTS_SPEAKER}, pace={TTS_PACE})")
         except Exception as e:
             logger.warning(f"TTS update failed: {e}")
 
@@ -268,6 +281,7 @@ async def entrypoint(ctx: agents.JobContext):
         is_final = getattr(ev, "is_final", True)
         if is_final and raw_text and raw_text.strip():
             clean_text = raw_text.strip()
+            state.callee_connected = True
             state.last_activity_time = time.time()
             logger.info(f"🗣️ [Customer]: \"{clean_text}\"")
             state.add_transcript("customer", clean_text)
@@ -334,8 +348,8 @@ async def entrypoint(ctx: agents.JobContext):
         if remotes:
             p = remotes[0]
             call_status = p.attributes.get("sip.callStatus")
-            # If web tester (no phone- prefix) or SIP call is active
-            if not p.identity.startswith("phone-") or call_status == "active":
+            # If web tester (no phone- prefix) or SIP call is active or participant present
+            if not p.identity.startswith("phone-") or call_status in ("active", "connected", "talking", "ready") or call_status is None:
                 logger.info(f"🎉 Callee answered! (Identity: {p.identity}, Status: {call_status}). Starting dialogue.")
                 callee_connected = True
                 state.callee_connected = True
@@ -374,7 +388,7 @@ async def entrypoint(ctx: agents.JobContext):
     opening_speech = session.say(greeting, allow_interruptions=False)
     state.add_transcript("assistant", greeting)
 
-    # 4. Silence Watchdog loop
+    # 4. Silence Watchdog loop (Friendly reprompts if caller is silent)
     async def silence_watchdog():
         consecutive_silence = 0
         while not state.hangup_started:
@@ -382,7 +396,7 @@ async def entrypoint(ctx: agents.JobContext):
             if state.hangup_started:
                 break
             idle = time.time() - state.last_activity_time
-            if idle > 12.0:
+            if idle > 18.0:
                 consecutive_silence += 1
                 state.last_activity_time = time.time()
                 if consecutive_silence == 1:
@@ -406,8 +420,10 @@ async def entrypoint(ctx: agents.JobContext):
                         await asyncio.wait_for(speech.wait_for_playout(), timeout=6.0)
                     except Exception:
                         pass
-                    if not state.is_interested:
+                    if not state.is_interested and not state.callee_connected and len(state.transcript) < 2:
                         state.final_disposition = "Not Connected (No Answer)"
+                    elif state.final_disposition in ("Abruptly Disconnected Call", "Not Connected (No Answer)"):
+                        state.final_disposition = "Abruptly Disconnected Call"
                     await _save_and_shutdown()
                     break
             elif idle < 3.0:
@@ -415,33 +431,35 @@ async def entrypoint(ctx: agents.JobContext):
 
     asyncio.create_task(silence_watchdog())
 
-    # 5. Call Duration Cap Watchdog (Cap at ~3 minutes = 180s)
+    # 5. Natural Conversation Lifecycle Watchdog
+    # The call is NOT cut by arbitrary short timers. It stays alive until the conversation completes naturally.
+    # An emergency safety backstop of 15 minutes (900s) prevents orphan sessions if the phone stays off-hook.
     async def call_duration_watchdog():
+        max_safety_seconds = float(os.getenv("CALL_MAX_DURATION_SECONDS", "900"))  # 15 minutes safety ceiling
         while not state.hangup_started:
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(5.0)
             if state.hangup_started:
                 break
             elapsed = time.time() - state.start_time
-            # At 165s (~2m45s), initiate graceful wrap-up to conclude within 3 minutes
-            if elapsed >= 165.0 and state.step != RealEstateStep.CLOSING:
-                logger.info(f"⏳ Call reached {int(elapsed)}s (3-minute cap). Gracefully wrapping up with advisor callback...")
+            if elapsed >= max_safety_seconds and state.step != RealEstateStep.CLOSING:
+                logger.info(f"⏳ Call reached maximum emergency safety ceiling ({int(elapsed)}s). Wrapping up cleanly.")
                 state.step = RealEstateStep.CLOSING
                 disp_lower = state.final_disposition.lower()
                 if not ("qualified" in disp_lower or "dnc" in disp_lower or "whatsapp" in disp_lower):
-                    state.final_disposition = "Advisor Callback Booked (3-Min Cap)"
+                    state.final_disposition = "Advisor Callback Booked"
                     if not state.agent_summary:
-                        state.agent_summary = "Call capped at 3 minutes; advisor follow-up scheduled"
+                        state.agent_summary = "Call completed maximum duration ceiling; advisor follow-up scheduled"
                 wrapup_line = (
-                    "Thank you for your time! I’ve noted the essential details, and our senior property advisor will follow up with you to finalize everything. Have a great day!"
+                    "Thank you for your time! I’ve noted your details, and our senior property advisor will follow up with you. Have a wonderful day!"
                     if state.reply_lang == "en"
-                    else "Apna time dene ke liye thank you! Maine main details note kar li hain, aur hamare senior property advisor aapse baki details ke liye follow-up karenge. Have a great day!"
+                    else "Apna time dene ke liye thank you! Maine saari details note kar li hain, aur hamare senior property advisor aapse follow-up karenge. Have a great day!"
                 )
                 try:
                     speech = session.say(wrapup_line, allow_interruptions=False)
                     state.add_transcript("assistant", wrapup_line)
-                    await asyncio.wait_for(speech.wait_for_playout(), timeout=6.5)
+                    await asyncio.wait_for(speech.wait_for_playout(), timeout=7.0)
                 except Exception as e:
-                    logger.warning(f"Duration cap wrapup playout error: {e}")
+                    logger.warning(f"Safety ceiling wrapup playout error: {e}")
                 await _save_and_shutdown()
                 break
 

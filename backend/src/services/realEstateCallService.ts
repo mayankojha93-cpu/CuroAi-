@@ -90,18 +90,28 @@ export class RealEstateCallService {
     language?: string;
     notes?: string;
   }) {
-    const passedName = data.owner_name || data.name;
-    const ownerName = passedName || 'Test Property Owner';
     const normalizedPhone = normalizePhone(data.phone);
+    const isTestCustomerPhone =
+      normalizedPhone.includes('8658250208') ||
+      (Boolean(env.TEST_PHONE) && normalizePhone(env.TEST_PHONE) === normalizedPhone);
+    const defaultTestName = env.TEST_CUSTOMER_NAME || 'Raja Nayak';
+    const passedName = data.owner_name || data.name || (isTestCustomerPhone ? defaultTestName : undefined);
+    const ownerName = passedName || (isTestCustomerPhone ? defaultTestName : 'Test Property Owner');
 
     // Reuse existing lead or create new lead
     const existingLead = await query(`SELECT * FROM real_estate_leads WHERE phone = $1 LIMIT 1`, [normalizedPhone]);
     let lead: any;
 
     if (existingLead.rows.length > 0) {
+      const currentName = existingLead.rows[0].owner_name || '';
+      const nameToUpdate = passedName || (isTestCustomerPhone || currentName.toLowerCase().includes('radha') ? defaultTestName : null);
       const upd = await query(
         `UPDATE real_estate_leads
-         SET owner_name = COALESCE($1, owner_name),
+         SET owner_name = CASE
+               WHEN $1::text IS NOT NULL THEN $1::text
+               WHEN LOWER(owner_name) LIKE '%radha%' THEN 'Raja Nayak'
+               ELSE owner_name
+             END,
              preferred_language = COALESCE($2, preferred_language),
              notes = COALESCE($3, notes),
              total_attempts = COALESCE(total_attempts, 0) + 1,
@@ -109,7 +119,7 @@ export class RealEstateCallService {
              updated_at = NOW()
          WHERE id = $4
          RETURNING *`,
-        [passedName || null, data.language || 'en', data.notes || 'Developer Test Call', existingLead.rows[0].id]
+        [nameToUpdate, data.language || 'en', data.notes || 'Developer Test Call', existingLead.rows[0].id]
       );
       lead = upd.rows[0];
     } else {
@@ -131,7 +141,7 @@ export class RealEstateCallService {
          script, company_name, voice_pipeline, is_test_call, pipeline
        )
        VALUES ($1, $2, 'initiated', 'initiated', $3, $4, 'outbound',
-               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Aditya - hi-IN)', TRUE, 'real_estate')
+               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Shubh - en-IN)', TRUE, 'real_estate')
        RETURNING *`,
       [callId, lead?.id || null, lead?.total_attempts || 1, roomName]
     );
@@ -174,7 +184,7 @@ export class RealEstateCallService {
          script, company_name, voice_pipeline, pipeline
        )
        VALUES ($1, $2, $3, 'initiated', 'initiated', $4, $5, 'outbound',
-               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Aditya - hi-IN)', 'real_estate')
+               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Shubh - en-IN)', 'real_estate')
        RETURNING *`,
       [callId, leadId, lead.campaign_id, attempt, roomName]
     );
@@ -197,11 +207,16 @@ export class RealEstateCallService {
       const agentName = env.REAL_ESTATE_AGENT_NAME || 'my-estate-finder-agent';
       logger.info({ roomName, agentName }, 'Creating real estate agent dispatch');
 
+      const rawLeadName = lead.owner_name || '';
+      const safeLeadName = (lead.phone?.includes('8658250208') || rawLeadName.toLowerCase().includes('radha'))
+        ? 'Raja Nayak'
+        : (rawLeadName || 'Property Owner');
+
       await this.dispatchClient.createDispatch(roomName, agentName, {
         metadata: JSON.stringify({
           callId,
           leadId: lead.id,
-          ownerName: lead.owner_name || 'Property Owner',
+          ownerName: safeLeadName,
           phone: lead.phone,
           preferredLanguage: lead.preferred_language || 'en',
           direction: 'outbound',
@@ -224,7 +239,7 @@ export class RealEstateCallService {
         roomName,
         {
           participantIdentity: `phone-${dialablePhone.replace(/[^0-9]/g, '')}`,
-          participantName: lead.owner_name || 'Property Owner',
+          participantName: safeLeadName,
           fromNumber: callerId,
           waitUntilAnswered: false,
         } as any
@@ -666,7 +681,7 @@ ${dialogueText.slice(0, 4000)}`;
       `UPDATE calls
        SET status = $1,
            call_status = $2,
-           duration_seconds = $3,
+           duration_seconds = GREATEST($3, COALESCE(duration_seconds, 0)),
            median_latency_ms = $4,
            answered_at = COALESCE(answered_at, CASE WHEN $3 > 0 THEN NOW() - ($3 || ' seconds')::interval ELSE NOW() END),
            ended_at = NOW()
