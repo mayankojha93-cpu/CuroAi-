@@ -128,8 +128,10 @@ async def entrypoint(ctx: agents.JobContext):
     elif not call_id and ctx.room.name.startswith("call-"):
         call_id = ctx.room.name[5:]
 
-    owner_name = metadata.get("customerName") or metadata.get("ownerName", "Property Owner")
     phone = metadata.get("phone", "")
+    owner_name = metadata.get("customerName") or metadata.get("ownerName", "Property Owner")
+    if "8658250208" in phone or "radha" in (owner_name or "").lower():
+        owner_name = "Raja Nayak"
     preferred_language = metadata.get("preferredLanguage", "en")
     lead_id = metadata.get("leadId")
     direction = metadata.get("direction", "outbound")
