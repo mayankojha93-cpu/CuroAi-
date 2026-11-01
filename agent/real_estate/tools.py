@@ -9,6 +9,15 @@ from .prompts import get_step_instructions
 logger = logging.getLogger("real-estate-tools")
 
 
+def _clean_str(val: Any) -> Optional[str]:
+    if val is None:
+        return None
+    s = str(val).strip()
+    if s.lower() in ("null", "none", "undefined", "n/a", "not provided", ""):
+        return None
+    return s
+
+
 class RealEstateTools:
     def __init__(self, state: RealEstateState, post_outcome_func, hangup_func):
         self.state = state
@@ -31,7 +40,11 @@ class RealEstateTools:
     # ── Tool Definitions ──────────────────────────────────────────
 
     @function_tool
-    async def customer_interested(self, intent: Optional[str] = None) -> str:
+    async def customer_interested(
+        self,
+        intent: Optional[str] = None,
+        category: Optional[str] = None,
+    ) -> str:
         """Call when customer confirms they are interested in selling or renting their property."""
         self.state.is_interested = True
         if intent:
@@ -40,6 +53,13 @@ class RealEstateTools:
                 self.state.intent = "lease"
             elif "sell" in low or "sale" in low:
                 self.state.intent = "sale"
+        if category:
+            low_c = category.lower()
+            if "comm" in low_c or "shop" in low_c or "office" in low_c:
+                self.state.category = "commercial"
+            elif "res" in low_c or "flat" in low_c or "apartment" in low_c:
+                self.state.category = "residential"
+
         await self._go(RealEstateStep.OWNER_NAME)
         return "Customer confirmed interest. Ask for owner name for our records."
 
@@ -48,6 +68,20 @@ class RealEstateTools:
         """Confirm owner name for records."""
         cleaned = name.strip() if name else ""
         self.state.owner_name_confirmed = cleaned if cleaned else self.state.owner_name
+        # If category and intent are already known from earlier turns, jump directly to intake branch
+        if self.state.category and self.state.intent:
+            if self.state.category == "residential" and self.state.intent == "sale":
+                await self._go(RealEstateStep.RESIDENTIAL_SALE)
+            elif self.state.category == "residential" and self.state.intent == "lease":
+                await self._go(RealEstateStep.RESIDENTIAL_RENT)
+            elif self.state.category == "commercial" and self.state.intent == "sale":
+                await self._go(RealEstateStep.COMMERCIAL_SALE)
+            elif self.state.category == "commercial" and self.state.intent == "lease":
+                await self._go(RealEstateStep.COMMERCIAL_LEASE)
+            missing = self.state.get_missing_fields()
+            next_q = missing[0]["question_en"] if self.state.reply_lang == "en" else missing[0]["question_hi"]
+            return f"Recorded owner name: {self.state.owner_name_confirmed}. Property is {self.state.category} for {self.state.intent}. Ask: '{next_q}'"
+
         await self._go(RealEstateStep.CATEGORY_SELECT)
         if self.state.intent:
             return f"Recorded owner name: {self.state.owner_name_confirmed}. Now ask if the property is residential or commercial."
@@ -108,18 +142,30 @@ class RealEstateTools:
         immediate_occupancy: Optional[bool] = None,
     ) -> str:
         """Save any property details mentioned by customer in the current turn."""
-        if project_or_society:
-            self.state.project_or_society = project_or_society.strip()
-        if sector_or_location:
-            self.state.sector_or_location = sector_or_location.strip()
-        if unit_number:
-            self.state.unit_number = str(unit_number).strip()
-        if floor_number:
-            self.state.floor_number = str(floor_number).strip()
-        if bhk_config:
-            self.state.bhk_config = bhk_config.strip()
-        if commercial_type:
-            self.state.commercial_type = commercial_type.strip()
+        clean_society = _clean_str(project_or_society)
+        if clean_society:
+            self.state.project_or_society = clean_society
+
+        clean_sector = _clean_str(sector_or_location)
+        if clean_sector:
+            self.state.sector_or_location = clean_sector
+
+        clean_unit = _clean_str(unit_number)
+        if clean_unit:
+            self.state.unit_number = clean_unit
+
+        clean_floor = _clean_str(floor_number)
+        if clean_floor:
+            self.state.floor_number = clean_floor
+
+        clean_bhk = _clean_str(bhk_config)
+        if clean_bhk:
+            self.state.bhk_config = clean_bhk
+
+        clean_comm = _clean_str(commercial_type)
+        if clean_comm:
+            self.state.commercial_type = clean_comm
+
         if approx_area_sqft is not None:
             try:
                 if isinstance(approx_area_sqft, (int, float)):
@@ -130,26 +176,38 @@ class RealEstateTools:
                         self.state.approx_area_sqft = float(m.group(1))
             except (ValueError, TypeError):
                 pass
-        if furnishing_status:
-            self.state.furnishing_status = furnishing_status.strip()
-        if expected_sale_price:
-            self.state.expected_sale_price = str(expected_sale_price).strip()
-        if expected_monthly_rent:
-            self.state.expected_monthly_rent = str(expected_monthly_rent).strip()
+
+        clean_furnishing = _clean_str(furnishing_status)
+        if clean_furnishing:
+            self.state.furnishing_status = clean_furnishing
+
+        clean_price = _clean_str(expected_sale_price)
+        if clean_price:
+            self.state.expected_sale_price = clean_price
+
+        clean_rent = _clean_str(expected_monthly_rent)
+        if clean_rent:
+            self.state.expected_monthly_rent = clean_rent
+
         if is_currently_leased is not None:
             if isinstance(is_currently_leased, bool):
                 self.state.is_currently_leased = is_currently_leased
             else:
                 s = str(is_currently_leased).lower().strip()
-                self.state.is_currently_leased = s in ("true", "yes", "1", "leased", "rented")
-        if current_rent_received:
-            self.state.current_rent_received = str(current_rent_received).strip()
+                if s not in ("null", "none"):
+                    self.state.is_currently_leased = s in ("true", "yes", "1", "leased", "rented")
+
+        clean_curr_rent = _clean_str(current_rent_received)
+        if clean_curr_rent:
+            self.state.current_rent_received = clean_curr_rent
+
         if immediate_occupancy is not None:
             if isinstance(immediate_occupancy, bool):
                 self.state.immediate_occupancy = immediate_occupancy
             else:
                 s = str(immediate_occupancy).lower().strip()
-                self.state.immediate_occupancy = s in ("true", "yes", "1", "immediate", "ready")
+                if s not in ("null", "none"):
+                    self.state.immediate_occupancy = s in ("true", "yes", "1", "immediate", "ready")
 
         logger.info(
             f"Updated slots: society={self.state.project_or_society}, "
