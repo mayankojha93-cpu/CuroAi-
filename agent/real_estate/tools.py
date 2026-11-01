@@ -80,7 +80,7 @@ class RealEstateTools:
                 await self._go(RealEstateStep.COMMERCIAL_LEASE)
             missing = self.state.get_missing_fields()
             next_q = missing[0]["question_en"] if self.state.reply_lang == "en" else missing[0]["question_hi"]
-            return f"Recorded owner name: {self.state.owner_name_confirmed}. Property is {self.state.category} for {self.state.intent}. Ask: '{next_q}'"
+            return f"Recorded owner name: {self.state.owner_name_confirmed}. Property is {self.state.category} for {self.state.intent}. Smoothly follow up with: '{next_q}'"
 
         await self._go(RealEstateStep.CATEGORY_SELECT)
         if self.state.intent:
@@ -118,7 +118,7 @@ class RealEstateTools:
             await self._go(next_step)
             missing = self.state.get_missing_fields()
             first_q = missing[0]["question_en"] if self.state.reply_lang == "en" else missing[0]["question_hi"]
-            return f"Setup complete ({cat.title()} {intn.title()}). Next question to ask: '{first_q}'"
+            return f"Setup complete ({cat.title()} {intn.title()}). Acknowledge and smoothly ask: '{first_q}'"
 
         if not self.state.category:
             return "Intent recorded. Please ask if the property is residential or commercial."
@@ -225,7 +225,7 @@ class RealEstateTools:
 
         next_field = missing[0]
         q = next_field["question_en"] if self.state.reply_lang == "en" else next_field["question_hi"]
-        return f"Details saved successfully. Next question to ask customer: '{q}'"
+        return f"Details saved. Echo what the caller mentioned, and naturally ask: '{q}'"
 
     @function_tool
     async def finish_property_intake(self) -> str:
@@ -234,7 +234,7 @@ class RealEstateTools:
         if len(missing) > 0 and not getattr(self.state, "impatient_detected", False):
             next_field = missing[0]
             q = next_field["question_en"] if self.state.reply_lang == "en" else next_field["question_hi"]
-            return f"Not all details are collected yet. Still missing: {next_field['label']}. Please ask the customer: '{q}'"
+            return f"Not all details are collected yet. Smoothly ask: '{q}'"
 
         cat = (self.state.category or "Residential").title()
         intn = "Sale" if self.state.intent == "sale" else "Lease"
