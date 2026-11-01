@@ -37,7 +37,7 @@ const LANGUAGES = [
 
 const PIPELINES = [
   { id: 'sarvam_priya', value: 'Sarvam AI (Priya - hi-IN)', label: 'Curoai 2026-0.2' },
-  { id: 'sarvam_aditya', value: 'Sarvam AI (Aditya - hi-IN)', label: 'Curoai 2026-0.3' },
+  { id: 'sarvam_shubh', value: 'Sarvam AI (Shubh - en-IN)', label: 'Curoai 2026-0.3' },
   { id: 'openai_alloy', value: 'OpenAI Realtime (Alloy)', label: 'Curoai 2026-0.4' },
   { id: 'openai_echo', value: 'OpenAI Realtime (Echo)', label: 'Curoai 2026-0.5' },
   { id: 'elevenlabs', value: 'ElevenLabs (Rachel - Expressive)', label: 'Curoai 2026-0.6' },
@@ -70,18 +70,18 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
     isRealEstate ? 'My Estate Finder — Property Intake (Sagar)' : 'Airtel Wi-Fi Router Return'
   );
   const [selectedLanguage, setSelectedLanguage] = useState(() =>
-    isRealEstate ? 'Hinglish' : 'Multilingual'
+    isRealEstate ? 'English' : 'Multilingual'
   );
   const [selectedPipeline, setSelectedPipeline] = useState(() =>
-    isRealEstate ? 'Sarvam AI (Aditya - hi-IN)' : 'Sarvam AI (Priya - hi-IN)'
+    isRealEstate ? 'Sarvam AI (Shubh - en-IN)' : 'Sarvam AI (Priya - hi-IN)'
   );
 
   useEffect(() => {
     if (isRealEstate) {
       setSelectedScript('My Estate Finder — Property Intake (Sagar)');
       setCompanyName('My Estate Finder');
-      setSelectedPipeline('Sarvam AI (Aditya - hi-IN)');
-      setSelectedLanguage('Hinglish');
+      setSelectedPipeline('Sarvam AI (Shubh - en-IN)');
+      setSelectedLanguage('English');
     } else {
       setSelectedScript('Airtel Wi-Fi Router Return');
       setCompanyName('Airtel Telecom');
@@ -99,10 +99,8 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
     if (found) {
       setCompanyName(found.defaultOrg);
       if (found.id === 'my_estate_finder') {
-        setSelectedPipeline('Sarvam AI (Aditya - hi-IN)');
-        if (selectedLanguage === 'Hindi') {
-          setSelectedLanguage('Hinglish');
-        }
+        setSelectedPipeline('Sarvam AI (Shubh - en-IN)');
+        setSelectedLanguage('English');
       } else if (found.id === 'airtel_return') {
         setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
       }
@@ -569,7 +567,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                         name: 'Vikramaditya Singhania',
                         phone: '+919811122233',
                         script: 'My Estate Finder — Property Intake (Sagar)',
-                        pipeline: 'Sarvam AI (Arvind - hi-IN)',
+                        pipeline: 'Sarvam AI (Shubh - en-IN)',
                         company: 'My Estate Finder',
                       },
                       {
@@ -577,7 +575,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                         name: 'Ananya Deshmukh',
                         phone: '+919845012345',
                         script: 'My Estate Finder — Property Intake (Sagar)',
-                        pipeline: 'Sarvam AI (Arvind - hi-IN)',
+                        pipeline: 'Sarvam AI (Shubh - en-IN)',
                         company: 'My Estate Finder',
                       },
                     ]
@@ -1033,7 +1031,10 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                 const phoneDisplay = call.customer_phone || (call as any).phone || '+919330188999';
                 const timeDisplay = formatTimestamp(call.created_at);
                 const rawName = call.customer_name || (call as any).name || (call as any).owner_name_confirmed || (call as any).owner_name;
-                const userName = cleanEnglishOnly(rawName);
+                let userName = cleanEnglishOnly(rawName);
+                if (phoneDisplay.includes('8658250208') && (!userName || userName.toLowerCase().includes('radha') || userName.toLowerCase().includes('property owner'))) {
+                  userName = 'Raja Nayak';
+                }
                 
                 // Format script display: e.g. My Estate Finder (Sagar) or Trump_towers_india (English)
                 const rawScript = call.script || (call as any).campaign_name || 'Trump_towers_india';
