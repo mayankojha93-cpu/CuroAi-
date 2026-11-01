@@ -36,7 +36,8 @@ class RealEstateState:
         self.preferred_language = preferred_language
         self.direction = direction
 
-        self.reply_lang: str = "en" if preferred_language == "en" else "hi"
+        # Always start opening greeting in English by default; switches dynamically to Hinglish ('hi') if caller speaks Hindi
+        self.reply_lang: str = "en"
         self.callee_connected: bool = False
         self.start_time: float = time.time()
         self.last_activity_time: float = time.time()
