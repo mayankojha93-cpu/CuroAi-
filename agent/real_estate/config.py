@@ -35,12 +35,13 @@ SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
 STT_LANGUAGE = os.getenv("STT_LANGUAGE", "hi-IN").strip() or "hi-IN"
 TTS_LANGUAGE_HI = os.getenv("TTS_LANGUAGE_HI", "hi-IN")
 TTS_LANGUAGE_EN = os.getenv("TTS_LANGUAGE_EN", "en-IN")
-# Aditya or Amit / Shubh in Sarvam bulbul:v3 for Sagar persona
-TTS_SPEAKER = os.getenv("REAL_ESTATE_TTS_SPEAKER", "aditya")
+TTS_MODEL = os.getenv("REAL_ESTATE_TTS_MODEL", "bulbul:v4-flash")
+TTS_SPEAKER = os.getenv("REAL_ESTATE_TTS_SPEAKER", "shubh_hi_ecomm")
+TTS_SAMPLE_RATE = int(os.getenv("REAL_ESTATE_TTS_SAMPLE_RATE", "24000"))
+DEFAULT_LANGUAGE = os.getenv("REAL_ESTATE_DEFAULT_LANGUAGE", "en")
 
 # TTS Delivery Dynamics (Brisk human pace & expressive cadence)
-# Pace of 1.15 produces a crisp, active, professional conversational speed (avoids slow/sluggish TTS)
-TTS_PACE = float(os.getenv("REAL_ESTATE_TTS_PACE", "1.15"))
+TTS_PACE = float(os.getenv("REAL_ESTATE_TTS_PACE", "1.1"))
 TTS_TEMPERATURE = float(os.getenv("REAL_ESTATE_TTS_TEMPERATURE", "0.7"))
 TTS_PITCH = float(os.getenv("REAL_ESTATE_TTS_PITCH", "0.0"))
 TTS_LOUDNESS = float(os.getenv("REAL_ESTATE_TTS_LOUDNESS", "1.05"))
