@@ -954,6 +954,14 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                 const d = ((c.final_disposition || '') as string).toUpperCase();
                 return d.includes('DO NOT CALL') || d.includes('DNC');
               }).length, color: '#F43F5E' },
+              { id: 'NO_ANSWER', label: 'No Answer', count: historyCalls.filter((c) => {
+                const d = ((c.final_disposition || '') as string).toUpperCase();
+                return d.includes('NO ANSWER') || d.includes('NO_ANSWER') || (c.status || '').toUpperCase().includes('NO_ANSWER');
+              }).length, color: '#F59E0B' },
+              { id: 'DISCONNECTED', label: 'Disconnected', count: historyCalls.filter((c) => {
+                const d = ((c.final_disposition || '') as string).toUpperCase();
+                return d.includes('DISCONNECTED') || d.includes('DROP') || d.includes('HANGUP');
+              }).length, color: '#FB923C' },
             ].map((pill) => {
               const isSelected = dispositionFilter === pill.id;
               return (
@@ -1026,6 +1034,8 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                 if (dispositionFilter === 'WHATSAPP') return disp.includes('WHATSAPP');
                 if (dispositionFilter === 'NOT_INTERESTED') return disp.includes('NOT INTERESTED');
                 if (dispositionFilter === 'DNC') return disp.includes('DO NOT CALL') || disp.includes('DNC');
+                if (dispositionFilter === 'NO_ANSWER') return disp.includes('NO ANSWER') || disp.includes('NO_ANSWER') || (c.status || '').toUpperCase().includes('NO_ANSWER');
+                if (dispositionFilter === 'DISCONNECTED') return disp.includes('DISCONNECTED') || disp.includes('DROP') || disp.includes('HANGUP');
                 return true;
               }).map((call, idx) => {
                 const phoneDisplay = call.customer_phone || (call as any).phone || '+919330188999';
