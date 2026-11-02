@@ -557,7 +557,16 @@ export function downloadSampleCsv(): void {
  * Generates sample CSV template for Campaign Target Audience upload:
  * R. Date,Check,SUBS_DEL_NO,ACCOUNT_NO,SERVICE_END,Address,SERVICE_CITY,CONTACT_PHONE1,CONTACT_PHONE2,CUST_EMAIL,DISCONNECTION_REASON,TOWN_FLAG,CUSTOMER_IDENTIFER,SUBS_NAME,CIRCLE_NEW,CIRCLE_NEW20,Pin code,Zone,Allocated to
  */
-export function getCampaignAudienceSampleCsvContent(): string {
+export function getCampaignAudienceSampleCsvContent(isRealEstate?: boolean): string {
+  if (isRealEstate) {
+    return [
+      'Customer Name,Mobile,Alternate Phone,Email,Address,Project / Society,Sector / Location,BHK / Config,Expected Price / Rent,Pincode',
+      'Raja Nayak,9811223344,9822334455,raja@example.com,"DLF Phase 5, Golf Course Road, Gurgaon","DLF Phase 5","Sector 54","3 BHK","2.4 Cr",122002',
+      'Priya Sharma,9876543210,,priya@example.com,"Cyber City, DLF Phase 2, Gurgaon","Cyber City","Sector 24","Office Space","85,000 / month",122002',
+      'Amit Verma,9811122334,9833445566,amit@example.com,"Grand Arch, Golf Course Ext, Gurgaon","Grand Arch","Sector 58","4 BHK","95,000 / month",122011',
+    ].join('\n');
+  }
+
   return [
     'R. Date,Check,SUBS_DEL_NO,ACCOUNT_NO,SERVICE_END,Address,SERVICE_CITY,CONTACT_PHONE1,CONTACT_PHONE2,CUST_EMAIL,DISCONNECTION_REASON,TOWN_FLAG,CUSTOMER_IDENTIFER,SUBS_NAME,CIRCLE_NEW,CIRCLE_NEW20,Pin code,Zone,Allocated to',
     '29 Aug 26,-,01121344121_wifi,20022941256,27 Aug 26,"Delhi, 110011, burari, sant nagar",,8899855225,9999954242,xyz@gmail.com,,NON LCO,POSTPAID,Raja Nayak,DEL,,110011,North,LOGISTIEX',
@@ -570,13 +579,13 @@ export function getCampaignAudienceSampleCsvContent(): string {
 /**
  * Triggers a browser file download for campaign audience sample CSV format
  */
-export function downloadCampaignAudienceSampleCsv(): void {
-  const content = getCampaignAudienceSampleCsvContent();
+export function downloadCampaignAudienceSampleCsv(isRealEstate?: boolean): void {
+  const content = getCampaignAudienceSampleCsvContent(isRealEstate);
   const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.setAttribute('download', 'campaign_audience_format.csv');
+  link.setAttribute('download', isRealEstate ? 'my_estate_finder_leads_sample.csv' : 'campaign_audience_format.csv');
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);

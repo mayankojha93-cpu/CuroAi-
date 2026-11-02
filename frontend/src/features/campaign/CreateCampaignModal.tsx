@@ -1,4 +1,4 @@
-import React, { useState, useId, useMemo } from 'react';
+import React, { useState, useId, useMemo, useEffect } from 'react';
 import { 
   CheckCircle2, 
   AlertTriangle, 
@@ -19,6 +19,7 @@ import {
 import { createCampaign } from '../../services';
 import type { CampaignItem } from '../../types';
 import { downloadCampaignAudienceSampleCsv, parseAudienceCsv } from '../../utils/csvHelper';
+import { useAuth } from '../../context/AuthContext';
 
 interface CreateCampaignModalProps {
   isOpen: boolean;
@@ -55,7 +56,42 @@ export const SCRIPT_PRESETS: ScriptPresetOption[] = [
   },
 ];
 
+export const REAL_ESTATE_SCRIPT_PRESETS: ScriptPresetOption[] = [
+  {
+    id: 'my-estate-finder-intake',
+    title: 'My Estate Finder — Property Intake (Sagar)',
+    prompt: 'Hello, this is Sagar calling from My Estate Finder. I am calling to check if you are looking to sell or lease out your property.',
+  },
+  {
+    id: 're-residential-sale',
+    title: 'My Estate Finder — Residential Sale Qualification',
+    prompt: 'Hello, this is Sagar from My Estate Finder. We have active, verified buyers looking for residential flats and apartments. Are you interested in selling your residential property?',
+  },
+  {
+    id: 're-residential-lease',
+    title: 'My Estate Finder — Residential Rental & Lease Intake',
+    prompt: 'Hello, this is Sagar calling from My Estate Finder. We have corporate tenants looking for apartments and flats on lease. Are you open to renting out your property?',
+  },
+  {
+    id: 're-commercial-space',
+    title: 'My Estate Finder — Commercial Space & Office Leasing',
+    prompt: 'Hello, this is Sagar from My Estate Finder. We have verified retail brands and corporate clients looking for commercial office spaces, shops, and showrooms.',
+  },
+];
+
 const ALL_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+export const REAL_ESTATE_DISPOSITIONS = [
+  'Qualified Lead',
+  'Schedule Callback',
+  'Advisor Callback Booked',
+  'WhatsApp Info Requested',
+  'Not Interested',
+  'Do Not Call',
+  'Wrong Number',
+  'Not Connected (No Answer)',
+  'Abruptly Disconnected Call',
+];
 
 const CANONICAL_DISPOSITIONS = [
   'Confirmed For Pickup',
@@ -74,19 +110,32 @@ const CANONICAL_DISPOSITIONS = [
   'Not Connected (Failed)',
 ];
 
-const DEFAULT_DISPOSITIONS = CANONICAL_DISPOSITIONS;
-
 export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
   isOpen,
   onClose,
   onCampaignCreated,
 }) => {
+  const { user } = useAuth();
+  const isRealEstate = user?.assigned_pipeline === 'real_estate';
+
+  const activePresets = useMemo(() => {
+    return isRealEstate ? REAL_ESTATE_SCRIPT_PRESETS : SCRIPT_PRESETS;
+  }, [isRealEstate]);
+
+  const activeDefaultDispositions = useMemo(() => {
+    return isRealEstate ? REAL_ESTATE_DISPOSITIONS : CANONICAL_DISPOSITIONS;
+  }, [isRealEstate]);
+
   // Campaign Details
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [selectedScriptId, setSelectedScriptId] = useState<string>('delhi-routine');
-  const [language, setLanguage] = useState('hi-IN');
-  const [voicePipeline, setVoicePipeline] = useState('Sarvam AI (Priya - hi-IN)');
+  const [selectedScriptId, setSelectedScriptId] = useState<string>(() =>
+    isRealEstate ? REAL_ESTATE_SCRIPT_PRESETS[0].id : 'delhi-routine'
+  );
+  const [language, setLanguage] = useState(() => (isRealEstate ? 'en-IN' : 'hi-IN'));
+  const [voicePipeline, setVoicePipeline] = useState(() =>
+    isRealEstate ? 'Sarvam AI (Shubh - en-IN)' : 'Sarvam AI (Priya - hi-IN)'
+  );
 
   // Schedule
   const [scheduleStartTime, setScheduleStartTime] = useState('09:00');
@@ -103,7 +152,9 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
 
   // Call Settings
   const [maxCallDurationMinutes, setMaxCallDurationMinutes] = useState<number | string>(5);
-  const [expectedDispositions, setExpectedDispositions] = useState<string[]>(DEFAULT_DISPOSITIONS);
+  const [expectedDispositions, setExpectedDispositions] = useState<string[]>(() =>
+    activeDefaultDispositions
+  );
   const [newDispositionInput, setNewDispositionInput] = useState('');
 
   // Audience & Validation (CSV Upload)
@@ -114,6 +165,27 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
   const [error, setError] = useState<string | null>(null);
 
   const fileInputId = useId();
+
+  // Sync state whenever modal is opened or pipeline changes
+  useEffect(() => {
+    if (isOpen) {
+      if (isRealEstate) {
+        if (!REAL_ESTATE_SCRIPT_PRESETS.some((p) => p.id === selectedScriptId)) {
+          setSelectedScriptId(REAL_ESTATE_SCRIPT_PRESETS[0].id);
+        }
+        setLanguage((prev) => (prev === 'hi-IN' ? 'en-IN' : prev));
+        setVoicePipeline((prev) => (prev === 'Sarvam AI (Priya - hi-IN)' ? 'Sarvam AI (Shubh - en-IN)' : prev));
+        setExpectedDispositions(REAL_ESTATE_DISPOSITIONS);
+      } else {
+        if (!SCRIPT_PRESETS.some((p) => p.id === selectedScriptId)) {
+          setSelectedScriptId(SCRIPT_PRESETS[0].id);
+        }
+        setLanguage((prev) => (prev === 'en-IN' ? 'hi-IN' : prev));
+        setVoicePipeline((prev) => (prev === 'Sarvam AI (Shubh - en-IN)' ? 'Sarvam AI (Priya - hi-IN)' : prev));
+        setExpectedDispositions(CANONICAL_DISPOSITIONS);
+      }
+    }
+  }, [isOpen, isRealEstate]);
 
   // Day toggle handler
   const toggleDay = (day: string) => {
@@ -169,7 +241,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
   const handleDownloadCsvFormat = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    downloadCampaignAudienceSampleCsv();
+    downloadCampaignAudienceSampleCsv(isRealEstate);
   };
 
   const handleLaunch = async (e: React.FormEvent) => {
@@ -191,7 +263,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
       return;
     }
 
-    const selectedPreset = SCRIPT_PRESETS.find((p) => p.id === selectedScriptId) || SCRIPT_PRESETS[0];
+    const selectedPreset = activePresets.find((p) => p.id === selectedScriptId) || activePresets[0];
 
     setIsSubmitting(true);
     try {
@@ -222,7 +294,10 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
       // Reset and close
       setName('');
       setDescription('');
-      setSelectedScriptId('delhi-routine');
+      setSelectedScriptId(isRealEstate ? REAL_ESTATE_SCRIPT_PRESETS[0].id : 'delhi-routine');
+      setLanguage(isRealEstate ? 'en-IN' : 'hi-IN');
+      setVoicePipeline(isRealEstate ? 'Sarvam AI (Shubh - en-IN)' : 'Sarvam AI (Priya - hi-IN)');
+      setExpectedDispositions(isRealEstate ? REAL_ESTATE_DISPOSITIONS : CANONICAL_DISPOSITIONS);
       setFileName('');
       setFileRawContent('');
       onClose();
@@ -232,6 +307,8 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
       setIsSubmitting(false);
     }
   };
+
+  const selectedPreset = activePresets.find((p) => p.id === selectedScriptId) || activePresets[0];
 
   const inputStyle: React.CSSProperties = {
     width: '100%',
@@ -414,7 +491,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
                   autoFocus
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. Q4 Airtel Wi-Fi Outbound Pilot"
+                  placeholder={isRealEstate ? 'e.g. Q4 My Estate Finder Property Intake' : 'e.g. Q4 Airtel Wi-Fi Outbound Pilot'}
                   style={{
                     ...inputStyle,
                     borderColor: '#3B82F6',
@@ -429,7 +506,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
                   type="text"
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  placeholder="e.g. Outbound Hindi retention pilot"
+                  placeholder={isRealEstate ? 'e.g. Outbound property owner intake campaign' : 'e.g. Outbound Hindi retention pilot'}
                   style={inputStyle}
                   onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.5)')}
                   onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)')}
@@ -449,12 +526,31 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
                   borderColor: 'rgba(59, 130, 246, 0.4)',
                 }}
               >
-                {SCRIPT_PRESETS.map((preset) => (
+                {activePresets.map((preset) => (
                   <option key={preset.id} value={preset.id} style={{ background: '#0B0F17' }}>
                     {preset.title}
                   </option>
                 ))}
               </select>
+
+              {/* Script Prompt Preview */}
+              {selectedPreset && (
+                <div
+                  style={{
+                    marginTop: 8,
+                    padding: '8px 12px',
+                    borderRadius: 8,
+                    background: 'rgba(56, 189, 248, 0.06)',
+                    border: '1px solid rgba(56, 189, 248, 0.2)',
+                    fontSize: '0.78rem',
+                    color: '#7DD3FC',
+                    lineHeight: 1.4,
+                  }}
+                >
+                  <span style={{ fontWeight: 600, color: '#38BDF8' }}>Opening Hook Preview: </span>
+                  "{selectedPreset.prompt}"
+                </div>
+              )}
             </div>
 
             {/* Language & Voice Pipeline */}
@@ -469,14 +565,24 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
                     cursor: 'pointer',
                   }}
                 >
-                  <option value="hi-IN" style={{ background: '#0B0F17' }}>Hindi (hi-IN)</option>
-                  <option value="en-IN" style={{ background: '#0B0F17' }}>English (India - en-IN)</option>
-                  <option value="hi-Latn" style={{ background: '#0B0F17' }}>Hinglish (hi-Latn)</option>
-                  <option value="ta-IN" style={{ background: '#0B0F17' }}>Tamil (ta-IN)</option>
-                  <option value="te-IN" style={{ background: '#0B0F17' }}>Telugu (te-IN)</option>
-                  <option value="kn-IN" style={{ background: '#0B0F17' }}>Kannada (kn-IN)</option>
-                  <option value="bn-IN" style={{ background: '#0B0F17' }}>Bengali (bn-IN)</option>
-                  <option value="mr-IN" style={{ background: '#0B0F17' }}>Marathi (mr-IN)</option>
+                  {isRealEstate ? (
+                    <>
+                      <option value="en-IN" style={{ background: '#0B0F17' }}>English (India - en-IN)</option>
+                      <option value="hi-Latn" style={{ background: '#0B0F17' }}>Hinglish (hi-Latn)</option>
+                      <option value="hi-IN" style={{ background: '#0B0F17' }}>Hindi (hi-IN)</option>
+                    </>
+                  ) : (
+                    <>
+                      <option value="hi-IN" style={{ background: '#0B0F17' }}>Hindi (hi-IN)</option>
+                      <option value="en-IN" style={{ background: '#0B0F17' }}>English (India - en-IN)</option>
+                      <option value="hi-Latn" style={{ background: '#0B0F17' }}>Hinglish (hi-Latn)</option>
+                      <option value="ta-IN" style={{ background: '#0B0F17' }}>Tamil (ta-IN)</option>
+                      <option value="te-IN" style={{ background: '#0B0F17' }}>Telugu (te-IN)</option>
+                      <option value="kn-IN" style={{ background: '#0B0F17' }}>Kannada (kn-IN)</option>
+                      <option value="bn-IN" style={{ background: '#0B0F17' }}>Bengali (bn-IN)</option>
+                      <option value="mr-IN" style={{ background: '#0B0F17' }}>Marathi (mr-IN)</option>
+                    </>
+                  )}
                 </select>
               </div>
 
@@ -490,11 +596,25 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
                     cursor: 'pointer',
                   }}
                 >
-                  <option value="Sarvam AI (Priya - hi-IN)" style={{ background: '#0B0F17' }}>Curoai 2026-0.2</option>
-                  <option value="Sarvam AI (Arvind - hi-IN)" style={{ background: '#0B0F17' }}>Curoai 2026-0.3</option>
-                  <option value="OpenAI Realtime (Alloy)" style={{ background: '#0B0F17' }}>Curoai 2026-0.4</option>
-                  <option value="OpenAI Realtime (Echo)" style={{ background: '#0B0F17' }}>Curoai 2026-0.5</option>
-                  <option value="ElevenLabs (Rachel - Expressive)" style={{ background: '#0B0F17' }}>Curoai 2026-0.6</option>
+                  {isRealEstate ? (
+                    <>
+                      <option value="Sarvam AI (Shubh - en-IN)" style={{ background: '#0B0F17' }}>Curoai 2026-0.3</option>
+                      <option value="Sarvam AI (Arvind - hi-IN)" style={{ background: '#0B0F17' }}>Curoai 2026-0.3</option>
+                      <option value="Sarvam AI (Priya - hi-IN)" style={{ background: '#0B0F17' }}>Curoai 2026-0.2</option>
+                      <option value="OpenAI Realtime (Alloy)" style={{ background: '#0B0F17' }}>Curoai 2026-0.4</option>
+                      <option value="OpenAI Realtime (Echo)" style={{ background: '#0B0F17' }}>Curoai 2026-0.5</option>
+                      <option value="ElevenLabs (Rachel - Expressive)" style={{ background: '#0B0F17' }}>Curoai 2026-0.6</option>
+                    </>
+                  ) : (
+                    <>
+                      <option value="Sarvam AI (Priya - hi-IN)" style={{ background: '#0B0F17' }}>Curoai 2026-0.2</option>
+                      <option value="Sarvam AI (Shubh - en-IN)" style={{ background: '#0B0F17' }}>Curoai 2026-0.3</option>
+                      <option value="Sarvam AI (Arvind - hi-IN)" style={{ background: '#0B0F17' }}>Curoai 2026-0.3</option>
+                      <option value="OpenAI Realtime (Alloy)" style={{ background: '#0B0F17' }}>Curoai 2026-0.4</option>
+                      <option value="OpenAI Realtime (Echo)" style={{ background: '#0B0F17' }}>Curoai 2026-0.5</option>
+                      <option value="ElevenLabs (Rachel - Expressive)" style={{ background: '#0B0F17' }}>Curoai 2026-0.6</option>
+                    </>
+                  )}
                 </select>
               </div>
             </div>
