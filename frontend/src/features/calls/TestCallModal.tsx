@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   X, 
   PhoneCall, 
@@ -14,6 +14,7 @@ import {
   ArrowRight
 } from 'lucide-react';
 import { initiateTestCall, type TestCallInput } from '../../services';
+import { useAuth } from '../../context/AuthContext';
 
 interface TestCallModalProps {
   isOpen: boolean;
@@ -80,12 +81,71 @@ const DEVELOPER_PRESETS: SamplePreset[] = [
   },
 ];
 
+const REAL_ESTATE_PRESETS: SamplePreset[] = [
+  {
+    id: 're-intake-sagar',
+    title: 'My Estate Finder — Property Intake (Sagar)',
+    tag: 'Property Intake',
+    description: 'Property owner qualification for sale/lease in DLF Phase 5, Gurgaon',
+    data: {
+      name: 'Raja Nayak',
+      phone: '+919811122233',
+      address: 'DLF Phase 5, Sector 54, Gurgaon',
+      language: 'en',
+    },
+  },
+  {
+    id: 're-residential-sale',
+    title: 'My Estate Finder — Residential Sale',
+    tag: 'Residential Sale',
+    description: 'Owner selling a 3 BHK luxury apartment in Grand Arch, Golf Course Ext.',
+    data: {
+      name: 'Amit Verma',
+      phone: '+919845012345',
+      address: 'Grand Arch, Sector 58, Gurgaon',
+      language: 'en',
+    },
+  },
+  {
+    id: 're-commercial-lease',
+    title: 'My Estate Finder — Commercial Space',
+    tag: 'Commercial Lease',
+    description: 'Owner leasing a commercial retail / office space in Cyber City',
+    data: {
+      name: 'Priya Sharma',
+      phone: '+919810987654',
+      address: 'Cyber City, DLF Phase 2, Gurgaon',
+      language: 'en',
+    },
+  },
+];
+
 export const TestCallModal: React.FC<TestCallModalProps> = ({ isOpen, onClose, onCallInitiated }) => {
-  const [selectedPresetId, setSelectedPresetId] = useState<string>('delhi-routine');
-  const [formData, setFormData] = useState<TestCallInput>(DEVELOPER_PRESETS[0].data);
+  const { user } = useAuth();
+  const isRealEstate = user?.assigned_pipeline === 'real_estate';
+  const activePresets = isRealEstate ? REAL_ESTATE_PRESETS : DEVELOPER_PRESETS;
+
+  const [selectedPresetId, setSelectedPresetId] = useState<string>(() =>
+    isRealEstate ? REAL_ESTATE_PRESETS[0].id : 'delhi-routine'
+  );
+  const [formData, setFormData] = useState<TestCallInput>(() =>
+    isRealEstate ? REAL_ESTATE_PRESETS[0].data : DEVELOPER_PRESETS[0].data
+  );
   const [isDialing, setIsDialing] = useState(false);
   const [dialResult, setDialResult] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      if (isRealEstate) {
+        setSelectedPresetId(REAL_ESTATE_PRESETS[0].id);
+        setFormData(REAL_ESTATE_PRESETS[0].data);
+      } else {
+        setSelectedPresetId(DEVELOPER_PRESETS[0].id);
+        setFormData(DEVELOPER_PRESETS[0].data);
+      }
+    }
+  }, [isOpen, isRealEstate]);
 
   if (!isOpen) return null;
 
@@ -230,7 +290,7 @@ export const TestCallModal: React.FC<TestCallModalProps> = ({ isOpen, onClose, o
               gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
               gap: 10,
             }}>
-              {DEVELOPER_PRESETS.map((preset) => {
+              {activePresets.map((preset) => {
                 const isSelected = selectedPresetId === preset.id;
                 return (
                   <div
