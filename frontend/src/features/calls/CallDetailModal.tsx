@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { X, Phone, User, Bot, MessageSquare, Volume2, ShieldAlert } from 'lucide-react';
 import type { CallRecord } from '../../types';
 import { fetchCallDetail } from '../../services/api.service';
-import { cleanEnglishOnly } from '../../utils/textUtils';
+import { cleanEnglishOnly, formatVoicePipelineLabel } from '../../utils/textUtils';
 
 interface CallDetailModalProps {
   call: CallRecord | null;
@@ -126,7 +126,9 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
     (activeCall.script || '').toLowerCase().includes('estate') ||
     (activeCall.script || '').toLowerCase().includes('sagar') ||
     (activeCall.company_name || '').toLowerCase().includes('estate') ||
-    ((activeCall as any).voice_pipeline || '').toLowerCase().includes('aditya')
+    (activeCall as any).pipeline === 'real_estate' ||
+    ((activeCall as any).voice_pipeline || '').toLowerCase().includes('aditya') ||
+    ((activeCall as any).voice_pipeline || '').toLowerCase().includes('shubh')
   );
 
   return (
@@ -366,16 +368,19 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
             <h4 style={{ fontSize: '0.76rem', color: '#64748B', textTransform: 'uppercase', marginBottom: 12, fontWeight: 700, letterSpacing: '0.05em' }}>
               {isRealEstate ? 'Property Owner & Contact Info' : 'Customer Verification & Destination'}
             </h4>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, fontSize: '0.84rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12, fontSize: '0.84rem' }}>
               <div>
                 <span style={{ color: '#94A3B8' }}>{isRealEstate ? 'Owner: ' : 'Customer: '}</span>
                 <strong style={{ color: '#FFFFFF' }}>{cleanEnglishOnly(activeCall.customer_name) || activeCall.customer_name || '—'}</strong> ({phoneDisplay})
               </div>
-              <div>
+              <div style={{ whiteSpace: 'nowrap' }}>
                 <span style={{ color: '#94A3B8' }}>{isRealEstate ? 'Source / Pipeline: ' : 'Contact Ref: '}</span>
-                <span style={{ color: '#38BDF8', fontWeight: 600 }}>
+                <span
+                  style={{ color: '#38BDF8', fontWeight: 600, cursor: 'default', whiteSpace: 'nowrap' }}
+                  title={isRealEstate ? formatVoicePipelineLabel((activeCall as any).voice_pipeline, true) : undefined}
+                >
                   {isRealEstate
-                    ? ((activeCall as any).voice_pipeline || 'My Estate Finder')
+                    ? formatVoicePipelineLabel((activeCall as any).voice_pipeline, true)
                     : ((activeCall as any).subs_del_no || (activeCall as any).contact_ref || '—')}
                 </span>
               </div>

@@ -229,7 +229,9 @@ export const RecentCalls: React.FC<RecentCallsProps> = ({ calls, onSelectCall })
                   (call.script || '').toLowerCase().includes('estate') ||
                   (call.script || '').toLowerCase().includes('sagar') ||
                   (call.company_name || '').toLowerCase().includes('estate') ||
-                  ((call as any).voice_pipeline || '').toLowerCase().includes('aditya')
+                  (call as any).pipeline === 'real_estate' ||
+                  ((call as any).voice_pipeline || '').toLowerCase().includes('aditya') ||
+                  ((call as any).voice_pipeline || '').toLowerCase().includes('shubh')
                 );
 
                 const phoneDisplay = maskPhone(call.customer_phone || (call as any).phone);

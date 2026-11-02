@@ -66,7 +66,9 @@ const formatContactDuration = (seconds?: number): string => {
 
 const VOICE_PIPELINE_DISPLAY_MAP: Record<string, string> = {
   'Sarvam AI (Priya - hi-IN)': 'Curoai 2026-0.2',
+  'Sarvam AI (Shubh - en-IN)': 'Curoai 2026-0.3',
   'Sarvam AI (Arvind - hi-IN)': 'Curoai 2026-0.3',
+  'Sarvam AI (Aditya - hi-IN)': 'Curoai 2026-0.3',
   'OpenAI Realtime (Alloy)': 'Curoai 2026-0.4',
   'OpenAI Realtime (Echo)': 'Curoai 2026-0.5',
   'ElevenLabs (Rachel - Expressive)': 'Curoai 2026-0.6',

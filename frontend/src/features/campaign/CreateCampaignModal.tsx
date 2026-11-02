@@ -491,6 +491,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
                   }}
                 >
                   <option value="Sarvam AI (Priya - hi-IN)" style={{ background: '#0B0F17' }}>Curoai 2026-0.2</option>
+                  <option value="Sarvam AI (Shubh - en-IN)" style={{ background: '#0B0F17' }}>Curoai 2026-0.3</option>
                   <option value="Sarvam AI (Arvind - hi-IN)" style={{ background: '#0B0F17' }}>Curoai 2026-0.3</option>
                   <option value="OpenAI Realtime (Alloy)" style={{ background: '#0B0F17' }}>Curoai 2026-0.4</option>
                   <option value="OpenAI Realtime (Echo)" style={{ background: '#0B0F17' }}>Curoai 2026-0.5</option>
