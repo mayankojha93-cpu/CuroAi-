@@ -124,6 +124,18 @@ export const CANONICAL_DISPOSITIONS = [
   'Not Connected (Failed)',
 ] as const;
 
+export const REAL_ESTATE_CANONICAL_DISPOSITIONS = [
+  'Qualified Lead',
+  'Schedule Callback',
+  'Advisor Callback Booked',
+  'WhatsApp Info Requested',
+  'Not Interested',
+  'Do Not Call',
+  'Wrong Number',
+  'Not Connected (No Answer)',
+  'Abruptly Disconnected Call',
+] as const;
+
 export const matchCanonicalDisposition = (
   rawInput?: string | null,
   durationSeconds?: number,
@@ -134,10 +146,24 @@ export const matchCanonicalDisposition = (
   const statusUpper = (callStatus || '').toUpperCase().replace(/[-_]/g, ' ');
   const duration = Number(durationSeconds) || 0;
 
-  const exactMatch = CANONICAL_DISPOSITIONS.find(
+  const exactMatch = [...REAL_ESTATE_CANONICAL_DISPOSITIONS, ...CANONICAL_DISPOSITIONS].find(
     (c) => c.toLowerCase() === text.toLowerCase() || c.toUpperCase() === upper
   );
   if (exactMatch) return exactMatch;
+
+  // Real Estate Outcomes (Priority check)
+  if (upper.includes('QUALIFIED') || upper.includes('INTAKE COMPLETE') || upper.includes('DETAILS CAPTURED')) {
+    return 'Qualified Lead';
+  }
+  if (upper.includes('ADVISOR') || upper.includes('HANDOFF') || upper.includes('VALUATION')) {
+    return 'Advisor Callback Booked';
+  }
+  if (upper.includes('WHATSAPP') || upper.includes('WA INFO') || upper.includes('BROCHURE')) {
+    return 'WhatsApp Info Requested';
+  }
+  if (upper.includes('NOT INTERESTED') || upper.includes('NAHI BECHNI') || upper.includes('NO INTENT')) {
+    return 'Not Interested';
+  }
 
   // 8. Wrong Number (Check early so 'IDENTITY NOT CONFIRMED' does not trigger 'CONFIRMED')
   if (
@@ -378,6 +404,10 @@ const formatContactDisposition = (c: CampaignContactRecord): string => {
 
 const getDispositionColor = (key: string): string => {
   const norm = key.toUpperCase();
+  if (norm.includes('QUALIFIED')) return '#10B981'; // Emerald Green
+  if (norm.includes('ADVISOR')) return '#A855F7'; // Purple
+  if (norm.includes('WHATSAPP')) return '#06B6D4'; // Cyan
+  if (norm.includes('NOT INTERESTED')) return '#94A3B8'; // Slate
   if (norm.includes('CONFIRMED FOR PICKUP')) return '#10B981'; // Emerald Green
   if (norm.includes('WILLING TO PICKUP')) return '#06B6D4'; // Cyan
   if (norm.includes('SCHEDULE CALLBACK')) return '#F59E0B'; // Amber
@@ -649,12 +679,19 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
     });
   }, [contacts, contactSearchTerm, contactFilter]);
 
-  // Compute dispositions breakdown for display (All 14 standard dispositions)
+  // Compute dispositions breakdown for display (Pipeline-aware canonical dispositions)
   const computedDispositions = useMemo(() => {
     const counts = new Map<string, number>();
 
-    // Seed all 14 canonical dispositions with 0
-    CANONICAL_DISPOSITIONS.forEach((name) => counts.set(name, 0));
+    const isRealEstateCampaign =
+      (currentCampaign as any)?.pipeline === 'real_estate' ||
+      (currentCampaign as any)?.name?.toLowerCase()?.includes('estate');
+    const targetCanonicalDispositions = isRealEstateCampaign
+      ? REAL_ESTATE_CANONICAL_DISPOSITIONS
+      : CANONICAL_DISPOSITIONS;
+
+    // Seed canonical dispositions with 0
+    targetCanonicalDispositions.forEach((name) => counts.set(name, 0));
 
     // Populate from dispositionData if loaded
     if (dispositionData && Array.isArray(dispositionData.dispositions)) {
