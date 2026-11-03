@@ -1,4 +1,5 @@
 import re
+import asyncio
 import logging
 from livekit.agents import Agent, StopResponse
 from src.carrier_filter import classify_carrier_message
@@ -94,12 +95,22 @@ class RealEstateAgent(Agent):
                         self.on_language_change(lang)
                     except Exception as e:
                         logger.warning(f"Language switch callback failed: {e}")
-            try:
-                await self.update_instructions(get_step_instructions(state))
-                if step_changed:
-                    await self.update_tools(self._re_tools.tools_for_step(state.step))
-            except Exception as e:
-                logger.warning(f"Failed to refresh instructions/tools: {e}")
+
+            # LATENCY: run instruction/tool refresh as a background task so LLM dispatch is not blocked.
+            # The LLM sees the updated instructions on the *next* turn (preemptive generation re-uses them
+            # after the task completes, which is near-instant for simple state changes).
+            _step_changed = step_changed
+            _agent = self
+
+            async def _refresh_instructions():
+                try:
+                    await _agent.update_instructions(get_step_instructions(state))
+                    if _step_changed:
+                        await _agent.update_tools(_agent._re_tools.tools_for_step(state.step))
+                except Exception as e:
+                    logger.warning(f"Failed to refresh instructions/tools: {e}")
+
+            asyncio.create_task(_refresh_instructions())
 
     async def llm_node(self, chat_ctx, tools, model_settings):
         """Prevent hallucinated second tool call when last item was tool output."""
