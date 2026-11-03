@@ -215,9 +215,11 @@ Call `set_category_and_intent(category=..., intent=...)` as soon as either or bo
         next_q_hi = missing[0]["question_hi"] if missing else "Saare sawaal poore ho gaye hain."
         next_q = next_q_en if state.reply_lang == "en" else next_q_hi
 
+        # LATENCY: only show next 2 missing fields (not full list) to keep prompt tokens minimal
+        upcoming_missing = missing[:2]
         missing_list_formatted = "\n".join(
-            [f"{idx + 1}. {m['label']} -> Example: \"{m['question_en']}\"" for idx, m in enumerate(missing)]
-        ) if missing else "None (all fields captured)"
+            [f"{idx + 1}. {m['label']} -> Example: \"{m['question_en']}\"" for idx, m in enumerate(upcoming_missing)]
+        ) if upcoming_missing else "None (all fields captured)"
 
         branch_title = {
             RealEstateStep.RESIDENTIAL_SALE: "4.1 Sale of Residential Premises",
@@ -233,19 +235,8 @@ Goal: Conduct a smooth, consultative phone dialogue with the owner to understand
 CONVERSATIONAL FOCUS & NEXT DETAIL:
 "{next_q}"
 
-Remaining missing fields in script sequence:
+Next fields to collect (up to 2 shown):
 {missing_list_formatted}
-
-Captured so far:
-- Society / Project: {state.project_or_society or 'Not provided'}
-- Sector / Location: {state.sector_or_location or 'Not provided'}
-- Unit & Floor: {state.unit_number or 'Not provided'}, {state.floor_number or ''}
-- Config / Type: {state.bhk_config or state.commercial_type or 'Not provided'}
-- Approx Area: {f"{state.approx_area_sqft} sqft" if state.approx_area_sqft else 'Not provided'}
-- Furnishing: {state.furnishing_status or 'Not provided'}
-- Price / Rent: {state.expected_sale_price or state.expected_monthly_rent or 'Not provided'}
-- Leased Status: {'Leased' if state.is_currently_leased else ('Vacant' if state.is_currently_leased is False else 'Not provided')}
-- Immediate Occupancy: {'Yes' if state.immediate_occupancy is True else ('No' if state.immediate_occupancy is False else 'Not provided')}
 
 CRITICAL MANDATORY INSTRUCTIONS:
 1. STRICT ZERO-HALLUCINATION RULE:
