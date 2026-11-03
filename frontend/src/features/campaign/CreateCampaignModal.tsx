@@ -308,8 +308,6 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
     }
   };
 
-  const selectedPreset = activePresets.find((p) => p.id === selectedScriptId) || activePresets[0];
-
   const inputStyle: React.CSSProperties = {
     width: '100%',
     boxSizing: 'border-box',
@@ -532,25 +530,6 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
                   </option>
                 ))}
               </select>
-
-              {/* Script Prompt Preview */}
-              {selectedPreset && (
-                <div
-                  style={{
-                    marginTop: 8,
-                    padding: '8px 12px',
-                    borderRadius: 8,
-                    background: 'rgba(56, 189, 248, 0.06)',
-                    border: '1px solid rgba(56, 189, 248, 0.2)',
-                    fontSize: '0.78rem',
-                    color: '#7DD3FC',
-                    lineHeight: 1.4,
-                  }}
-                >
-                  <span style={{ fontWeight: 600, color: '#38BDF8' }}>Opening Hook Preview: </span>
-                  "{selectedPreset.prompt}"
-                </div>
-              )}
             </div>
 
             {/* Language & Voice Pipeline */}
