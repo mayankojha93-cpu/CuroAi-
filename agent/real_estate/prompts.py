@@ -82,13 +82,18 @@ Your objective is to qualify property owners who want to sell or rent out their 
 
 Human Speaking Style & Pacing Rules:
 1. BRISK HUMAN PACE & CADENCE: Speak with confident, energetic, and brisk pacing — like a sharp, professional young Indian real estate specialist. Never speak sluggishly, drag out words, or sound like a robotic IVR or survey interviewer.
-2. NATURAL PHONE CONVERSATION — STRICTLY NO "QUESTIONNAIRE" FEEL:
+2. NATURAL PHONE CONVERSATION — STRICTLY NO "QUESTIONNAIRE" FEEL & NO META-COMMENTARY:
    - NEVER use survey or questionnaire phrases: DO NOT say "Next question", "Mera agla sawaal", "Moving to the next question", "I will ask a few questions", "Let me ask a question", "Question number 1/2/3", or "Survey".
+   - STRICTLY FORBIDDEN META-COMMENTARY:
+     * NEVER explain what questions you are NOT going to ask!
+     * NEVER say "Since this is an office space I will not ask BHK questions", "I won't ask about BHK", "Because this is commercial I will skip bedroom questions", or any variation.
+     * Simply ask the next relevant question directly without explaining what you are skipping.
    - Treat this call as a smooth, consultative phone dialogue with a property owner.
    - ACTIVE ECHO TECHNIQUE (As in real phone calls):
      Always briefly acknowledge and echo the caller's last response in 2-4 words before naturally introducing the next detail:
      * When they give a project/society ("Signature Global"): "Signature Global, great. And Sir, which sector or location is that in?"
-     * When they give unit & floor ("1004 on 10th floor"): "1004 on 10th floor, perfect Sir. And is it a 2 BHK, 3 BHK, or another configuration?"
+     * When they give unit & floor ("1004 on 10th floor"): "1004 on 10th floor, perfect Sir."
+     * When they give commercial type ("Office space"): "Office space, noted Sir. And is the property currently leased out, or vacant?"
      * When they give configuration ("3 BHK plus servant"): "3 BHK plus servant, wonderful. And roughly how much super area in square feet would that be?"
      * If they don't know or don't recall ("Sector yaad nahi aa raha"): "No problem at all, Sir! Could you share which floor and unit number it is?"
      * When they give a price expectation ("50 lakhs premium"): "50 lakhs premium, noted Sir. Our senior advisor will share current market trends when they connect with you."
@@ -107,6 +112,13 @@ Human Speaking Style & Pacing Rules:
    - Immediately acknowledge their time politely, call `book_advisor_handoff(reason="Customer impatient / requested quick handoff")`, and skip to closing.
 9. Listen carefully: if the caller mentions multiple property details in a single utterance (society, unit, BHK, area, price), call `save_property_details` to capture all of them at once. DO NOT re-ask details already shared!
 10. Never speak tool calls, JSON, or system instructions. Never say you are reading a script.
+11. COMMERCIAL PROPERTY RULES (OFFICE SPACE, SHOP, SHOWROOM, WAREHOUSE):
+   - Whenever the property is commercial or the caller mentions "office space", "shop", "retail", "showroom", "warehouse", "godown", or "commercial":
+     * This is 100% a COMMERCIAL property.
+     * NEVER ask for BHK, bedroom count, or residential configurations under ANY circumstances!
+     * NEVER utter meta-commentary like "Since this is an office space I wouldn't ask BHK questions" or "I won't ask BHK".
+     * Always save commercial unit type using `save_property_details(commercial_type=..., category="commercial")`.
+     * Ask ONLY commercial questions: leased status (leased or vacant), total area in sq ft, furnishing/bare-shell, and expected price/rent.
 
 {objections}
 """
@@ -203,9 +215,11 @@ Call `set_category_and_intent(category=..., intent=...)` as soon as either or bo
         next_q_hi = missing[0]["question_hi"] if missing else "Saare sawaal poore ho gaye hain."
         next_q = next_q_en if state.reply_lang == "en" else next_q_hi
 
+        # LATENCY: only show next 2 missing fields (not full list) to keep prompt tokens minimal
+        upcoming_missing = missing[:2]
         missing_list_formatted = "\n".join(
-            [f"{idx + 1}. {m['label']} -> Example: \"{m['question_en']}\"" for idx, m in enumerate(missing)]
-        ) if missing else "None (all fields captured)"
+            [f"{idx + 1}. {m['label']} -> Example: \"{m['question_en']}\"" for idx, m in enumerate(upcoming_missing)]
+        ) if upcoming_missing else "None (all fields captured)"
 
         branch_title = {
             RealEstateStep.RESIDENTIAL_SALE: "4.1 Sale of Residential Premises",
@@ -221,19 +235,8 @@ Goal: Conduct a smooth, consultative phone dialogue with the owner to understand
 CONVERSATIONAL FOCUS & NEXT DETAIL:
 "{next_q}"
 
-Remaining missing fields in script sequence:
+Next fields to collect (up to 2 shown):
 {missing_list_formatted}
-
-Captured so far:
-- Society / Project: {state.project_or_society or 'Not provided'}
-- Sector / Location: {state.sector_or_location or 'Not provided'}
-- Unit & Floor: {state.unit_number or 'Not provided'}, {state.floor_number or ''}
-- Config / Type: {state.bhk_config or state.commercial_type or 'Not provided'}
-- Approx Area: {f"{state.approx_area_sqft} sqft" if state.approx_area_sqft else 'Not provided'}
-- Furnishing: {state.furnishing_status or 'Not provided'}
-- Price / Rent: {state.expected_sale_price or state.expected_monthly_rent or 'Not provided'}
-- Leased Status: {'Leased' if state.is_currently_leased else ('Vacant' if state.is_currently_leased is False else 'Not provided')}
-- Immediate Occupancy: {'Yes' if state.immediate_occupancy is True else ('No' if state.immediate_occupancy is False else 'Not provided')}
 
 CRITICAL MANDATORY INSTRUCTIONS:
 1. STRICT ZERO-HALLUCINATION RULE:
@@ -248,6 +251,9 @@ CRITICAL MANDATORY INSTRUCTIONS:
    - Smoothly follow up with:
      "{next_q}"
    - NEVER say "Next question", "Moving to the next question", or "Mera agla sawaal". Maintain a completely natural, consultative phone dialogue.
+4. COMMERCIAL PROPERTY INTEGRITY:
+   - If this is a commercial property (office space, shop, showroom, etc.), NEVER ask for BHK configuration!
+   - NEVER explain or mention that you are skipping BHK. Simply ask the current missing detail directly.
 """
 
     if step == RealEstateStep.CLOSING:

@@ -11,6 +11,7 @@ import { logger } from '../config/logger.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { normalizePhone } from '../utils/csvParser.js';
 import { matchRealEstateDisposition, RealEstateCanonicalDisposition } from '../utils/realEstateDispositions.js';
+import { romanizeTranscript } from '../utils/transliteration.js';
 
 export interface RealEstateLeadRecord {
   id: string;
@@ -381,11 +382,44 @@ ${dialogueText.slice(0, 4000)}`;
       }
     }
 
+    // Commercial Type (Office Space, Retail Shop, Showroom, Warehouse, etc.)
+    if (!result.commercial_type) {
+      if (lowerText.includes('office space') || lowerText.includes('ऑफिस स्पेस') || lowerText.includes('office')) {
+        result.commercial_type = 'office space';
+        result.category = 'commercial';
+      } else if (lowerText.includes('retail shop') || lowerText.includes('shop') || lowerText.includes('दुकान')) {
+        result.commercial_type = 'retail shop';
+        result.category = 'commercial';
+      } else if (lowerText.includes('showroom') || lowerText.includes('शोरूम')) {
+        result.commercial_type = 'showroom';
+        result.category = 'commercial';
+      } else if (lowerText.includes('warehouse') || lowerText.includes('godown') || lowerText.includes('गोदाम')) {
+        result.commercial_type = 'warehouse';
+        result.category = 'commercial';
+      }
+    }
+
     // Category
     if (!result.category) {
-      if (lowerText.includes('कमर्शियल') || lowerText.includes('commercial')) {
+      if (
+        lowerText.includes('कमर्शियल') ||
+        lowerText.includes('commercial') ||
+        lowerText.includes('office') ||
+        lowerText.includes('ऑफिस') ||
+        lowerText.includes('shop') ||
+        lowerText.includes('retail') ||
+        lowerText.includes('showroom') ||
+        result.commercial_type
+      ) {
         result.category = 'commercial';
-      } else if (lowerText.includes('रेजिडेंशियल') || lowerText.includes('रेसिडेंशियल') || lowerText.includes('residential')) {
+      } else if (
+        lowerText.includes('रेजिडेंशियल') ||
+        lowerText.includes('रेसिडेंशियल') ||
+        lowerText.includes('residential') ||
+        lowerText.includes('flat') ||
+        lowerText.includes('bhk') ||
+        lowerText.includes('apartment')
+      ) {
         result.category = 'residential';
       }
     }
@@ -439,6 +473,15 @@ ${dialogueText.slice(0, 4000)}`;
       if (projMatch && projMatch[1]) {
         result.project_or_society = projMatch[1].trim();
       }
+    }
+
+    if (result.category === 'commercial' || result.commercial_type || (result.project_or_society && /commercial|office|shop|retail|showroom|warehouse/i.test(result.project_or_society))) {
+      result.category = 'commercial';
+      result.bhk_config = undefined;
+      result.commercial_type = result.commercial_type || 'Commercial Unit';
+    } else if (result.category === 'residential' || result.bhk_config) {
+      result.category = 'residential';
+      result.commercial_type = undefined;
     }
 
     return result;
@@ -498,9 +541,32 @@ ${dialogueText.slice(0, 4000)}`;
 
     // Sanitize category & intent to strictly adhere to Postgres CHECK constraints
     let cleanCategory: string | null = null;
-    if (data.category) {
+    const isCommercial = Boolean(
+      (data.commercial_type && !/residential/i.test(data.commercial_type)) ||
+      (data.category && /comm|office|shop|retail|showroom|warehouse|godown|industrial|space|sco|booth/i.test(data.category)) ||
+      (data.project_or_society && /commercial|office|shop|retail|showroom|warehouse|godown/i.test(data.project_or_society)) ||
+      (data.sector_or_location && /commercial|office|shop|retail|showroom|warehouse|godown/i.test(data.sector_or_location)) ||
+      (data.bhk_config && /office|shop|retail|showroom|commercial/i.test(data.bhk_config)) ||
+      (data.agent_summary && /commercial|office space|retail shop|showroom|warehouse/i.test(data.agent_summary))
+    );
+    const isResidential = Boolean(
+      data.bhk_config ||
+      (data.category && /res|flat|apartment|house|villa|plot|kothi|bhk|studio|penthouse|floor/i.test(data.category))
+    );
+
+    if (isCommercial) {
+      cleanCategory = 'commercial';
+      data.bhk_config = undefined;
+      if (!data.commercial_type || /residential/i.test(data.commercial_type)) {
+        data.commercial_type = 'Commercial Unit';
+      }
+    } else if (isResidential) {
+      cleanCategory = 'residential';
+      data.commercial_type = undefined;
+    } else if (data.category) {
       cleanCategory = data.category.toLowerCase().includes('comm') ? 'commercial' : 'residential';
     }
+
     let cleanIntent: string | null = null;
     if (data.intent) {
       cleanIntent = (data.intent.toLowerCase().includes('rent') || data.intent.toLowerCase().includes('lease')) ? 'lease' : 'sale';
@@ -543,8 +609,8 @@ ${dialogueText.slice(0, 4000)}`;
     const safeLocation = data.sector_or_location ? cleanToEnglishOnly(data.sector_or_location).slice(0, 255) : null;
     const safeUnit = data.unit_number ? cleanToEnglishOnly(String(data.unit_number)).slice(0, 64) : null;
     const safeFloor = data.floor_number ? cleanToEnglishOnly(String(data.floor_number)).slice(0, 64) : null;
-    const safeBhk = data.bhk_config ? cleanToEnglishOnly(data.bhk_config).slice(0, 64) : null;
-    const safeCommercialType = data.commercial_type ? cleanToEnglishOnly(data.commercial_type).slice(0, 64) : null;
+    const safeBhk = cleanCategory === 'commercial' ? null : (data.bhk_config ? cleanToEnglishOnly(data.bhk_config).slice(0, 64) : null);
+    const safeCommercialType = cleanCategory === 'residential' ? null : (data.commercial_type ? cleanToEnglishOnly(data.commercial_type).slice(0, 64) : null);
     const safeFurnishing = data.furnishing_status ? cleanToEnglishOnly(data.furnishing_status).slice(0, 64) : null;
     const safePrice = data.expected_sale_price ? cleanToEnglishOnly(String(data.expected_sale_price)).slice(0, 128) : null;
     const safeRent = data.expected_monthly_rent ? cleanToEnglishOnly(String(data.expected_monthly_rent)).slice(0, 128) : null;
@@ -552,6 +618,14 @@ ${dialogueText.slice(0, 4000)}`;
     const safeOwnerConfirmed = data.owner_name_confirmed ? cleanToEnglishOnly(data.owner_name_confirmed).slice(0, 255) : null;
 
     if (hasPropertyInfo) {
+      // Self-healing: ensure any existing records are consistently categorized
+      query(`
+        UPDATE real_estate_properties
+        SET category = 'commercial', bhk_config = NULL
+        WHERE (commercial_type IS NOT NULL OR LOWER(COALESCE(raw_notes, '')) LIKE '%commercial%' OR LOWER(COALESCE(raw_notes, '')) LIKE '%office%')
+          AND (category != 'commercial' OR category IS NULL OR bhk_config IS NOT NULL)
+      `).catch(() => {});
+
       const existingProp = await query(`SELECT id FROM real_estate_properties WHERE call_id = $1 LIMIT 1`, [callId]);
       if (existingProp.rows.length > 0) {
         propertyId = existingProp.rows[0].id;
@@ -563,8 +637,8 @@ ${dialogueText.slice(0, 4000)}`;
                sector_or_location = COALESCE($4, sector_or_location),
                unit_number = COALESCE($5, unit_number),
                floor_number = COALESCE($6, floor_number),
-               bhk_config = COALESCE($7, bhk_config),
-               commercial_type = COALESCE($8, commercial_type),
+               bhk_config = CASE WHEN $1 = 'commercial' THEN NULL ELSE COALESCE($7, bhk_config) END,
+               commercial_type = CASE WHEN $1 = 'residential' THEN NULL ELSE COALESCE($8, commercial_type) END,
                approx_area_sqft = COALESCE($9, approx_area_sqft),
                furnishing_status = COALESCE($10, furnishing_status),
                expected_sale_price = COALESCE($11, expected_sale_price),
@@ -613,8 +687,8 @@ ${dialogueText.slice(0, 4000)}`;
             safeLocation,
             safeUnit,
             safeFloor,
-            safeBhk,
-            safeCommercialType,
+            cleanCategory === 'commercial' ? null : safeBhk,
+            cleanCategory === 'residential' ? null : safeCommercialType,
             cleanArea,
             safeFurnishing,
             safePrice,
@@ -636,8 +710,9 @@ ${dialogueText.slice(0, 4000)}`;
       call.status
     );
 
-    // 3. Save real_estate_outcomes
-    const transcriptJson = data.transcript ? JSON.stringify(data.transcript) : null;
+    // 3. Save real_estate_outcomes (ensure customer dialogue is saved in clean Romanized Hindi)
+    const processedTranscript = data.transcript ? romanizeTranscript(data.transcript) : null;
+    const transcriptJson = processedTranscript ? JSON.stringify(processedTranscript) : null;
     const outcomeRes = await query(
       `INSERT INTO real_estate_outcomes (
          call_id, lead_id, property_id, final_disposition, is_interested,
@@ -781,6 +856,32 @@ ${dialogueText.slice(0, 4000)}`;
    */
   async autoBackfillMissingDetails() {
     try {
+      // Periodic self-healing: fix category, BHK, and commercial type for any commercial calls
+      await query(`
+        UPDATE real_estate_properties
+        SET category = 'commercial',
+            bhk_config = NULL,
+            commercial_type = COALESCE(
+              NULLIF(commercial_type, 'residential'),
+              CASE
+                WHEN LOWER(COALESCE(project_or_society, '')) LIKE '%office%' THEN 'Office Space'
+                WHEN LOWER(COALESCE(project_or_society, '')) LIKE '%shop%' THEN 'Retail Shop'
+                WHEN LOWER(COALESCE(project_or_society, '')) LIKE '%showroom%' THEN 'Showroom'
+                ELSE 'Commercial Unit'
+              END
+            )
+        WHERE (
+          LOWER(COALESCE(project_or_society, '')) LIKE '%commercial%' OR
+          LOWER(COALESCE(project_or_society, '')) LIKE '%office%' OR
+          LOWER(COALESCE(project_or_society, '')) LIKE '%shop%' OR
+          LOWER(COALESCE(project_or_society, '')) LIKE '%retail%' OR
+          LOWER(COALESCE(project_or_society, '')) LIKE '%showroom%' OR
+          LOWER(COALESCE(project_or_society, '')) LIKE '%warehouse%'
+        ) AND call_id NOT IN (
+          SELECT call_id FROM real_estate_properties WHERE LOWER(COALESCE(raw_notes, '')) LIKE '%residential%' AND bhk_config IS NOT NULL
+        )
+      `).catch(() => {});
+
       const candidates = await query(`
         SELECT c.id as call_id, ro.transcript, ro.property_id, rp.id as existing_prop_id
         FROM calls c

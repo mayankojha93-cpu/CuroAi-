@@ -104,6 +104,22 @@ class RealEstateState:
         Return the list of missing fields for the active branch in strict script order.
         Each item includes field id, descriptive label, and canonical question in EN & HI.
         """
+        # Auto-correct step if category or property type indicates commercial vs residential mismatch
+        if self.commercial_type or (self.category and self.category == "commercial"):
+            self.category = "commercial"
+            self.bhk_config = None  # Commercial units never have BHK
+            if self.step == RealEstateStep.RESIDENTIAL_SALE:
+                self.step = RealEstateStep.COMMERCIAL_SALE
+            elif self.step == RealEstateStep.RESIDENTIAL_LEASE:
+                self.step = RealEstateStep.COMMERCIAL_LEASE
+        elif self.bhk_config or (self.category and self.category == "residential"):
+            self.category = "residential"
+            self.commercial_type = None  # Residential properties never have commercial type
+            if self.step == RealEstateStep.COMMERCIAL_SALE:
+                self.step = RealEstateStep.RESIDENTIAL_SALE
+            elif self.step == RealEstateStep.COMMERCIAL_LEASE:
+                self.step = RealEstateStep.RESIDENTIAL_LEASE
+
         missing: List[Dict[str, str]] = []
 
         if self.step == RealEstateStep.RESIDENTIAL_SALE:

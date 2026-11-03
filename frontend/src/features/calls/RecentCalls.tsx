@@ -240,10 +240,25 @@ export const RecentCalls: React.FC<RecentCallsProps> = ({ calls, onSelectCall })
                   cleanCustomerName = 'Raja Nayak';
                 }
                 const cleanProjectSociety = cleanEnglishOnly((call as any).re_project_or_society);
+                const commType = (call as any).re_commercial_type;
+                const rawCat = (call as any).re_category;
+                const locStr = (call as any).re_sector_or_location || '';
+                const notesStr = (call as any).customer_note || '';
+                const bhkStr = (call as any).re_bhk_config || '';
+
+                const isComm = Boolean(
+                  (commType && String(commType).toLowerCase() !== 'residential') ||
+                  (rawCat && String(rawCat).toLowerCase().includes('comm')) ||
+                  (cleanProjectSociety && /commercial|office|shop|retail|showroom|warehouse|godown/i.test(cleanProjectSociety)) ||
+                  /commercial|office|shop|retail|showroom|warehouse|godown/i.test(locStr) ||
+                  /commercial|office|shop|retail|showroom|warehouse|godown/i.test(bhkStr) ||
+                  /commercial|office space|retail shop/i.test(notesStr)
+                );
+                const reCatDisplay = isComm ? 'Commercial' : 'Residential';
 
                 const contactHeader = isRealEstateCall && cleanCustomerName ? cleanCustomerName : (cleanCustomerName || phoneDisplay);
                 const contactSub = isRealEstateCall && cleanCustomerName
-                  ? `${phoneDisplay} • ${cleanProjectSociety || (call as any).re_category || 'Property Intake'}`
+                  ? `${phoneDisplay} • ${cleanProjectSociety || reCatDisplay}`
                   : (call.subs_del_no || (call as any).contact_ref || '—');
 
                 const campName = (call as any).campaign_name || (isRealEstateCall ? 'My Estate Finder' : 'Direct Voice Outreach');

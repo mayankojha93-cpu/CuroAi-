@@ -3,6 +3,7 @@ import { X, Phone, User, Bot, MessageSquare, Volume2, ShieldAlert } from 'lucide
 import type { CallRecord } from '../../types';
 import { fetchCallDetail } from '../../services/api.service';
 import { cleanEnglishOnly, formatVoicePipelineLabel } from '../../utils/textUtils';
+import { romanizeHindi } from '../../utils/transliteration';
 
 interface CallDetailModalProps {
   call: CallRecord | null;
@@ -277,86 +278,120 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
           </div>
 
           {/* Real Estate Property Intake Dossier (if real-estate call) */}
-          {isRealEstate && (
-            <div style={{
-              background: '#0F1524',
-              border: '1px solid rgba(139, 92, 246, 0.25)',
-              borderRadius: 12,
-              padding: 16,
-              boxShadow: '0 0 25px -5px rgba(139, 92, 246, 0.1)',
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-                <h4 style={{ fontSize: '0.78rem', color: '#A78BFA', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.05em', margin: 0 }}>
-                  🏡 My Estate Finder — Property Intake Dossier
-                </h4>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  {(activeCall as any).re_category && (
-                    <span style={{ background: 'rgba(139, 92, 246, 0.2)', color: '#C4B5FD', padding: '2px 8px', borderRadius: 4, fontSize: '0.72rem', fontWeight: 700 }}>
-                      {String((activeCall as any).re_category).toUpperCase()}
-                    </span>
-                  )}
-                  {(activeCall as any).re_intent && (
-                    <span style={{ background: 'rgba(56, 189, 248, 0.2)', color: '#7DD3FC', padding: '2px 8px', borderRadius: 4, fontSize: '0.72rem', fontWeight: 700 }}>
-                      {String((activeCall as any).re_intent).toUpperCase()}
-                    </span>
-                  )}
-                </div>
-              </div>
+          {isRealEstate && (() => {
+            const reCommType = (activeCall as any).re_commercial_type;
+            const reBhk = (activeCall as any).re_bhk_config;
+            const rawCategory = (activeCall as any).re_category;
+            const societyStr = (activeCall as any).re_project_or_society || '';
+            const locationStr = (activeCall as any).re_sector_or_location || '';
+            const notesStr = (activeCall as any).customer_note || '';
+            const bhkStr = (activeCall as any).re_bhk_config || '';
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, fontSize: '0.84rem' }}>
-                <div>
-                  <span style={{ color: '#94A3B8' }}>Society / Project: </span>
-                  <strong style={{ color: '#FFFFFF' }}>{(activeCall as any).re_project_or_society || '—'}</strong>
+            const isCommercial = Boolean(
+              (reCommType && String(reCommType).toLowerCase() !== 'residential') ||
+              (rawCategory && String(rawCategory).toLowerCase().includes('comm')) ||
+              /commercial|office|shop|retail|showroom|warehouse|godown/i.test(societyStr) ||
+              /commercial|office|shop|retail|showroom|warehouse|godown/i.test(locationStr) ||
+              /commercial|office|shop|retail|showroom|warehouse|godown/i.test(bhkStr) ||
+              /commercial|office space|retail shop/i.test(notesStr)
+            );
+            const effectiveCategory = isCommercial ? 'COMMERCIAL' : 'RESIDENTIAL';
+
+            return (
+              <div style={{
+                background: '#0F1524',
+                border: effectiveCategory === 'COMMERCIAL' ? '1px solid rgba(6, 182, 212, 0.3)' : '1px solid rgba(139, 92, 246, 0.25)',
+                borderRadius: 12,
+                padding: 16,
+                boxShadow: effectiveCategory === 'COMMERCIAL' ? '0 0 25px -5px rgba(6, 182, 212, 0.1)' : '0 0 25px -5px rgba(139, 92, 246, 0.1)',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                  <h4 style={{ fontSize: '0.78rem', color: effectiveCategory === 'COMMERCIAL' ? '#22D3EE' : '#A78BFA', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.05em', margin: 0 }}>
+                    🏡 My Estate Finder — Property Intake Dossier
+                  </h4>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {effectiveCategory && (
+                      <span style={{
+                        background: effectiveCategory === 'COMMERCIAL' ? 'rgba(6, 182, 212, 0.2)' : 'rgba(139, 92, 246, 0.2)',
+                        color: effectiveCategory === 'COMMERCIAL' ? '#22D3EE' : '#C4B5FD',
+                        padding: '2px 8px',
+                        borderRadius: 4,
+                        fontSize: '0.72rem',
+                        fontWeight: 700,
+                        border: effectiveCategory === 'COMMERCIAL' ? '1px solid rgba(6, 182, 212, 0.3)' : '1px solid rgba(139, 92, 246, 0.3)',
+                      }}>
+                        {effectiveCategory}
+                      </span>
+                    )}
+                    {(activeCall as any).re_intent && (
+                      <span style={{ background: 'rgba(56, 189, 248, 0.2)', color: '#7DD3FC', padding: '2px 8px', borderRadius: 4, fontSize: '0.72rem', fontWeight: 700 }}>
+                        {String((activeCall as any).re_intent).toUpperCase()}
+                      </span>
+                    )}
+                  </div>
                 </div>
-                <div>
-                  <span style={{ color: '#94A3B8' }}>Sector / Location: </span>
-                  <span style={{ color: '#E2E8F0' }}>{(activeCall as any).re_sector_or_location || '—'}</span>
-                </div>
-                <div>
-                  <span style={{ color: '#94A3B8' }}>Unit & Floor: </span>
-                  <span style={{ color: '#E2E8F0' }}>
-                    {[(activeCall as any).re_unit_number ? `Unit ${(activeCall as any).re_unit_number}` : '', (activeCall as any).re_floor_number ? `Floor ${(activeCall as any).re_floor_number}` : ''].filter(Boolean).join(', ') || '—'}
-                  </span>
-                </div>
-                <div>
-                  <span style={{ color: '#94A3B8' }}>Config / Type: </span>
-                  <span style={{ color: '#38BDF8', fontWeight: 600 }}>
-                    {(activeCall as any).re_bhk_config || (activeCall as any).re_commercial_type || ((activeCall as any).re_category === 'commercial' ? 'Commercial Unit' : ((activeCall as any).re_category === 'residential' ? 'Residential Property' : '—'))}
-                  </span>
-                </div>
-                <div>
-                  <span style={{ color: '#94A3B8' }}>Approx Area: </span>
-                  <span style={{ color: '#E2E8F0' }}>{(activeCall as any).re_approx_area_sqft ? `${(activeCall as any).re_approx_area_sqft} sq ft` : '—'}</span>
-                </div>
-                <div>
-                  <span style={{ color: '#94A3B8' }}>Furnishing: </span>
-                  <span style={{ color: '#E2E8F0' }}>{(activeCall as any).re_furnishing_status || '—'}</span>
-                </div>
-                <div>
-                  <span style={{ color: '#94A3B8' }}>Expected Price / Rent: </span>
-                  <strong style={{ color: '#34D399' }}>
-                    {(activeCall as any).re_expected_sale_price || (activeCall as any).re_expected_monthly_rent || '—'}
-                  </strong>
-                </div>
-                <div>
-                  <span style={{ color: '#94A3B8' }}>Immediate Occupancy: </span>
-                  <span style={{ color: '#E2E8F0' }}>
-                    {(activeCall as any).re_immediate_occupancy === true ? 'Yes' : ((activeCall as any).re_immediate_occupancy === false ? 'No' : '—')}
-                  </span>
-                </div>
-                {(activeCall as any).re_is_currently_leased !== undefined && (activeCall as any).re_is_currently_leased !== null && (
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, fontSize: '0.84rem' }}>
                   <div>
-                    <span style={{ color: '#94A3B8' }}>Current Lease Status: </span>
+                    <span style={{ color: '#94A3B8' }}>Society / Project: </span>
+                    <strong style={{ color: '#FFFFFF' }}>{(activeCall as any).re_project_or_society || '—'}</strong>
+                  </div>
+                  <div>
+                    <span style={{ color: '#94A3B8' }}>Sector / Location: </span>
+                    <span style={{ color: '#E2E8F0' }}>{(activeCall as any).re_sector_or_location || '—'}</span>
+                  </div>
+                  <div>
+                    <span style={{ color: '#94A3B8' }}>Unit & Floor: </span>
                     <span style={{ color: '#E2E8F0' }}>
-                      {(activeCall as any).re_is_currently_leased
-                        ? `Leased out${(activeCall as any).re_current_rent_received ? ` (${(activeCall as any).re_current_rent_received})` : ''}`
-                        : 'Vacant'}
+                      {[(activeCall as any).re_unit_number ? `Unit ${(activeCall as any).re_unit_number}` : '', (activeCall as any).re_floor_number ? `Floor ${(activeCall as any).re_floor_number}` : ''].filter(Boolean).join(', ') || '—'}
                     </span>
                   </div>
-                )}
+                  <div>
+                    <span style={{ color: '#94A3B8' }}>Config / Type: </span>
+                    <span style={{ color: '#38BDF8', fontWeight: 600 }}>
+                      {isCommercial
+                        ? ((reCommType && String(reCommType).toLowerCase() !== 'residential' ? reCommType : null)
+                            || (/office/i.test(societyStr) || /office/i.test(notesStr) || /office/i.test(bhkStr) ? 'office space' : null)
+                            || (/shop/i.test(societyStr) || /shop/i.test(notesStr) ? 'retail shop' : null)
+                            || (/showroom/i.test(societyStr) ? 'showroom' : null)
+                            || 'Commercial Unit')
+                        : (reBhk || 'Residential Property')}
+                    </span>
+                  </div>
+                  <div>
+                    <span style={{ color: '#94A3B8' }}>Approx Area: </span>
+                    <span style={{ color: '#E2E8F0' }}>{(activeCall as any).re_approx_area_sqft ? `${(activeCall as any).re_approx_area_sqft} sq ft` : '—'}</span>
+                  </div>
+                  <div>
+                    <span style={{ color: '#94A3B8' }}>Furnishing: </span>
+                    <span style={{ color: '#E2E8F0' }}>{(activeCall as any).re_furnishing_status || '—'}</span>
+                  </div>
+                  <div>
+                    <span style={{ color: '#94A3B8' }}>Expected Price / Rent: </span>
+                    <strong style={{ color: '#34D399' }}>
+                      {(activeCall as any).re_expected_sale_price || (activeCall as any).re_expected_monthly_rent || '—'}
+                    </strong>
+                  </div>
+                  <div>
+                    <span style={{ color: '#94A3B8' }}>Immediate Occupancy: </span>
+                    <span style={{ color: '#E2E8F0' }}>
+                      {(activeCall as any).re_immediate_occupancy === true ? 'Yes' : ((activeCall as any).re_immediate_occupancy === false ? 'No' : '—')}
+                    </span>
+                  </div>
+                  {(activeCall as any).re_is_currently_leased !== undefined && (activeCall as any).re_is_currently_leased !== null && (
+                    <div>
+                      <span style={{ color: '#94A3B8' }}>Current Lease Status: </span>
+                      <span style={{ color: '#E2E8F0' }}>
+                        {(activeCall as any).re_is_currently_leased
+                          ? `Leased out${(activeCall as any).re_current_rent_received ? ` (${(activeCall as any).re_current_rent_received})` : ''}`
+                          : 'Vacant'}
+                      </span>
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* Customer & Address Details */}
           <div style={{
@@ -528,7 +563,8 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
                   const speakerStr = (item.speaker || '').toLowerCase();
                   const isBot = roleStr === 'assistant' || speakerStr === 'agent' || speakerStr === 'assistant';
                   const isSystem = roleStr === 'system';
-                  const text = item.message || item.text || item.content || '';
+                  const rawText = item.message || item.text || item.content || '';
+                  const text = !isBot && !isSystem ? romanizeHindi(rawText) : rawText;
 
                   if (isSystem) {
                     return (

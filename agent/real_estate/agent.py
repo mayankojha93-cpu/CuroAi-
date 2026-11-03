@@ -1,4 +1,5 @@
 import re
+import asyncio
 import logging
 from livekit.agents import Agent, StopResponse
 from src.carrier_filter import classify_carrier_message
@@ -43,8 +44,49 @@ class RealEstateAgent(Agent):
             logger.info(f"⚠️ Impatience pattern detected in caller utterance: '{text}'")
             state.impatient_detected = True
 
+        # Proactively detect category & intent directly from caller utterance
+        from .tools import classify_category, classify_intent
+        from .state import RealEstateStep
+
+        detected_cat = classify_category(text)
+        detected_int = classify_intent(text)
+        step_changed = False
+
+        if detected_cat:
+            old_cat = state.category
+            state.category = detected_cat
+            if detected_cat == "commercial":
+                state.bhk_config = None
+                if state.step == RealEstateStep.RESIDENTIAL_SALE:
+                    state.step = RealEstateStep.COMMERCIAL_SALE
+                    step_changed = True
+                elif state.step == RealEstateStep.RESIDENTIAL_LEASE:
+                    state.step = RealEstateStep.COMMERCIAL_LEASE
+                    step_changed = True
+            elif detected_cat == "residential":
+                state.commercial_type = None
+                if state.step == RealEstateStep.COMMERCIAL_SALE:
+                    state.step = RealEstateStep.RESIDENTIAL_SALE
+                    step_changed = True
+                elif state.step == RealEstateStep.COMMERCIAL_LEASE:
+                    state.step = RealEstateStep.RESIDENTIAL_LEASE
+                    step_changed = True
+            if old_cat != detected_cat:
+                logger.info(f"🏷️ Proactively recognized property category: '{detected_cat}' from utterance: '{text}'")
+
+        if detected_int and not state.intent:
+            state.intent = detected_int
+            logger.info(f"🎯 Proactively recognized intent: '{detected_int}' from utterance: '{text}'")
+
+        if state.step == RealEstateStep.CATEGORY_SELECT and state.category and state.intent:
+            if state.category == "commercial":
+                state.step = RealEstateStep.COMMERCIAL_SALE if state.intent != "lease" else RealEstateStep.COMMERCIAL_LEASE
+            else:
+                state.step = RealEstateStep.RESIDENTIAL_SALE if state.intent != "lease" else RealEstateStep.RESIDENTIAL_LEASE
+            step_changed = True
+
         lang_switched = state.update_reply_lang(text)
-        if lang_switched or state.impatient_detected:
+        if lang_switched or state.impatient_detected or step_changed:
             lang = state.reply_lang
             if lang_switched:
                 logger.info(f"🌐 Customer switched language -> {lang}")
@@ -53,10 +95,22 @@ class RealEstateAgent(Agent):
                         self.on_language_change(lang)
                     except Exception as e:
                         logger.warning(f"Language switch callback failed: {e}")
-            try:
-                await self.update_instructions(get_step_instructions(state))
-            except Exception as e:
-                logger.warning(f"Failed to refresh instructions: {e}")
+
+            # LATENCY: run instruction/tool refresh as a background task so LLM dispatch is not blocked.
+            # The LLM sees the updated instructions on the *next* turn (preemptive generation re-uses them
+            # after the task completes, which is near-instant for simple state changes).
+            _step_changed = step_changed
+            _agent = self
+
+            async def _refresh_instructions():
+                try:
+                    await _agent.update_instructions(get_step_instructions(state))
+                    if _step_changed:
+                        await _agent.update_tools(_agent._re_tools.tools_for_step(state.step))
+                except Exception as e:
+                    logger.warning(f"Failed to refresh instructions/tools: {e}")
+
+            asyncio.create_task(_refresh_instructions())
 
     async def llm_node(self, chat_ctx, tools, model_settings):
         """Prevent hallucinated second tool call when last item was tool output."""

@@ -19,6 +19,7 @@ import {
   TERMINAL_DISPOSITIONS,
 } from '../utils/dispositions.js';
 import { matchRealEstateDisposition } from '../utils/realEstateDispositions.js';
+import { romanizeTranscript } from '../utils/transliteration.js';
 
 export interface CallRecord {
   id: string;
@@ -635,7 +636,7 @@ export class CallService {
       }
     }
 
-    const transcriptJson = data.transcript ? JSON.stringify(data.transcript) : null;
+    const transcriptJson = data.transcript ? JSON.stringify(romanizeTranscript(data.transcript)) : null;
     const baseOutcome = data.outcome || finalDisp.toLowerCase();
 
     const outcomeRes = await query(
@@ -1151,10 +1152,55 @@ export class CallService {
               co.address_confirmed, co.new_address,
               COALESCE(co.transcript, ro.transcript) as transcript,
               COALESCE(co.customer_note, ro.agent_summary) as customer_note,
-              rp.category as re_category, rp.intent as re_intent,
+              CASE
+                WHEN (rp.commercial_type IS NOT NULL AND LOWER(rp.commercial_type) != 'residential')
+                  OR LOWER(COALESCE(rp.category, '')) = 'commercial'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%office%'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%shop%'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%retail%'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%showroom%'
+                  OR LOWER(COALESCE(rp.sector_or_location, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(rp.raw_notes, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(rp.raw_notes, '')) LIKE '%office%'
+                  OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%office%'
+                  THEN 'commercial'
+                ELSE 'residential'
+              END as re_category,
+              rp.intent as re_intent,
               rp.project_or_society as re_project_or_society, rp.sector_or_location as re_sector_or_location,
               rp.unit_number as re_unit_number, rp.floor_number as re_floor_number,
-              rp.bhk_config as re_bhk_config, rp.commercial_type as re_commercial_type,
+              CASE
+                WHEN (rp.commercial_type IS NOT NULL AND LOWER(rp.commercial_type) != 'residential')
+                  OR LOWER(COALESCE(rp.category, '')) = 'commercial'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%office%'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%shop%'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%retail%'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%showroom%'
+                  OR LOWER(COALESCE(rp.sector_or_location, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(rp.raw_notes, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(rp.raw_notes, '')) LIKE '%office%'
+                  OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%office%'
+                  THEN NULL
+                ELSE rp.bhk_config
+              END as re_bhk_config,
+              CASE
+                WHEN rp.commercial_type IS NOT NULL AND LOWER(rp.commercial_type) != 'residential' THEN rp.commercial_type
+                WHEN LOWER(COALESCE(rp.project_or_society, '')) LIKE '%office%' THEN 'Office Space'
+                WHEN LOWER(COALESCE(rp.project_or_society, '')) LIKE '%shop%' THEN 'Retail Shop'
+                WHEN LOWER(COALESCE(rp.project_or_society, '')) LIKE '%showroom%' THEN 'Showroom'
+                WHEN LOWER(COALESCE(rp.category, '')) = 'commercial'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(rp.sector_or_location, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(rp.raw_notes, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%office%'
+                  THEN 'Commercial Unit'
+                ELSE NULL
+              END as re_commercial_type,
               rp.approx_area_sqft as re_approx_area_sqft, rp.furnishing_status as re_furnishing_status,
               rp.expected_sale_price as re_expected_sale_price, rp.expected_monthly_rent as re_expected_monthly_rent,
               rp.is_currently_leased as re_is_currently_leased, rp.current_rent_received as re_current_rent_received,
@@ -1194,6 +1240,7 @@ export class CallService {
 
     return {
       ...row,
+      transcript: romanizeTranscript(row.transcript),
       final_disposition: finalDisp,
     };
   }
@@ -1237,10 +1284,55 @@ export class CallService {
               co.confirmed_date, co.pickup_date,
               COALESCE(co.transcript, ro.transcript) as transcript,
               COALESCE(co.customer_note, ro.agent_summary) as customer_note,
-              rp.category as re_category, rp.intent as re_intent,
+              CASE
+                WHEN (rp.commercial_type IS NOT NULL AND LOWER(rp.commercial_type) != 'residential')
+                  OR LOWER(COALESCE(rp.category, '')) = 'commercial'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%office%'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%shop%'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%retail%'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%showroom%'
+                  OR LOWER(COALESCE(rp.sector_or_location, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(rp.raw_notes, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(rp.raw_notes, '')) LIKE '%office%'
+                  OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%office%'
+                  THEN 'commercial'
+                ELSE 'residential'
+              END as re_category,
+              rp.intent as re_intent,
               rp.project_or_society as re_project_or_society, rp.sector_or_location as re_sector_or_location,
               rp.unit_number as re_unit_number, rp.floor_number as re_floor_number,
-              rp.bhk_config as re_bhk_config, rp.commercial_type as re_commercial_type,
+              CASE
+                WHEN (rp.commercial_type IS NOT NULL AND LOWER(rp.commercial_type) != 'residential')
+                  OR LOWER(COALESCE(rp.category, '')) = 'commercial'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%office%'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%shop%'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%retail%'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%showroom%'
+                  OR LOWER(COALESCE(rp.sector_or_location, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(rp.raw_notes, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(rp.raw_notes, '')) LIKE '%office%'
+                  OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%office%'
+                  THEN NULL
+                ELSE rp.bhk_config
+              END as re_bhk_config,
+              CASE
+                WHEN rp.commercial_type IS NOT NULL AND LOWER(rp.commercial_type) != 'residential' THEN rp.commercial_type
+                WHEN LOWER(COALESCE(rp.project_or_society, '')) LIKE '%office%' THEN 'Office Space'
+                WHEN LOWER(COALESCE(rp.project_or_society, '')) LIKE '%shop%' THEN 'Retail Shop'
+                WHEN LOWER(COALESCE(rp.project_or_society, '')) LIKE '%showroom%' THEN 'Showroom'
+                WHEN LOWER(COALESCE(rp.category, '')) = 'commercial'
+                  OR LOWER(COALESCE(rp.project_or_society, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(rp.sector_or_location, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(rp.raw_notes, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%commercial%'
+                  OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%office%'
+                  THEN 'Commercial Unit'
+                ELSE NULL
+              END as re_commercial_type,
               rp.approx_area_sqft as re_approx_area_sqft, rp.furnishing_status as re_furnishing_status,
               rp.expected_sale_price as re_expected_sale_price, rp.expected_monthly_rent as re_expected_monthly_rent,
               rp.is_currently_leased as re_is_currently_leased, rp.current_rent_received as re_current_rent_received,

@@ -81,3 +81,7 @@ MANIFEST
 *.bin
 *.log
 logs/
+
+# Database dumps and backups
+*.dump
+*backup*.sql
