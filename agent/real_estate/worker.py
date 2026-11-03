@@ -190,7 +190,7 @@ async def entrypoint(ctx: agents.JobContext):
         temperature=TTS_TEMPERATURE,
         pitch=TTS_PITCH,
         loudness=TTS_LOUDNESS,
-        enable_preprocessing=True,
+        enable_preprocessing=False,  # LATENCY: text from LLM is already clean; preprocessing adds ~50–150ms
         api_key=SARVAM_API_KEY,
     )
 
