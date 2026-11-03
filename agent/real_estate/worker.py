@@ -35,6 +35,7 @@ from .config import (
 from .state import RealEstateState, RealEstateStep
 from .agent import RealEstateAgent
 from .tools import RealEstateTools
+from src.transliteration import romanize_hindi
 
 server = AgentServer()
 
@@ -72,19 +73,38 @@ def post_re_outcome_sync(state: RealEstateState) -> bool:
     if duration <= 0 and len(state.transcript) >= 2:
         duration = max(5, int(time.time() - state.start_time))
 
+    is_comm = (
+        state.category == "commercial"
+        or bool(state.commercial_type)
+        or bool(state.project_or_society and any(w in state.project_or_society.lower() for w in ["commercial", "office", "shop", "retail", "showroom", "warehouse"]))
+        or bool(state.sector_or_location and any(w in state.sector_or_location.lower() for w in ["commercial", "office", "shop", "retail", "showroom", "warehouse"]))
+    )
+    if is_comm:
+        category_val = "commercial"
+        bhk_val = None
+        comm_val = state.commercial_type or "Commercial Unit"
+    elif state.category == "residential" or state.bhk_config:
+        category_val = "residential"
+        bhk_val = state.bhk_config
+        comm_val = None
+    else:
+        category_val = state.category
+        bhk_val = state.bhk_config
+        comm_val = state.commercial_type
+
     payload = {
         "lead_id": state.lead_id,
         "final_disposition": state.final_disposition,
         "is_interested": state.is_interested,
         "owner_name_confirmed": state.owner_name_confirmed or state.owner_name,
-        "category": state.category,
+        "category": category_val,
         "intent": state.intent,
         "project_or_society": state.project_or_society,
         "sector_or_location": state.sector_or_location,
         "unit_number": state.unit_number,
         "floor_number": state.floor_number,
-        "bhk_config": state.bhk_config,
-        "commercial_type": state.commercial_type,
+        "bhk_config": bhk_val,
+        "commercial_type": comm_val,
         "approx_area_sqft": state.approx_area_sqft,
         "furnishing_status": state.furnishing_status,
         "expected_sale_price": state.expected_sale_price,
@@ -281,10 +301,11 @@ async def entrypoint(ctx: agents.JobContext):
         is_final = getattr(ev, "is_final", True)
         if is_final and raw_text and raw_text.strip():
             clean_text = raw_text.strip()
+            romanized_text = romanize_hindi(clean_text)
             state.callee_connected = True
             state.last_activity_time = time.time()
-            logger.info(f"🗣️ [Customer]: \"{clean_text}\"")
-            state.add_transcript("customer", clean_text)
+            logger.info(f"🗣️ [Customer]: \"{romanized_text}\"")
+            state.add_transcript("customer", romanized_text)
 
     @session.on("conversation_item_added")
     def on_conversation_item(ev):
