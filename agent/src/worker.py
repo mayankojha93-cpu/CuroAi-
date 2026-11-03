@@ -27,6 +27,7 @@ from src.state import Step, ConversationState
 from src.lang import L
 from src.agent import AirtelAgent
 from src.carrier_filter import classify_carrier_message
+from src.transliteration import romanize_hindi
 from src.tools import AgentTools
 from src.utils import silence_watchdog, clean_hangup
 from src.tools.api import post_outcome_to_backend, register_inbound_call_to_backend
@@ -372,10 +373,11 @@ async def entrypoint(ctx: agents.JobContext):
                 return
 
             clean_text = raw_text.strip()
+            romanized_text = romanize_hindi(clean_text)
             timing_tracker["stt_final"] = time.time()
             state.stt_retry_count = 0  # Reset on successful transcription
-            logger.info(f"🗣️ [Customer]: \"{clean_text}\"")
-            state.add_transcript("customer", clean_text)
+            logger.info(f"🗣️ [Customer]: \"{romanized_text}\"")
+            state.add_transcript("customer", romanized_text)
             state.silence_count = 0
 
             # Follow the customer's language as early as possible (before the LLM reply is generated)
