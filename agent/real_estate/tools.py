@@ -8,6 +8,50 @@ from .prompts import get_step_instructions
 
 logger = logging.getLogger("real-estate-tools")
 
+COMMERCIAL_KEYWORDS = (
+    "commercial", "कमर्शियल", "office", "ऑफिस", "shop", "दुकान", "dukan", "dukaan",
+    "retail", "showroom", "शोरूम", "warehouse", "godown", "गोदाम", "godam",
+    "industrial", "business park", "it park", "tech park", "office space",
+    "commercial space", "commercial project", "commercial building", "sco", "booth", "workstation"
+)
+RESIDENTIAL_KEYWORDS = (
+    "residential", "रेजिडेंशियल", "रेसिडेंशियल", "flat", "फ्लैट", "apartment", "अपार्टमेंट",
+    "house", "makaan", "makan", "मकान", "ghar", "घर", "villa", "विला", "plot", "प्लॉट",
+    "kothi", "कोठी", "bhk", "बीएचके", "studio", "penthouse", "floor", "builder floor", "duplex"
+)
+
+
+def classify_category(val: Any) -> Optional[str]:
+    if not val:
+        return None
+    val_low = str(val).lower().strip()
+    has_comm = any(kw in val_low for kw in COMMERCIAL_KEYWORDS)
+    has_res = any(kw in val_low for kw in RESIDENTIAL_KEYWORDS)
+    if has_comm and not has_res:
+        return "commercial"
+    if has_res and not has_comm:
+        return "residential"
+    if has_comm and has_res:
+        if any(neg in val_low for neg in ("not residential", "not res", "residential nahi")):
+            return "commercial"
+        if any(neg in val_low for neg in ("not commercial", "not comm", "commercial nahi")):
+            return "residential"
+        if any(k in val_low for k in ("office", "shop", "retail", "showroom", "warehouse", "godown")):
+            return "commercial"
+        return "commercial" if "commercial" in val_low else "residential"
+    return None
+
+
+def classify_intent(val: Any) -> Optional[str]:
+    if not val:
+        return None
+    val_low = str(val).lower().strip()
+    if any(k in val_low for k in ("rent", "lease", "renting", "leasing", "kiraya")):
+        return "lease"
+    if any(k in val_low for k in ("sell", "sale", "selling", "bechna", "bech")):
+        return "sale"
+    return None
+
 
 def _clean_str(val: Any) -> Optional[str]:
     if val is None:
@@ -47,18 +91,13 @@ class RealEstateTools:
     ) -> str:
         """Call when customer confirms they are interested in selling or renting their property."""
         self.state.is_interested = True
-        if intent:
-            low = intent.lower()
-            if "rent" in low or "lease" in low:
-                self.state.intent = "lease"
-            elif "sell" in low or "sale" in low:
-                self.state.intent = "sale"
-        if category:
-            low_c = category.lower()
-            if "comm" in low_c or "shop" in low_c or "office" in low_c:
-                self.state.category = "commercial"
-            elif "res" in low_c or "flat" in low_c or "apartment" in low_c:
-                self.state.category = "residential"
+        classified_intent = classify_intent(intent)
+        if classified_intent:
+            self.state.intent = classified_intent
+
+        classified_cat = classify_category(category)
+        if classified_cat:
+            self.state.category = classified_cat
 
         await self._go(RealEstateStep.OWNER_NAME)
         return "Customer confirmed interest. Ask for owner name for our records."
@@ -73,7 +112,7 @@ class RealEstateTools:
             if self.state.category == "residential" and self.state.intent == "sale":
                 await self._go(RealEstateStep.RESIDENTIAL_SALE)
             elif self.state.category == "residential" and self.state.intent == "lease":
-                await self._go(RealEstateStep.RESIDENTIAL_RENT)
+                await self._go(RealEstateStep.RESIDENTIAL_LEASE)
             elif self.state.category == "commercial" and self.state.intent == "sale":
                 await self._go(RealEstateStep.COMMERCIAL_SALE)
             elif self.state.category == "commercial" and self.state.intent == "lease":
@@ -94,13 +133,13 @@ class RealEstateTools:
         intent: Optional[str] = None,
     ) -> str:
         """Set property category (residential/commercial) and intent (sale/lease/rent)."""
-        if category:
-            cat_low = "commercial" if "comm" in category.lower() else "residential"
-            self.state.category = cat_low
+        classified_cat = classify_category(category)
+        if classified_cat:
+            self.state.category = classified_cat
 
-        if intent:
-            int_low = "lease" if ("rent" in intent.lower() or "lease" in intent.lower()) else "sale"
-            self.state.intent = int_low
+        classified_int = classify_intent(intent)
+        if classified_int:
+            self.state.intent = classified_int
 
         # If both category and intent are established, transition to the respective branch 4.1 to 4.4
         if self.state.category and self.state.intent:
@@ -127,6 +166,7 @@ class RealEstateTools:
     @function_tool
     async def save_property_details(
         self,
+        category: Optional[str] = None,
         project_or_society: Optional[str] = None,
         sector_or_location: Optional[str] = None,
         unit_number: Optional[str] = None,
@@ -165,6 +205,25 @@ class RealEstateTools:
         clean_comm = _clean_str(commercial_type)
         if clean_comm:
             self.state.commercial_type = clean_comm
+
+        # Dynamic category switching and step realignment
+        cat_hint = classify_category(category) or (classify_category(clean_comm) if clean_comm else None)
+        if clean_comm or cat_hint == "commercial":
+            self.state.category = "commercial"
+            self.state.bhk_config = None  # Commercial properties never have BHK
+            if self.state.step in (RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.CATEGORY_SELECT):
+                target_step = RealEstateStep.COMMERCIAL_SALE if (self.state.intent != "lease") else RealEstateStep.COMMERCIAL_LEASE
+                await self._go(target_step)
+            elif self.state.step == RealEstateStep.RESIDENTIAL_LEASE:
+                await self._go(RealEstateStep.COMMERCIAL_LEASE)
+        elif clean_bhk or cat_hint == "residential":
+            self.state.category = "residential"
+            self.state.commercial_type = None  # Residential properties never have commercial type
+            if self.state.step in (RealEstateStep.COMMERCIAL_SALE, RealEstateStep.CATEGORY_SELECT):
+                target_step = RealEstateStep.RESIDENTIAL_SALE if (self.state.intent != "lease") else RealEstateStep.RESIDENTIAL_LEASE
+                await self._go(target_step)
+            elif self.state.step == RealEstateStep.COMMERCIAL_LEASE:
+                await self._go(RealEstateStep.RESIDENTIAL_LEASE)
 
         if approx_area_sqft is not None:
             try:
