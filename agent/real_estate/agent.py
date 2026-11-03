@@ -6,6 +6,13 @@ from src.carrier_filter import classify_carrier_message
 from .prompts import get_step_instructions
 from .state import RealEstateState
 
+# Compiled once at import time — used by tts_node guard to strip leaked tool/code tokens.
+_TTS_INLINE_BLOCK_RE = re.compile(r'\b[a-zA-Z_][a-zA-Z0-9_]*\s*\{[^}]*\}')        # close_call{} / func{}
+_TTS_FUNC_CALL_RE   = re.compile(r'\b[a-zA-Z_][a-zA-Z0-9_]+\s*\([^)]{0,120}\)')   # save_details(...) / func(...)
+_TTS_SNAKE_ID_RE    = re.compile(r'\b[a-zA-Z_][a-zA-Z0-9]*(?:_[a-zA-Z0-9]+)+\b')  # snake_case_identifier (2+ underscores)
+_TTS_MULTI_SPACE_RE = re.compile(r'[ \t]{2,}')
+
+
 logger = logging.getLogger("real-estate-agent")
 
 
@@ -96,21 +103,27 @@ class RealEstateAgent(Agent):
                     except Exception as e:
                         logger.warning(f"Language switch callback failed: {e}")
 
-            # LATENCY: run instruction/tool refresh as a background task so LLM dispatch is not blocked.
-            # The LLM sees the updated instructions on the *next* turn (preemptive generation re-uses them
-            # after the task completes, which is near-instant for simple state changes).
-            _step_changed = step_changed
-            _agent = self
-
-            async def _refresh_instructions():
+            if step_changed:
+                # MUST be synchronous: the tool set changes, so the LLM must see the correct
+                # tools *before* it starts generating. Running this as a background task causes
+                # the LLM to run with stale tools, which leads to wrong step transitions and
+                # premature closings (issues #1 and #2).
                 try:
-                    await _agent.update_instructions(get_step_instructions(state))
-                    if _step_changed:
-                        await _agent.update_tools(_agent._re_tools.tools_for_step(state.step))
+                    await self.update_instructions(get_step_instructions(state))
+                    await self.update_tools(self._re_tools.tools_for_step(state.step))
+                    logger.info(f"Step sync'd ({state.step.value}): instructions + tools updated.")
                 except Exception as e:
-                    logger.warning(f"Failed to refresh instructions/tools: {e}")
-
-            asyncio.create_task(_refresh_instructions())
+                    logger.warning(f"Failed to refresh instructions/tools on step change: {e}")
+            else:
+                # Instruction-only refresh (language switch / impatience): tool set stays the same,
+                # so it is safe to run as a background task without delaying LLM dispatch.
+                _agent = self
+                async def _refresh_lang_instructions():
+                    try:
+                        await _agent.update_instructions(get_step_instructions(state))
+                    except Exception as e:
+                        logger.warning(f"Failed to refresh instructions: {e}")
+                asyncio.create_task(_refresh_lang_instructions())
 
     async def llm_node(self, chat_ctx, tools, model_settings):
         """Prevent hallucinated second tool call when last item was tool output."""
@@ -121,16 +134,23 @@ class RealEstateAgent(Agent):
             yield chunk
 
     def tts_node(self, text, model_settings):
-        """Safety net to prevent raw JSON tool payloads or tool leaks like close_call{} from being spoken."""
+        """Safety net: prevent JSON blobs, tool call syntax, snake_case identifiers, and
+        bare function names from being passed to TTS and spoken as garbled code words."""
         async def guard():
             checked, drop = False, False
             async for chunk in text:
                 if not checked and chunk.strip():
                     checked = True
-                    drop = chunk.lstrip().startswith("{")
+                    stripped = chunk.lstrip()
+                    # Drop entire chunk if it opens with JSON or a bare function-call token
+                    drop = stripped.startswith("{") or bool(
+                        re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*\s*[\(\{]', stripped)
+                    )
                 if not drop:
-                    # Clean any leaked tool call syntax like close_call{} or func_name(...)
-                    cleaned = re.sub(r'\b[a-zA-Z_][a-zA-Z0-9_]*\s*\{[^}]*\}', '', chunk)
+                    cleaned = _TTS_INLINE_BLOCK_RE.sub('', chunk)   # close_call{} style leaks
+                    cleaned = _TTS_FUNC_CALL_RE.sub('', cleaned)     # save_details(...) style leaks
+                    cleaned = _TTS_SNAKE_ID_RE.sub('', cleaned)      # snake_case identifier leaks
+                    cleaned = _TTS_MULTI_SPACE_RE.sub(' ', cleaned).strip()
                     if cleaned:
                         yield cleaned
 
