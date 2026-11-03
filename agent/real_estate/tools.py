@@ -401,12 +401,14 @@ class RealEstateTools:
         return "Wrong number identified. Apologize politely and conclude."
 
     async def _delayed_hangup(self):
-        """Wait for closing speech playout through TTS to the caller phone, then disconnect cleanly."""
+        """Wait for closing speech playout through TTS to the caller phone, then disconnect cleanly.
+        Closing line is ~2s of audio; 3.5s gives a comfortable 1.5s buffer without dead air.
+        """
         if self._hangup_scheduled:
             return
         self._hangup_scheduled = True
-        logger.info("Delayed hangup scheduled: waiting 6.5s for TTS speech playout...")
-        await asyncio.sleep(6.5)
+        logger.info("Delayed hangup scheduled: waiting 3.5s for TTS speech playout...")
+        await asyncio.sleep(3.5)  # LATENCY: was 6.5s — closing line is ~2s; 3.5s is enough buffer
         if self.hangup_func:
             await self.hangup_func()
 
