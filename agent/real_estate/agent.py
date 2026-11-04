@@ -6,18 +6,33 @@ from src.carrier_filter import classify_carrier_message
 from .prompts import get_step_instructions
 from .state import RealEstateState
 
-# Compiled once at import time — used by tts_node guard to strip leaked tool/code tokens.
-_TTS_INLINE_BLOCK_RE = re.compile(r'\b[a-zA-Z_][a-zA-Z0-9_]*\s*\{[^}]*\}')        # close_call{} / func{}
-_TTS_FUNC_CALL_RE   = re.compile(r'\b[a-zA-Z_][a-zA-Z0-9_]+\s*\([^)]{0,120}\)')   # save_details(...) / func(...)
-_TTS_SNAKE_ID_RE    = re.compile(r'\b[a-zA-Z_][a-zA-Z0-9]*(?:_[a-zA-Z0-9]+)+\b')  # snake_case_identifier (2+ underscores)
-_TTS_MULTI_SPACE_RE = re.compile(r'[ \t]{2,}')
+# Leak patterns for tool-call text that the LLM sometimes types instead of calling the tool.
+_LEAK_PATTERNS = [
+    re.compile(r'<function[^>]*>.*?(?:</function>|$)', re.S),               # <function=x>{...}</function>
+    re.compile(r'\b[A-Za-z]+(?:_[A-Za-z0-9]+)+\s*[\(\{][^)}]*[\)\}]?'),     # tool_name(...) / tool_name{...}
+    re.compile(r'\b[A-Za-z]+(?:_[A-Za-z0-9]+)+\b'),                        # lone snake_case identifiers
+    re.compile(r'^\s*\{.*$', re.S),                                         # JSON blobs
+]
+
+
+def _clean_leaks(s: str) -> str:
+    for p in _LEAK_PATTERNS:
+        s = p.sub('', s)
+    return s
+
+
+def _call_open(buf: str) -> bool:
+    """True while a call-like region ((...), {...}, <function>...) is still unclosed."""
+    if "<function" in buf and "</function>" not in buf:
+        return True
+    return any(buf.count(a) > buf.count(b) for a, b in (("(", ")"), ("{", "}"), ("<", ">")))
 
 
 logger = logging.getLogger("real-estate-agent")
 
 
 class RealEstateAgent(Agent):
-    """Voice agent for My Estate Finder property intake (Sagar)."""
+    """Voice agent for My Estate Finder property intake (Priya)."""
 
     def __init__(self, state: RealEstateState, tools_instance):
         self._re_state = state
@@ -134,25 +149,20 @@ class RealEstateAgent(Agent):
             yield chunk
 
     def tts_node(self, text, model_settings):
-        """Safety net: prevent JSON blobs, tool call syntax, snake_case identifiers, and
-        bare function names from being passed to TTS and spoken as garbled code words."""
+        """Safety net. LLM output arrives as tiny token fragments, so we buffer until a full
+        sentence is complete and only then strip leaked tool-call text. Whitespace between
+        tokens is preserved (never strip() individual chunks)."""
         async def guard():
-            checked, drop = False, False
+            buf = ""
             async for chunk in text:
-                if not checked and chunk.strip():
-                    checked = True
-                    stripped = chunk.lstrip()
-                    # Drop entire chunk if it opens with JSON or a bare function-call token
-                    drop = stripped.startswith("{") or bool(
-                        re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*\s*[\(\{]', stripped)
-                    )
-                if not drop:
-                    cleaned = _TTS_INLINE_BLOCK_RE.sub('', chunk)   # close_call{} style leaks
-                    cleaned = _TTS_FUNC_CALL_RE.sub('', cleaned)     # save_details(...) style leaks
-                    cleaned = _TTS_SNAKE_ID_RE.sub('', cleaned)      # snake_case identifier leaks
-                    cleaned = _TTS_MULTI_SPACE_RE.sub(' ', cleaned).strip()
-                    if cleaned:
-                        yield cleaned
+                buf += chunk
+                if not _call_open(buf) and buf.rstrip().endswith((".", "?", "!", "\u0964")):
+                    out, buf = _clean_leaks(buf), ""
+                    if out.strip():
+                        yield out
+            out = _clean_leaks(buf)
+            if out.strip():
+                yield out
 
         return Agent.default.tts_node(self, guard(), model_settings)
-
+        
