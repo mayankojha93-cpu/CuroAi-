@@ -49,6 +49,10 @@ class RealEstateAgent(Agent):
         await self.update_tools(self._re_tools.tools_for_step(self._re_state.step))
 
     async def on_user_turn_completed(self, turn_ctx, new_message):
+        # Closing line is already being spoken: ignore anything the customer says now
+        # (e.g. 'haan haan theek hai') so it cannot trigger a second reply.
+        if self._re_state.closing_spoken:
+            raise StopResponse()
         text = (getattr(new_message, "text_content", None) or "").strip()
         kind = classify_carrier_message(text)
         if kind:
@@ -142,6 +146,8 @@ class RealEstateAgent(Agent):
 
     async def llm_node(self, chat_ctx, tools, model_settings):
         """Prevent hallucinated second tool call when last item was tool output."""
+        if self._re_state.closing_spoken:
+            return  # closing is spoken deterministically via session.say
         items = getattr(chat_ctx, "items", None) or []
         if items and getattr(items[-1], "type", None) == "function_call_output":
             tools = []
