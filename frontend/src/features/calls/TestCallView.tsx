@@ -63,6 +63,9 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
   // phone no, Customer name, Company Org name, Script, Language, Voice pipeline
   const [phone, setPhone] = useState('');
   const [customerName, setCustomerName] = useState('');
+  const [propertyLocation, setPropertyLocation] = useState(() =>
+    isRealEstate ? 'DLF Phase 5, Sector 54, Gurgaon' : ''
+  );
   const [companyName, setCompanyName] = useState(() =>
     isRealEstate ? 'My Estate Finder' : 'Airtel Telecom'
   );
@@ -82,11 +85,13 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
       setCompanyName('My Estate Finder');
       setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
       setSelectedLanguage('Hinglish');
+      setPropertyLocation('DLF Phase 5, Sector 54, Gurgaon');
     } else {
       setSelectedScript('Airtel Wi-Fi Router Return');
       setCompanyName('Airtel Telecom');
       setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
       setSelectedLanguage('Multilingual');
+      setPropertyLocation('');
     }
   }, [isRealEstate]);
 
@@ -101,18 +106,22 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
       if (found.id === 'my_estate_finder') {
         setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
         setSelectedLanguage('Hinglish');
+        setPropertyLocation('DLF Phase 5, Sector 54, Gurgaon');
       } else if (found.id === 'airtel_return') {
         setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
       }
     }
   };
 
-  const applyPreset = (preset: { phone: string; name: string; script: string; pipeline: string; company: string }) => {
+  const applyPreset = (preset: { phone: string; name: string; script: string; pipeline: string; company: string; location?: string }) => {
     setPhone(preset.phone);
     setCustomerName(preset.name);
     setSelectedScript(preset.script);
     setSelectedPipeline(preset.pipeline);
     setCompanyName(preset.company);
+    if (preset.location !== undefined) {
+      setPropertyLocation(preset.location);
+    }
     setFeedback(null);
   };
 
@@ -127,6 +136,21 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
     try {
       const calls = await fetchTestCallHistory();
       setHistoryCalls(calls);
+      if (calls.length > 0 && (calls[0] as any).transcript) {
+        const rawT = (calls[0] as any).transcript;
+        const list = Array.isArray(rawT) ? rawT : (typeof rawT === 'string' ? JSON.parse(rawT) : []);
+        if (list.length > 0) {
+          console.log(`%c📞 LATEST CONVERSATION (Call ID: ${calls[0].id || (calls[0] as any).call_id})`, 'color: #06b6d4; font-weight: bold; font-size: 13px;');
+          list.forEach((t: any) => {
+            const isAgent = t.role === 'assistant' || t.role === 'agent';
+            console.log(
+              `%c${isAgent ? '🤖 Priya' : '🗣️ Customer'}:%c ${t.text}`,
+              `color: ${isAgent ? '#0ea5e9' : '#10b981'}; font-weight: bold;`,
+              'color: inherit;'
+            );
+          });
+        }
+      }
     } catch {
       // keep existing
     } finally {
@@ -160,10 +184,13 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
       const res = await initiateTestCall({
         phone: formattedPhone,
         customer_name: customerName.trim() || undefined,
+        name: customerName.trim() || undefined,
         company_name: org,
         script: scriptKey,
         language: langCode,
         voice_pipeline: selectedPipeline,
+        property_location: propertyLocation.trim() || undefined,
+        address: propertyLocation.trim() || undefined,
       });
 
       setFeedback({
@@ -690,6 +717,31 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                     width: '100%',
                     background: '#070A12',
                     border: '1px solid rgba(255, 255, 255, 0.08)',
+                    borderRadius: 8,
+                    color: '#FFFFFF',
+                    fontSize: '0.9rem',
+                    padding: '11px 14px',
+                    outline: 'none',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+
+              {/* Field: Property Location */}
+              <div>
+                <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.82rem', color: isRealEstate ? '#38BDF8' : '#94A3B8', fontWeight: 600, marginBottom: 8 }}>
+                  <span>Property Location / Sector</span>
+                  {isRealEstate && <span style={{ color: '#10B981', fontSize: '0.72rem', fontWeight: 500 }}>Sent to Priya</span>}
+                </label>
+                <input
+                  type="text"
+                  value={propertyLocation}
+                  onChange={(e) => setPropertyLocation(e.target.value)}
+                  placeholder={isRealEstate ? "e.g. DLF Phase 5, Sector 54, Gurgaon" : "e.g. Registered address / sector"}
+                  style={{
+                    width: '100%',
+                    background: '#070A12',
+                    border: isRealEstate ? '1px solid rgba(56, 189, 248, 0.35)' : '1px solid rgba(255, 255, 255, 0.08)',
                     borderRadius: 8,
                     color: '#FFFFFF',
                     fontSize: '0.9rem',
