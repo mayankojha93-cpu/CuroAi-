@@ -5,6 +5,7 @@ from typing import Optional, List, Dict, Any
 from livekit.agents import function_tool
 from .state import RealEstateState, RealEstateStep
 from .prompts import get_step_instructions, get_closing_text
+from .config import FAST_TOOL_REPLY
 
 logger = logging.getLogger("real-estate-tools")
 
@@ -85,6 +86,26 @@ class RealEstateTools:
         self.post_outcome_func = post_outcome_func
         self.hangup_func = hangup_func
         self._hangup_scheduled = False
+        self._ack_i = 0
+
+    # ── Fast reply helper (skips the 2nd LLM call after a tool) ─────────────
+    _ACK_HI = ("Theek hai.", "Achha.", "Okay Sir.", "Samajh gayi.")
+    _ACK_EN = ("Got it.", "Sure, Sir.", "Okay.", "Understood.")
+
+    def _fast(self, question: str, fallback: str, ack: Optional[str] = "auto") -> str:
+        """If FAST_TOOL_REPLY is on, store the exact line to speak in state.direct_reply and
+        return a neutral tool result. llm_node then speaks it without calling the LLM again.
+        Otherwise return `fallback` (the original instruction string) = old behaviour."""
+        if not FAST_TOOL_REPLY or not question:
+            return fallback
+        en = self.state.reply_lang == "en"
+        if ack == "auto":
+            pool = self._ACK_EN if en else self._ACK_HI
+            ack = pool[self._ack_i % len(pool)]
+            self._ack_i += 1
+        text = f"{ack} {question}".strip() if ack else question
+        self.state.direct_reply = text
+        return f"Reply already spoken to the customer: '{text}'. Do not repeat it."
 
     async def _go(self, next_step: RealEstateStep):
         """Transition step and synchronize agent instructions and available tools."""
@@ -140,7 +161,12 @@ class RealEstateTools:
             self.state.category = classified_cat
 
         await self._go(RealEstateStep.OWNER_NAME)
-        return "Customer confirmed interest. Ask for owner name for our records."
+        name_q = (
+            "Perfect, Sir! May I have your name for our records?"
+            if self.state.reply_lang == "en"
+            else "Perfect, Sir! Records ke liye kya main aapka naam jaan sakti hoon?"
+        )
+        return self._fast(name_q, "Customer confirmed interest. Ask for owner name for our records.", ack=None)
 
     @function_tool
     async def confirm_owner_name(self, name: str) -> str:
@@ -159,7 +185,10 @@ class RealEstateTools:
                 await self._go(RealEstateStep.COMMERCIAL_LEASE)
             missing = self.state.get_missing_fields()
             next_q = missing[0]["question_en"] if self.state.reply_lang == "en" else missing[0]["question_hi"]
-            return f"Recorded owner name: {self.state.owner_name_confirmed}. Property is {self.state.category} for {self.state.intent}. Smoothly follow up with: '{next_q}'"
+            return self._fast(
+                next_q,
+                f"Recorded owner name: {self.state.owner_name_confirmed}. Property is {self.state.category} for {self.state.intent}. Smoothly follow up with: '{next_q}'",
+            )
 
         await self._go(RealEstateStep.CATEGORY_SELECT)
         if self.state.intent:
@@ -197,7 +226,10 @@ class RealEstateTools:
             await self._go(next_step)
             missing = self.state.get_missing_fields()
             first_q = missing[0]["question_en"] if self.state.reply_lang == "en" else missing[0]["question_hi"]
-            return f"Setup complete ({cat.title()} {intn.title()}). Acknowledge and smoothly ask: '{first_q}'"
+            return self._fast(
+                first_q,
+                f"Setup complete ({cat.title()} {intn.title()}). Acknowledge and smoothly ask: '{first_q}'",
+            )
 
         if not self.state.category:
             return "Intent recorded. Please ask if the property is residential or commercial."
@@ -221,7 +253,9 @@ class RealEstateTools:
         current_rent_received: Optional[str] = None,
         immediate_occupancy: Optional[bool] = None,
     ) -> str:
-        """Save any property details mentioned by customer in the current turn."""
+        """Save ONLY the property details the customer explicitly stated in their latest message.
+        Pass just those parameters and OMIT every other parameter. Never pass null and never guess
+        or reuse values from earlier turns."""
         clean_society = _clean_str(project_or_society)
         if clean_society:
             self.state.project_or_society = clean_society
@@ -324,7 +358,7 @@ class RealEstateTools:
 
         next_field = missing[0]
         q = next_field["question_en"] if self.state.reply_lang == "en" else next_field["question_hi"]
-        return f"Details saved. Echo what the caller mentioned, and naturally ask: '{q}'"
+        return self._fast(q, f"Details saved. Echo what the caller mentioned, and naturally ask: '{q}'")
 
     @function_tool
     async def customer_does_not_know(self, field_id: Optional[str] = None) -> str:
@@ -338,7 +372,8 @@ class RealEstateTools:
         if not missing:
             return await self.finish_property_intake()
         q = missing[0]["question_en"] if self.state.reply_lang == "en" else missing[0]["question_hi"]
-        return f"No problem, that detail is skipped. Acknowledge in 2-3 words and ask only: '{q}'"
+        no_prob = "No problem." if self.state.reply_lang == "en" else "Koi baat nahi."
+        return self._fast(q, f"No problem, that detail is skipped. Acknowledge in 2-3 words and ask only: '{q}'", ack=no_prob)
 
     @function_tool
     async def finish_property_intake(self) -> str:
@@ -347,7 +382,7 @@ class RealEstateTools:
         if len(missing) > 0 and not getattr(self.state, "impatient_detected", False):
             next_field = missing[0]
             q = next_field["question_en"] if self.state.reply_lang == "en" else next_field["question_hi"]
-            return f"Not all details are collected yet. Smoothly ask: '{q}'"
+            return self._fast(q, f"Not all details are collected yet. Smoothly ask: '{q}'")
 
         cat = (self.state.category or "Residential").title()
         intn = "Sale" if self.state.intent == "sale" else "Lease"
@@ -413,6 +448,8 @@ class RealEstateTools:
     ) -> str:
         """Call when customer sounds impatient, asks for pricing/market valuation, or requests a human advisor."""
         self.state.impatient_detected = "impatient" in reason.lower()
+        if re.search(r"price|pricing|valuation|rate|market", reason or "", re.I):
+            self.state.valuation_requested = True
         self.state.advisor_handoff_reason = reason.strip()
         self.state.callback_time_slot = preferred_time
         self.state.final_disposition = "Advisor Callback Booked"
