@@ -89,10 +89,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         body: JSON.stringify({ email, password: pass }),
       });
 
-      const data = await res.json();
       if (!res.ok) {
-        return { success: false, error: data.error || 'Login failed' };
+        let errorMsg = `Server error (${res.status} ${res.statusText})`;
+        try {
+          const errData = await res.json();
+          if (errData?.error) errorMsg = errData.error;
+        } catch {
+          if (res.status === 502) {
+            errorMsg = 'Backend service is not running or unreachable (502 Bad Gateway). Please check the backend server process.';
+          } else if (res.status === 504) {
+            errorMsg = 'Gateway timeout (504). Backend server did not respond in time.';
+          }
+        }
+        return { success: false, error: errorMsg };
       }
+
+      const data = await res.json();
 
       localStorage.setItem(TOKEN_KEY, data.token);
       localStorage.setItem(USER_KEY, JSON.stringify(data.user));
