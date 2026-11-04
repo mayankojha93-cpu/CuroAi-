@@ -89,6 +89,8 @@ export class RealEstateCallService {
     owner_name?: string;
     name?: string;
     language?: string;
+    property_location?: string;
+    address?: string;
     notes?: string;
   }) {
     const normalizedPhone = normalizePhone(data.phone);
@@ -98,6 +100,7 @@ export class RealEstateCallService {
     const defaultTestName = env.TEST_CUSTOMER_NAME || 'Raja Nayak';
     const passedName = data.owner_name || data.name || (isTestCustomerPhone ? defaultTestName : undefined);
     const ownerName = passedName || (isTestCustomerPhone ? defaultTestName : 'Test Property Owner');
+    const propertyLocation = (data.property_location || data.address || '').trim() || null;
 
     // Reuse existing lead or create new lead
     const existingLead = await query(`SELECT * FROM real_estate_leads WHERE phone = $1 LIMIT 1`, [normalizedPhone]);
@@ -148,7 +151,7 @@ export class RealEstateCallService {
     );
     const call = insertCall.rows[0];
 
-    this.executeOutboundWorkflow(callId, lead || { id: null, owner_name: ownerName, phone: normalizedPhone }, roomName)
+    this.executeOutboundWorkflow(callId, lead || { id: null, owner_name: ownerName, phone: normalizedPhone }, roomName, propertyLocation)
       .catch((err) => {
         logger.error({ err, callId }, 'Unhandled error in real estate outbound call workflow');
       });
@@ -191,7 +194,16 @@ export class RealEstateCallService {
     );
     const call = insCall.rows[0];
 
-    this.executeOutboundWorkflow(callId, lead, roomName).catch((err) => {
+    // Query property location if known for this lead
+    const propRes = await query(
+      `SELECT sector_or_location, project_or_society FROM real_estate_properties WHERE lead_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [leadId]
+    );
+    const propertyLocation = propRes.rows.length > 0
+      ? (propRes.rows[0].sector_or_location || propRes.rows[0].project_or_society)
+      : null;
+
+    this.executeOutboundWorkflow(callId, lead, roomName, propertyLocation).catch((err) => {
       logger.error({ err, callId }, 'Unhandled error in real estate outbound call workflow');
     });
 
@@ -201,7 +213,7 @@ export class RealEstateCallService {
   /**
    * Dispatches agent worker and dials SIP participant
    */
-  private async executeOutboundWorkflow(callId: string, lead: any, roomName: string) {
+  private async executeOutboundWorkflow(callId: string, lead: any, roomName: string, propertyLocation?: string | null) {
     try {
       await this.roomService.createRoom({ name: roomName, emptyTimeout: 300 });
 
@@ -221,6 +233,7 @@ export class RealEstateCallService {
           phone: lead.phone,
           preferredLanguage: lead.preferred_language || 'hi',
           direction: 'outbound',
+          propertyLocation: propertyLocation || null,
         }),
       });
 
@@ -713,6 +726,21 @@ ${dialogueText.slice(0, 4000)}`;
     // 3. Save real_estate_outcomes (ensure customer dialogue is saved in clean Romanized Hindi)
     const processedTranscript = data.transcript ? romanizeTranscript(data.transcript) : null;
     const transcriptJson = processedTranscript ? JSON.stringify(processedTranscript) : null;
+
+    // Log the complete conversation in console
+    if (processedTranscript && Array.isArray(processedTranscript) && processedTranscript.length > 0) {
+      console.log(`\n======================================================================`);
+      console.log(`  📞 REAL ESTATE CALL TRANSCRIPT (Call ID: ${callId})`);
+      console.log(`  Owner: ${safeOwnerConfirmed || 'N/A'} | Disposition: ${canonicalDisp}`);
+      console.log(`----------------------------------------------------------------------`);
+      for (const turn of processedTranscript) {
+        const isAgent = turn.role === 'assistant' || turn.role === 'agent';
+        const speaker = isAgent ? '🤖 Priya   ' : '🗣️ Customer';
+        console.log(`  ${speaker}: ${turn.text}`);
+      }
+      console.log(`======================================================================\n`);
+    }
+
     const outcomeRes = await query(
       `INSERT INTO real_estate_outcomes (
          call_id, lead_id, property_id, final_disposition, is_interested,
