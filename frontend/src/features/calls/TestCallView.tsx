@@ -752,29 +752,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                 />
               </div>
 
-              {/* Field 3: Company / Org Name */}
-              <div>
-                <label style={{ display: 'block', fontSize: '0.82rem', color: '#94A3B8', fontWeight: 600, marginBottom: 8 }}>
-                  Company / Org Name
-                </label>
-                <input
-                  type="text"
-                  value={companyName}
-                  onChange={(e) => setCompanyName(e.target.value)}
-                  placeholder="Leave empty for script default"
-                  style={{
-                    width: '100%',
-                    background: '#070A12',
-                    border: '1px solid rgba(255, 255, 255, 0.08)',
-                    borderRadius: 8,
-                    color: '#FFFFFF',
-                    fontSize: '0.9rem',
-                    padding: '11px 14px',
-                    outline: 'none',
-                    boxSizing: 'border-box',
-                  }}
-                />
-              </div>
+
 
               {/* Two columns: Script and Language */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
