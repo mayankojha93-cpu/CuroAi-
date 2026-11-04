@@ -1,4 +1,5 @@
 import re
+import json
 import asyncio
 import logging
 from livekit.agents import Agent, StopResponse
@@ -30,6 +31,114 @@ def _call_open(buf: str) -> bool:
 
 logger = logging.getLogger("real-estate-agent")
 
+# ── Recovery for "tool call typed as plain text" ──────────────────────────────
+# Llama sometimes prints {"name": "save_property_details", "parameters": {...}} as its reply instead
+# of making a real tool call. The tts_node guard strips it, so the caller heard NOTHING (dead air).
+_TEXT_CALL_RE = re.compile(r'^\s*(?:\{|<function|[a-z]+(?:_[a-z0-9]+)+\s*[\(\{])')
+
+# get_missing_fields() ids -> save_property_details parameter names
+_FIELD_TO_PARAMS = {
+    "location": ("sector_or_location",),
+    "society_sector": ("project_or_society",),
+    "project_sector": ("project_or_society",),
+    "unit_floor": ("unit_number", "floor_number"),
+    "bhk_config": ("bhk_config",),
+    "commercial_type": ("commercial_type",),
+    "approx_area": ("approx_area_sqft",),
+    "furnishing": ("furnishing_status",),
+    "sale_price": ("expected_sale_price",),
+    "monthly_rent": ("expected_monthly_rent",),
+    "immediate_occupancy": ("immediate_occupancy",),
+    "leased_status": ("is_currently_leased",),
+    "current_rent": ("current_rent_received",),
+}
+
+# Short utterances that must NOT flip the reply language (e.g. 'Hello.' flipped Hindi -> English).
+_NEUTRAL_UTTERANCES = {
+    "hello", "hi", "hey", "helo", "hallo", "ok", "okay", "yes", "no", "hmm", "haan", "han", "ji",
+    "haanji", "haan ji", "हेलो", "हैलो", "हेल्लो", "हाँ", "हां", "जी", "हम्म", "ओके",
+}
+
+
+def _is_neutral_utterance(text: str) -> bool:
+    t = re.sub(r"[\s.,?!\u0964]+", " ", (text or "").lower()).strip()
+    return t in _NEUTRAL_UTTERANCES
+
+
+# ── Caller asks US for the price/rate ("kya rate chal raha hai? kitne mein bech sakte hain?") ──
+# Handled deterministically (no LLM): speak valuation line + short thank-you, then hang up.
+_PRICE_Q_LATIN = re.compile(
+    r"(kya\s+(rate|price|bhav|bhaav|value|daam|dam)\b"
+    r"|\b(rate|price|bhav|bhaav|daam|dam|value)\s+(kya|kitna|kitni|chal\s*raha|chal\s*rha|chalega)"
+    r"|market\s+(rate|price|value)"
+    r"|kitn[ae]\s+(me|mein|main)\s+(bech|bik|sell)"
+    r"|kitn[ae]\s+(milega|mil\s*sakta|mil\s*jayega|mil\s*jaayega)"
+    r"|how\s+much\s+(can|will|would|do|should)"
+    r"|what\s+(is|are|'s)\s+(the\s+)?(rate|price|value|market)"
+    r"|what\s+price|valuation)",
+    re.I,
+)
+_PRICE_Q_DEV = re.compile(
+    r"(क्या\s*(रेट|प्राइस|भाव|कीमत|दाम|वैल्यू)"
+    r"|(रेट|प्राइस|भाव|कीमत|दाम)\s*(क्या|कितना|कितनी|चल)"
+    r"|मार्केट\s*(रेट|प्राइस|वैल्यू)"
+    r"|कितने\s*में\s*(बेच|बिक)"
+    r"|कितना\s*मिलेगा|वैल्यूएशन)"
+)
+_HAS_AMOUNT = re.compile(r"[0-9०-९]|lakh|lac\b|crore|cr\b|लाख|करोड़|करोड", re.I)
+
+
+def _asks_agent_for_price(text: str) -> bool:
+    """True when the caller is ASKING for a rate/valuation (not stating their own expected price)."""
+    if not text or _HAS_AMOUNT.search(text):
+        return False
+    if _PRICE_Q_DEV.search(text):
+        return True
+    cands = [text]
+    try:
+        from src.transliteration import romanize_hindi
+        cands.append(romanize_hindi(text))
+    except Exception:
+        pass
+    return any(_PRICE_Q_LATIN.search((c or "").lower()) for c in cands)
+
+
+def _chunk_text(chunk):
+    """Text carried by an llm_node chunk (str or ChatChunk); None for tool-call/empty chunks."""
+    if isinstance(chunk, str):
+        return chunk
+    delta = getattr(chunk, "delta", None)
+    return getattr(delta, "content", None) if delta else None
+
+
+def _parse_text_tool_call(raw: str):
+    """Best-effort parse of a text-typed tool call, tolerant of truncated JSON."""
+    m = (
+        re.search(r'"name"\s*:\s*"([A-Za-z_]\w*)"', raw)
+        or re.match(r'\s*<function=([A-Za-z_]\w*)', raw)
+        or re.match(r'\s*([a-z]+(?:_[a-z0-9]+)+)\s*[\(\{]', raw)
+    )
+    if not m:
+        return None, {}
+    name = m.group(1)
+    pm = re.search(r'"(?:parameters|arguments)"\s*:\s*\{(.*)', raw, re.S)
+    body = pm.group(1) if pm else raw
+    args = {}
+    for k, v in re.findall(r'"(\w+)"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|true|false|null)', body):
+        if k == "name" or v == "null":
+            continue
+        if v.startswith('"'):
+            try:
+                val = json.loads(v)
+            except Exception:
+                val = v.strip('"')
+        elif v in ("true", "false"):
+            val = v == "true"
+        else:
+            val = float(v) if "." in v else int(v)
+        args[k] = val
+    return name, args
+
 
 class RealEstateAgent(Agent):
     """Voice agent for My Estate Finder property intake (Priya)."""
@@ -49,6 +158,10 @@ class RealEstateAgent(Agent):
         await self.update_tools(self._re_tools.tools_for_step(self._re_state.step))
 
     async def on_user_turn_completed(self, turn_ctx, new_message):
+        # LATENCY: a new customer turn invalidates any unspoken fast reply left over from an
+        # interrupted previous turn.
+        self._re_state.direct_reply = None
+
         # Closing line is already being spoken: ignore anything the customer says now
         # (e.g. 'haan haan theek hai') so it cannot trigger a second reply.
         if self._re_state.closing_spoken:
@@ -111,7 +224,8 @@ class RealEstateAgent(Agent):
                 state.step = RealEstateStep.RESIDENTIAL_SALE if state.intent != "lease" else RealEstateStep.RESIDENTIAL_LEASE
             step_changed = True
 
-        lang_switched = state.update_reply_lang(text)
+        # Greetings / backchannels like "Hello." must not flip the reply language.
+        lang_switched = False if _is_neutral_utterance(text) else state.update_reply_lang(text)
         if lang_switched or state.impatient_detected or step_changed:
             lang = state.reply_lang
             if lang_switched:
@@ -144,15 +258,122 @@ class RealEstateAgent(Agent):
                         logger.warning(f"Failed to refresh instructions: {e}")
                 asyncio.create_task(_refresh_lang_instructions())
 
+        # Caller asks "what rate / what price can I get?" during intake -> valuation line + closing,
+        # spoken deterministically (no LLM round trip), then the call ends.
+        if (
+            state.step in (
+                RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.RESIDENTIAL_LEASE,
+                RealEstateStep.COMMERCIAL_SALE, RealEstateStep.COMMERCIAL_LEASE,
+            )
+            and not state.closing_spoken
+            and _asks_agent_for_price(text)
+        ):
+            logger.info(f"💰 Caller asked for price/valuation -> valuation closing (no LLM): '{text}'")
+            state.valuation_requested = True
+            try:
+                await self._re_tools.book_advisor_handoff(reason="Price valuation requested")
+            except Exception as e:
+                logger.warning(f"Valuation closing failed, falling back to LLM: {e}")
+                state.valuation_requested = False
+            else:
+                raise StopResponse()
+
     async def llm_node(self, chat_ctx, tools, model_settings):
-        """Prevent hallucinated second tool call when last item was tool output."""
+        """Prevent hallucinated second tool call when last item was tool output.
+
+        LATENCY: when the tool already decided the exact next line (state.direct_reply), speak it
+        directly instead of making a second LLM round trip just to read it out."""
         if self._re_state.closing_spoken:
             return  # closing is spoken deterministically via session.say
         items = getattr(chat_ctx, "items", None) or []
         if items and getattr(items[-1], "type", None) == "function_call_output":
+            reply = self._re_state.direct_reply
+            if reply:
+                self._re_state.direct_reply = None
+                logger.info(f"⚡ FAST_REPLY (2nd LLM call skipped): '{reply}'")
+                yield reply
+                return
             tools = []
+
+        # Stream the LLM. The first non-blank chunk decides: normal speech streams straight through
+        # (zero added latency); output that looks like a tool call typed as text is held back and
+        # recovered, so the caller never gets dead air.
+        mode = None            # None = undecided, "speech", "textcall"
+        pending, head, raw = [], "", ""
         async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
-            yield chunk
+            text = _chunk_text(chunk)
+            if mode == "speech" or not text:
+                yield chunk                      # speech, or a genuine tool-call chunk
+                continue
+            if mode == "textcall":
+                raw += text
+                continue
+            pending.append(chunk)
+            head += text
+            if not head.strip():
+                continue
+            if _TEXT_CALL_RE.match(head):
+                mode, raw = "textcall", head
+                pending = []
+            else:
+                mode = "speech"
+                for c in pending:
+                    yield c
+                pending = []
+        if mode is None:
+            for c in pending:
+                yield c
+        elif mode == "textcall":
+            recovered = await self._recover_text_tool_call(raw)
+            if recovered:
+                yield recovered
+
+    async def _recover_text_tool_call(self, raw: str):
+        """The LLM typed a tool call as text. Execute it safely and return the line to speak."""
+        state = self._re_state
+        name, args = _parse_text_tool_call(raw)
+        logger.warning(f"🩹 Tool call typed as text -> recovering: name={name} args={args} raw={raw[:160]!r}")
+
+        allowed = set()
+        for t in self._re_tools.tools_for_step(state.step):
+            n = getattr(getattr(t, "info", None), "name", None) or getattr(t, "__name__", None)
+            if n:
+                allowed.add(n)
+
+        try:
+            if name in allowed:
+                fn = getattr(self._re_tools, name, None)
+                if name == "save_property_details":
+                    # Trust ONLY the field we just asked about; the text-typed JSON often contains
+                    # invented values for every other field.
+                    missing = state.get_missing_fields()
+                    keep = _FIELD_TO_PARAMS.get(missing[0]["id"], ()) if missing else ()
+                    safe = {k: v for k, v in args.items() if k in keep}
+                    if safe:
+                        await fn(**safe)
+                elif fn is not None:
+                    try:
+                        await fn(**args)
+                    except TypeError:
+                        await fn()
+        except Exception as e:
+            logger.warning(f"Recovered tool call failed: {e}")
+
+        if state.closing_spoken:
+            return None                      # closing line is spoken via session.say
+        reply, state.direct_reply = state.direct_reply, None
+        if reply:
+            logger.info(f"⚡ RECOVERED reply: '{reply}'")
+            return reply
+
+        # Nothing usable -> never stay silent: re-ask the question that is currently open.
+        missing = state.get_missing_fields()
+        en = state.reply_lang == "en"
+        if missing:
+            q = missing[0]["question_en"] if en else missing[0]["question_hi"]
+            lead = "Sorry Sir, I missed that. " if en else "Sorry Sir, main sun nahi payi. "
+            return lead + q
+        return "Sorry Sir, could you please repeat that?" if en else "Sorry Sir, kya aap dobara bata sakte hain?"
 
     def tts_node(self, text, model_settings):
         """Safety net. LLM output arrives as tiny token fragments, so we buffer until a full
