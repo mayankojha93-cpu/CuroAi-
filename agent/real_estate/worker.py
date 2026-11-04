@@ -32,6 +32,12 @@ from .config import (
     DEFAULT_LANGUAGE,
     TTS_PACE,
     TTS_TEMPERATURE,
+    FAST_TOOL_REPLY,
+    LATENCY_LOG,
+    VAD_MIN_SILENCE,
+    VAD_DEACTIVATION,
+    LLM_MAX_TOKENS,
+    OPENROUTER_PROVIDER_ORDER,
     BACKEND_URL,
     INTERNAL_SECRET,
 )
@@ -118,12 +124,18 @@ class ConversationFileLogger:
 
 
 def _load_vad():
-    return silero.VAD.load(
+    kwargs = dict(
         sample_rate=16000,
         min_speech_duration=0.05,
-        min_silence_duration=0.45,
+        min_silence_duration=VAD_MIN_SILENCE,
         activation_threshold=0.45,
     )
+    if VAD_DEACTIVATION is not None:
+        try:
+            return silero.VAD.load(**kwargs, deactivation_threshold=VAD_DEACTIVATION)
+        except TypeError:
+            logger.warning("silero plugin has no deactivation_threshold; ignoring VAD_DEACTIVATION")
+    return silero.VAD.load(**kwargs)
 
 
 def prewarm(proc: agents.JobProcess):
@@ -246,8 +258,16 @@ async def entrypoint(ctx: agents.JobContext):
         vad = await asyncio.to_thread(_load_vad)
 
     llm_extra = {}
-    if OPENROUTER_PROVIDER_SORT:
+    if OPENROUTER_PROVIDER_ORDER:
+        # Pin fast providers (stable) but still allow OpenRouter to fall back if they are down.
+        llm_extra["extra_body"] = {"provider": {"order": OPENROUTER_PROVIDER_ORDER, "allow_fallbacks": True}}
+    elif OPENROUTER_PROVIDER_SORT:
         llm_extra["extra_body"] = {"provider": {"sort": OPENROUTER_PROVIDER_SORT}}
+    logger.info(
+        f"⚙️ Latency config: FAST_TOOL_REPLY={FAST_TOOL_REPLY} VAD_MIN_SILENCE={VAD_MIN_SILENCE} "
+        f"provider={llm_extra.get('extra_body')} endpoint=({ENDPOINT_MIN_DELAY},{ENDPOINT_MAX_DELAY}) "
+        f"preemptive={PREEMPTIVE_GENERATION}"
+    )
 
     llm = openai.LLM(
         model=LLM_MODEL,
@@ -255,7 +275,7 @@ async def entrypoint(ctx: agents.JobContext):
         api_key=OPENROUTER_API_KEY,
         temperature=0.05,       # Very low: scripted intake agent must not hallucinate or improvise
         parallel_tool_calls=False,
-        max_completion_tokens=120,  # Short, punchy phone responses; was 150
+        max_completion_tokens=LLM_MAX_TOKENS,  # was 120: truncated multi-field tool calls -> dead air
         **llm_extra,
     )
 
@@ -329,6 +349,46 @@ async def entrypoint(ctx: agents.JobContext):
         max_tool_steps=1,
         turn_handling=TurnHandlingOptions(**turn_opts),
     )
+
+    # ── Per-turn latency breakdown ─────────────────────────────────────────────
+    # EOU  = user stopped speaking -> turn accepted (VAD silence + endpointing)
+    # LLM  = time-to-first-token (a tool turn shows 2 LLM lines unless FAST_REPLY skipped the 2nd)
+    # TTS  = time-to-first-audio-byte
+    # TURN ≈ EOU + sum(LLM ttft) + TTS ttfb  (excludes tool run time and network playout)
+    if LATENCY_LOG:
+        _lat = {"eou": None, "llm": [], "tts_done": False}
+
+        @session.on("metrics_collected")
+        def _on_metrics(ev):
+            try:
+                m = ev.metrics
+                kind = type(m).__name__
+                if kind == "EOUMetrics":
+                    _lat["eou"] = getattr(m, "end_of_utterance_delay", None)
+                    _lat["llm"] = []
+                    _lat["tts_done"] = False
+                    logger.info(f"⏱ EOU delay={(_lat['eou'] or 0):.2f}s")
+                elif kind == "LLMMetrics":
+                    ttft = getattr(m, "ttft", None)
+                    if ttft is not None and ttft >= 0:
+                        _lat["llm"].append(ttft)
+                        logger.info(f"⏱ LLM call #{len(_lat['llm'])} ttft={ttft:.2f}s step={state.step.value}")
+                elif kind == "TTSMetrics":
+                    ttfb = getattr(m, "ttfb", None)
+                    if ttfb is None or ttfb < 0:
+                        return
+                    if _lat["eou"] is not None and not _lat["tts_done"]:
+                        _lat["tts_done"] = True
+                        total = (_lat["eou"] or 0) + sum(_lat["llm"]) + ttfb
+                        logger.info(
+                            f"⏱ TTS ttfb={ttfb:.2f}s | 🔔 TURN ≈ {total:.2f}s "
+                            f"(eou {(_lat['eou'] or 0):.2f} + llm {sum(_lat['llm']):.2f} "
+                            f"[{len(_lat['llm'])} call(s)] + tts {ttfb:.2f})"
+                        )
+                    else:
+                        logger.info(f"⏱ TTS ttfb={ttfb:.2f}s (scripted line)")
+            except Exception as e:
+                logger.debug(f"metrics log error: {e}")
 
     _room_deleted = False
     _shutdown_in_progress = False
@@ -504,6 +564,17 @@ async def entrypoint(ctx: agents.JobContext):
     # 2. Start session on the room immediately so audio pipeline & STT/VAD are active
     await session.start(room=ctx.room, agent=agent)
     logger.info("Real Estate agent session started in room.")
+
+    # Warm provider connections while the greeting is generated/played, so the first real
+    # customer turn doesn't pay cold-connection cost.
+    for _name, _comp in (("tts", tts), ("llm", llm)):
+        _fn = getattr(_comp, "prewarm", None)
+        if callable(_fn):
+            try:
+                _fn()
+                logger.info(f"🔥 {_name} prewarm requested")
+            except Exception as e:
+                logger.debug(f"{_name} prewarm failed: {e}")
     state.start_time = time.time()
 
     # Mark call as answered in backend immediately so sweeper never sweeps it to NO_ANSWER
