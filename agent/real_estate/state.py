@@ -26,7 +26,7 @@ class RealEstateState:
         lead_id: Optional[str] = None,
         owner_name: str = "Property Owner",
         phone: str = "",
-        preferred_language: str = "en",
+        preferred_language: str = "hi",
         direction: str = "outbound",
     ):
         self.call_id = call_id
@@ -36,8 +36,8 @@ class RealEstateState:
         self.preferred_language = preferred_language
         self.direction = direction
 
-        # Always start opening greeting in English by default; switches dynamically to Hinglish ('hi') if caller speaks Hindi
-        self.reply_lang: str = "en"
+        # Default is Hindi + English (Hinglish/Hindi) 'hi' with simran_enhi_customer; switches dynamically to English ('en') with simran_en_sales if caller speaks English
+        self.reply_lang: str = preferred_language if preferred_language in ("hi", "en") else "hi"
         self.callee_connected: bool = False
         self.start_time: float = time.time()
         self.last_activity_time: float = time.time()
@@ -90,6 +90,9 @@ class RealEstateState:
     def add_transcript(self, role: str, text: str):
         if text and text.strip():
             self.transcript.append({"role": role, "text": text.strip(), "time": time.time()})
+            if role in ("customer", "user"):
+                self.callee_connected = True
+                self.last_activity_time = time.time()
 
     def update_reply_lang(self, text: Optional[str]) -> bool:
         """Detect and follow the customer's language (Hindi vs English)."""
@@ -131,7 +134,7 @@ class RealEstateState:
                     "question_en": "Could you share which society or project it is, and its location?",
                     "question_hi": "So sir ye property jo hai iska location bata sakte hain aur kaun sa project hai?",
                 })
-            if not (self.unit_number or self.floor_number):
+            if not (self.unit_number and self.floor_number):
                 missing.append({
                     "id": "unit_floor",
                     "label": "Unit number and floor",
@@ -176,7 +179,7 @@ class RealEstateState:
                     "question_en": "Could you share which society or project it is, and its location?",
                     "question_hi": "So sir ye property jo hai iska location bata sakte hain aur kaun sa project hai?",
                 })
-            if not (self.unit_number or self.floor_number):
+            if not (self.unit_number and self.floor_number):
                 missing.append({
                     "id": "unit_floor",
                     "label": "Unit number and floor",
@@ -228,7 +231,7 @@ class RealEstateState:
                     "question_en": "Could you share which commercial project or building it is, and its location?",
                     "question_hi": "So sir ye commercial property kaun se project ya building mein hai, aur location kya hai?",
                 })
-            if not (self.unit_number or self.floor_number):
+            if not (self.unit_number and self.floor_number):
                 missing.append({
                     "id": "unit_floor",
                     "label": "Unit number and floor",
@@ -287,7 +290,7 @@ class RealEstateState:
                     "question_en": "Could you share which commercial project or building it is, and its location?",
                     "question_hi": "So sir ye commercial property kaun se project ya building mein hai, aur location kya hai?",
                 })
-            if not (self.unit_number or self.floor_number):
+            if not (self.unit_number and self.floor_number):
                 missing.append({
                     "id": "unit_floor",
                     "label": "Unit number and floor",
@@ -342,3 +345,4 @@ class RealEstateState:
         ):
             return len(self.get_missing_fields()) == 0
         return False
+        
