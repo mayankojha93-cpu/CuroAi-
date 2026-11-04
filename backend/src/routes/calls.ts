@@ -89,6 +89,7 @@ const testCallSchema = {
     script: z.string().optional(),
     voice_pipeline: z.string().optional().default('HABot Pipeline'),
     address: z.string().optional().default('Delhi, 110011, burari, sant nagar'),
+    property_location: z.string().optional(),
     account_no: z.string().optional().default('20022941256'),
     subs_del_no: z.string().optional().default('01121344121_wifi'),
     service_end_date: z.string().optional().default('2026-08-27'),
@@ -127,11 +128,14 @@ callsRouter.post(
       }
 
       if (isRealEstateScript) {
+        const propertyLocation = req.body.property_location || req.body.address;
         const { call, lead } = await realEstateCallService.initiateTestCall({
           phone: req.body.phone,
           owner_name: req.body.customer_name || req.body.name,
           language: req.body.language,
-          notes: `Test Call: ${req.body.script || 'My Estate Finder'}`,
+          property_location: propertyLocation,
+          address: propertyLocation,
+          notes: `Test Call: ${req.body.script || 'My Estate Finder'}${propertyLocation ? ` | Location: ${propertyLocation}` : ''}`,
         });
         return res.status(201).json({
           success: true,
