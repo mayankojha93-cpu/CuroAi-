@@ -21,7 +21,7 @@ interface TestCallViewProps {
 }
 
 const SCRIPTS = [
-  { id: 'my_estate_finder', label: 'My Estate Finder — Property Intake (Sagar)', scriptKey: 'my_estate_finder', defaultOrg: 'My Estate Finder' },
+  { id: 'my_estate_finder', label: 'My Estate Finder — Property Intake (Priya)', scriptKey: 'my_estate_finder', defaultOrg: 'My Estate Finder' },
   { id: 'trump_towers', label: 'Trump Towers India — Real Estate', scriptKey: 'Trump_towers_india', defaultOrg: 'Trump Towers India' },
   { id: 'ratnafin', label: 'Ratnafin — Machinery Loan', scriptKey: 'Ratnafin_machinery_loan', defaultOrg: 'Ratnafin' },
   { id: 'airtel_return', label: 'Airtel Wi-Fi Router Return', scriptKey: 'airtel_router_return', defaultOrg: 'Airtel Telecom' },
@@ -67,21 +67,21 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
     isRealEstate ? 'My Estate Finder' : 'Airtel Telecom'
   );
   const [selectedScript, setSelectedScript] = useState(() =>
-    isRealEstate ? 'My Estate Finder — Property Intake (Sagar)' : 'Airtel Wi-Fi Router Return'
+    isRealEstate ? 'My Estate Finder — Property Intake (Priya)' : 'Airtel Wi-Fi Router Return'
   );
   const [selectedLanguage, setSelectedLanguage] = useState(() =>
-    isRealEstate ? 'English' : 'Multilingual'
+    isRealEstate ? 'Hinglish' : 'Multilingual'
   );
   const [selectedPipeline, setSelectedPipeline] = useState(() =>
-    isRealEstate ? 'Sarvam AI (Shubh - en-IN)' : 'Sarvam AI (Priya - hi-IN)'
+    'Sarvam AI (Priya - hi-IN)'
   );
 
   useEffect(() => {
     if (isRealEstate) {
-      setSelectedScript('My Estate Finder — Property Intake (Sagar)');
+      setSelectedScript('My Estate Finder — Property Intake (Priya)');
       setCompanyName('My Estate Finder');
-      setSelectedPipeline('Sarvam AI (Shubh - en-IN)');
-      setSelectedLanguage('English');
+      setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
+      setSelectedLanguage('Hinglish');
     } else {
       setSelectedScript('Airtel Wi-Fi Router Return');
       setCompanyName('Airtel Telecom');
@@ -99,8 +99,8 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
     if (found) {
       setCompanyName(found.defaultOrg);
       if (found.id === 'my_estate_finder') {
-        setSelectedPipeline('Sarvam AI (Shubh - en-IN)');
-        setSelectedLanguage('English');
+        setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
+        setSelectedLanguage('Hinglish');
       } else if (found.id === 'airtel_return') {
         setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
       }
@@ -563,19 +563,19 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                 {(isRealEstate
                   ? [
                       {
-                        title: '🏠 Estate Finder (Sagar)',
-                        name: 'Vikramaditya Singhania',
-                        phone: '+919811122233',
-                        script: 'My Estate Finder — Property Intake (Sagar)',
-                        pipeline: 'Sarvam AI (Shubh - en-IN)',
+                        title: '🏠 Estate Finder (Priya)',
+                        name: 'Raja Nayak',
+                        phone: '8658250208',
+                        script: 'My Estate Finder — Property Intake (Priya)',
+                        pipeline: 'Sarvam AI (Priya - hi-IN)',
                         company: 'My Estate Finder',
                       },
                       {
                         title: '🏢 Commercial Lease',
-                        name: 'Ananya Deshmukh',
-                        phone: '+919845012345',
-                        script: 'My Estate Finder — Property Intake (Sagar)',
-                        pipeline: 'Sarvam AI (Shubh - en-IN)',
+                        name: 'Raja Nayak',
+                        phone: '8658250208',
+                        script: 'My Estate Finder — Property Intake (Priya)',
+                        pipeline: 'Sarvam AI (Priya - hi-IN)',
                         company: 'My Estate Finder',
                       },
                     ]
@@ -1046,11 +1046,11 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                   userName = 'Raja Nayak';
                 }
                 
-                // Format script display: e.g. My Estate Finder (Sagar) or Trump_towers_india (English)
+                // Format script display: e.g. My Estate Finder (Priya) or Trump_towers_india (English)
                 const rawScript = call.script || (call as any).campaign_name || 'Trump_towers_india';
                 let normalizedScriptKey = 'Trump_towers_india';
                 if (rawScript.includes('Estate') || rawScript.includes('my_estate') || rawScript.includes('sagar') || rawScript.includes('Property')) {
-                  normalizedScriptKey = 'My Estate Finder (Sagar)';
+                  normalizedScriptKey = 'My Estate Finder (Priya)';
                 } else if (rawScript.includes('Trump')) {
                   normalizedScriptKey = 'Trump_towers_india';
                 } else if (rawScript.includes('Ratnafin')) {

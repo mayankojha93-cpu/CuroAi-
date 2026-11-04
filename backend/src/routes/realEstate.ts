@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { env } from '../config/env.js';
 import { realEstateCallService } from '../services/realEstateCallService.js';
 import { validateRequest } from '../middleware/validate.js';
+import { requireAuth } from '../middleware/auth.js';
 import { AppError } from '../middleware/errorHandler.js';
 
 export const realEstateRouter = Router();
@@ -20,7 +21,7 @@ const requireInternalSecret = (req: Request, _res: Response, next: NextFunction)
 };
 
 // Enforce pipeline permission: Real Estate admin or superadmin ('all') only
-realEstateRouter.use('/api/real-estate', (req: Request, res: Response, next: NextFunction) => {
+realEstateRouter.use('/api/real-estate', requireAuth, (req: Request, res: Response, next: NextFunction) => {
   const userPipeline = req.user?.assigned_pipeline;
   if (userPipeline && userPipeline !== 'all' && userPipeline !== 'real_estate') {
     return res.status(403).json({

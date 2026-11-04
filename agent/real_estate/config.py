@@ -32,19 +32,26 @@ LLM_MODEL = os.getenv("LLM_MODEL", "meta-llama/llama-3.3-70b-instruct")
 
 # Speech Configuration (Sarvam AI)
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
-STT_LANGUAGE = os.getenv("STT_LANGUAGE", "hi-IN").strip() or "hi-IN"
+
+# STT: default hi-IN for Hindi + English (Hinglish) conversations
+STT_LANGUAGE = os.getenv("RE_STT_LANGUAGE", os.getenv("STT_LANGUAGE", "hi-IN")).strip() or "hi-IN"
+
 TTS_LANGUAGE_HI = os.getenv("TTS_LANGUAGE_HI", "hi-IN")
 TTS_LANGUAGE_EN = os.getenv("TTS_LANGUAGE_EN", "en-IN")
-TTS_MODEL = os.getenv("REAL_ESTATE_TTS_MODEL", "bulbul:v4-flash")
-TTS_SPEAKER = os.getenv("REAL_ESTATE_TTS_SPEAKER", "shubh_hi_ecomm")
-TTS_SAMPLE_RATE = int(os.getenv("REAL_ESTATE_TTS_SAMPLE_RATE", "24000"))
-DEFAULT_LANGUAGE = os.getenv("REAL_ESTATE_DEFAULT_LANGUAGE", "en")
 
-# TTS Delivery Dynamics (Brisk human pace & expressive cadence)
+# TTS Model & Speaker
+# Using bulbul:v3 with speaker 'priya' (verified 100% Indian female voice, same as 1st pipeline)
+# In bulbul:v3, 'priya' and 'simran' natively speak both Hindi ('hi-IN') and English ('en-IN')
+TTS_MODEL      = os.getenv("REAL_ESTATE_TTS_MODEL",      "bulbul:v3")
+TTS_SPEAKER    = os.getenv("REAL_ESTATE_TTS_SPEAKER",    "priya")
+TTS_SPEAKER_HI = os.getenv("REAL_ESTATE_TTS_SPEAKER_HI", TTS_SPEAKER)
+TTS_SPEAKER_EN = os.getenv("REAL_ESTATE_TTS_SPEAKER_EN", TTS_SPEAKER)
+
+DEFAULT_LANGUAGE = os.getenv("REAL_ESTATE_DEFAULT_LANGUAGE", "hi")
+
+# TTS Delivery Dynamics
 TTS_PACE = float(os.getenv("REAL_ESTATE_TTS_PACE", "1.1"))
 TTS_TEMPERATURE = float(os.getenv("REAL_ESTATE_TTS_TEMPERATURE", "0.7"))
-TTS_PITCH = float(os.getenv("REAL_ESTATE_TTS_PITCH", "0.0"))
-TTS_LOUDNESS = float(os.getenv("REAL_ESTATE_TTS_LOUDNESS", "1.05"))
 
 OPENROUTER_PROVIDER_SORT = os.getenv("OPENROUTER_PROVIDER_SORT", "latency").strip()
 PREEMPTIVE_GENERATION = os.getenv("PREEMPTIVE_GENERATION", "1") == "1"
@@ -61,5 +68,6 @@ ENDPOINT_MAX_DELAY = _opt_float("ENDPOINT_MAX_DELAY") if _opt_float("ENDPOINT_MA
 
 # Backend & Secret
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:3000")
-INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "dev-secret-key-12345")
-
+INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "")
+if not INTERNAL_SECRET:
+    logger.warning("INTERNAL_SECRET is not set; backend calls will be rejected.")

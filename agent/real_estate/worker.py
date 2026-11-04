@@ -4,12 +4,15 @@ import json
 import time
 import asyncio
 import requests
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 from livekit import agents, api
 from livekit.agents import AgentSession, AgentServer, TurnHandlingOptions
 from livekit.plugins import sarvam, silero, openai
 
 from .config import (
+    ROOT_DIR,
     logger,
     AGENT_NAME,
     LLM_MODEL,
@@ -24,11 +27,11 @@ from .config import (
     TTS_LANGUAGE_EN,
     TTS_MODEL,
     TTS_SPEAKER,
-    TTS_SAMPLE_RATE,
+    TTS_SPEAKER_HI,
+    TTS_SPEAKER_EN,
+    DEFAULT_LANGUAGE,
     TTS_PACE,
     TTS_TEMPERATURE,
-    TTS_PITCH,
-    TTS_LOUDNESS,
     BACKEND_URL,
     INTERNAL_SECRET,
 )
@@ -38,6 +41,80 @@ from .tools import RealEstateTools
 from src.transliteration import romanize_hindi
 
 server = AgentServer()
+
+
+# ── Conversation File Logger ───────────────────────────────────────────────────
+# Writes a human-readable .txt log per call under recordings/conversations/.
+# Format mirrors the console logs so it is easy to read and grep.
+
+_CONV_LOG_DIR = ROOT_DIR / "recordings" / "conversations"
+
+
+class ConversationFileLogger:
+    """Real-time conversation logger: writes each turn to a .txt file as it happens."""
+
+    def __init__(self, call_id: str, owner_name: str, phone: str, direction: str):
+        _CONV_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_id = (call_id or "unknown")[:36]
+        self._path = _CONV_LOG_DIR / f"{ts}_{safe_id}.txt"
+        self._call_id = call_id
+        self._fh = open(self._path, "w", encoding="utf-8", buffering=1)  # line-buffered
+        # Write header
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._fh.write(
+            f"{'='*70}\n"
+            f"  ESTATE FINDER CONVERSATION LOG\n"
+            f"  Call ID  : {call_id}\n"
+            f"  Owner    : {owner_name}  |  Phone: {phone}\n"
+            f"  Direction: {direction}\n"
+            f"  Started  : {now_str}\n"
+            f"{'='*70}\n\n"
+        )
+        logger.info(f"📝 Conversation log started: {self._path}")
+
+    def _ts(self) -> str:
+        return datetime.now().strftime("%H:%M:%S")
+
+    def log_agent(self, text: str):
+        self._fh.write(f"[{self._ts()}] 🤖  Priya   : {text}\n")
+
+    def log_customer(self, text: str):
+        self._fh.write(f"[{self._ts()}] 🗣️  Customer: {text}\n")
+
+    def log_event(self, text: str):
+        self._fh.write(f"[{self._ts()}] ──  {text}\n")
+
+    def finalize(self, state: "RealEstateState"):
+        """Write outcome summary and close the file."""
+        try:
+            duration_s = int(time.time() - state.start_time)
+            mins, secs = divmod(duration_s, 60)
+            self._fh.write(
+                f"\n{'='*70}\n"
+                f"  CALL OUTCOME\n"
+                f"  Disposition  : {state.final_disposition}\n"
+                f"  Interested   : {state.is_interested}\n"
+                f"  Category     : {state.category or 'N/A'}  |  Intent: {state.intent or 'N/A'}\n"
+                f"  Property     : {state.project_or_society or 'N/A'}"
+                f"{', ' + state.sector_or_location if state.sector_or_location else ''}\n"
+                f"  Unit / Floor : {state.unit_number or 'N/A'} / {state.floor_number or 'N/A'}\n"
+                f"  Config/Type  : {state.bhk_config or state.commercial_type or 'N/A'}\n"
+                f"  Area         : {f'{state.approx_area_sqft} sqft' if state.approx_area_sqft else 'N/A'}\n"
+                f"  Furnishing   : {state.furnishing_status or 'N/A'}\n"
+                f"  Price / Rent : {state.expected_sale_price or state.expected_monthly_rent or 'N/A'}\n"
+                f"  Duration     : {mins}m {secs}s\n"
+                f"  Summary      : {state.agent_summary or 'N/A'}\n"
+                f"{'='*70}\n"
+            )
+        except Exception as e:
+            self._fh.write(f"\n[ERROR writing outcome: {e}]\n")
+        finally:
+            try:
+                self._fh.close()
+            except Exception:
+                pass
+        logger.info(f"📝 Conversation log saved: {self._path}")
 
 
 def _load_vad():
@@ -68,9 +145,11 @@ def post_re_outcome_sync(state: RealEstateState) -> bool:
         "X-Internal-Secret": INTERNAL_SECRET,
         "Content-Type": "application/json",
     }
-    callee_was_connected = state.callee_connected or len(state.transcript) >= 2
+    has_turns = len(state.transcript) >= 1
+    has_customer = any(t.get("role") == "customer" for t in state.transcript)
+    callee_was_connected = state.callee_connected or has_customer or has_turns or (time.time() - state.start_time >= 5.0)
     duration = int(time.time() - state.start_time) if callee_was_connected else 0
-    if duration <= 0 and len(state.transcript) >= 2:
+    if duration <= 0 and (has_customer or has_turns or state.callee_connected):
         duration = max(5, int(time.time() - state.start_time))
 
     is_comm = (
@@ -118,6 +197,7 @@ def post_re_outcome_sync(state: RealEstateState) -> bool:
         "median_latency_ms": int(sum(state.latency_samples) / len(state.latency_samples) * 1000) if state.latency_samples else None,
     }
 
+    logger.info(f"📤 Posting RE outcome to {url} for call {state.call_id} (duration={duration}s, turns={len(state.transcript)}, disp={state.final_disposition})")
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=5.0)
         if res.status_code in (200, 201):
@@ -150,9 +230,7 @@ async def entrypoint(ctx: agents.JobContext):
 
     phone = metadata.get("phone", "")
     owner_name = metadata.get("customerName") or metadata.get("ownerName", "Property Owner")
-    if "8658250208" in phone or "radha" in (owner_name or "").lower():
-        owner_name = "Raja Nayak"
-    preferred_language = metadata.get("preferredLanguage", "en")
+    preferred_language = metadata.get("preferredLanguage", DEFAULT_LANGUAGE)
     lead_id = metadata.get("leadId")
     direction = metadata.get("direction", "outbound")
 
@@ -175,36 +253,40 @@ async def entrypoint(ctx: agents.JobContext):
         model=LLM_MODEL,
         base_url="https://openrouter.ai/api/v1",
         api_key=OPENROUTER_API_KEY,
-        temperature=0.2,
+        temperature=0.05,       # Very low: scripted intake agent must not hallucinate or improvise
         parallel_tool_calls=False,
-        max_completion_tokens=150,
+        max_completion_tokens=120,  # Short, punchy phone responses; was 150
         **llm_extra,
     )
 
+    # Initial TTS uses default Hindi + English (Hinglish/Hindi) voice: priya (bulbul:v3)
+    initial_code = TTS_LANGUAGE_EN if preferred_language == "en" else TTS_LANGUAGE_HI
+    initial_speaker = TTS_SPEAKER_EN if preferred_language == "en" else TTS_SPEAKER_HI
+
     tts = sarvam.TTS(
-        target_language_code=TTS_LANGUAGE_EN,
+        target_language_code=initial_code,
         model=TTS_MODEL,
-        speaker=TTS_SPEAKER,
+        speaker=initial_speaker,
         pace=TTS_PACE,
-        speech_sample_rate=TTS_SAMPLE_RATE,
         temperature=TTS_TEMPERATURE,
-        pitch=TTS_PITCH,
-        loudness=TTS_LOUDNESS,
-        enable_preprocessing=False,  # LATENCY: text from LLM is already clean; preprocessing adds ~50–150ms
         api_key=SARVAM_API_KEY,
     )
 
     def _set_tts_language(lang: str):
+        # Switch language code:
+        #   English        → en-IN (Priya / Simran female English voice)
+        #   Hindi/Hinglish → hi-IN (Priya / Simran female Hindi/Hinglish voice)
         code = TTS_LANGUAGE_EN if lang == "en" else TTS_LANGUAGE_HI
+        speaker = TTS_SPEAKER_EN if lang == "en" else TTS_SPEAKER_HI
         try:
             tts.update_options(
                 model=TTS_MODEL,
-                speaker=TTS_SPEAKER,
+                speaker=speaker,
                 target_language_code=code,
                 pace=TTS_PACE,
                 temperature=TTS_TEMPERATURE,
             )
-            logger.info(f"TTS language updated -> {code} (model={TTS_MODEL}, speaker={TTS_SPEAKER}, pace={TTS_PACE})")
+            logger.info(f"TTS language updated -> {code} (speaker={speaker})")
         except Exception as e:
             logger.warning(f"TTS update failed: {e}")
 
@@ -217,15 +299,12 @@ async def entrypoint(ctx: agents.JobContext):
         direction=direction,
     )
 
-    async def hangup_session():
-        if not state.hangup_started:
-            state.hangup_started = True
-            await asyncio.to_thread(post_re_outcome_sync, state)
-            state.outcome_posted = True
-            try:
-                await ctx.room.disconnect()
-            except Exception:
-                pass
+    conv_logger = ConversationFileLogger(
+        call_id=call_id,
+        owner_name=owner_name,
+        phone=phone,
+        direction=direction,
+    )
 
     tools_instance = RealEstateTools(state, post_re_outcome_sync, None)
     agent = RealEstateAgent(state, tools_instance)
@@ -277,6 +356,10 @@ async def entrypoint(ctx: agents.JobContext):
             await asyncio.to_thread(post_re_outcome_sync, state)
             state.outcome_posted = True
         try:
+            conv_logger.finalize(state)
+        except Exception as e:
+            logger.warning(f"Error finalizing conversation log: {e}")
+        try:
             await session.aclose()
         except Exception:
             pass
@@ -306,6 +389,10 @@ async def entrypoint(ctx: agents.JobContext):
             state.last_activity_time = time.time()
             logger.info(f"🗣️ [Customer]: \"{romanized_text}\"")
             state.add_transcript("customer", romanized_text)
+            try:
+                conv_logger.log_customer(romanized_text)
+            except Exception:
+                pass
 
     @session.on("conversation_item_added")
     def on_conversation_item(ev):
@@ -330,84 +417,123 @@ async def entrypoint(ctx: agents.JobContext):
                 if not part_s.startswith("{"):
                     content_str = part_s
 
-            if role == "assistant" and content_str:
+            if role in ("user", "customer") and content_str:
+                clean_user_text = content_str.strip()
+                romanized_text = romanize_hindi(clean_user_text)
+                state.callee_connected = True
+                state.last_activity_time = time.time()
+                if not (state.transcript and state.transcript[-1].get("role") == "customer" and state.transcript[-1].get("text") == romanized_text):
+                    logger.info(f"🗣️ [Customer via chat item]: \"{romanized_text}\"")
+                    state.add_transcript("customer", romanized_text)
+                    try:
+                        conv_logger.log_customer(romanized_text)
+                    except Exception:
+                        pass
+
+            elif role == "assistant" and content_str:
                 # Clean any leaked function-call syntax like close_call{}
                 clean_agent_text = re.sub(r'\b[a-zA-Z_][a-zA-Z0-9_]*\s*\{[^}]*\}', '', content_str).strip()
                 if clean_agent_text and not (state.transcript and state.transcript[-1].get("text") == clean_agent_text):
                     logger.info(f"🤖 [Agent]: \"{clean_agent_text}\"")
                     state.add_transcript("assistant", clean_agent_text)
+                    try:
+                        conv_logger.log_agent(clean_agent_text)
+                    except Exception:
+                        pass
 
                 if state.step == RealEstateStep.CLOSING or "close_call" in content_str:
                     logger.info("Closing message spoken; initiating delayed hangup...")
                     asyncio.create_task(tools_instance._delayed_hangup())
+
+    @session.on("close")
+    def on_session_close(ev):
+        if state.hangup_started:
+            return
+        state.hangup_started = True
+        logger.info("Session closed.")
+        has_customer_speech = any(t.get("role") == "customer" for t in state.transcript)
+        elapsed = time.time() - state.start_time
+        if not has_customer_speech and not state.callee_connected and elapsed < 8.0:
+            state.final_disposition = "Not Connected (No Answer)"
+            state.agent_summary = "Call disconnected before customer spoke"
+        else:
+            state.callee_connected = True
+            if state.final_disposition in ("Abruptly Disconnected Call", "Not Connected (No Answer)"):
+                if state.is_interested:
+                    state.final_disposition = "Interested (Disconnected)"
+                elif state.project_or_society or state.category:
+                    state.final_disposition = "Partial Details Captured (Disconnected)"
+                else:
+                    state.final_disposition = "Abruptly Disconnected Call"
+        asyncio.create_task(_save_and_shutdown())
 
     @ctx.room.on("participant_disconnected")
     def on_participant_disconnected(participant):
         if state.hangup_started:
             return
         state.hangup_started = True
-        logger.info("Participant disconnected / hung up.")
-        if state.final_disposition == "Abruptly Disconnected Call":
-            if state.is_interested:
-                state.final_disposition = "Interested (Disconnected)"
-            elif state.project_or_society or state.category:
-                state.final_disposition = "Partial Details Captured (Disconnected)"
+        part_ident = getattr(participant, "identity", "unknown")
+        logger.info(f"Participant disconnected / hung up: {part_ident}")
+        has_customer_speech = any(t.get("role") == "customer" for t in state.transcript)
+        elapsed = time.time() - state.start_time
+        if not has_customer_speech and not state.callee_connected and elapsed < 8.0:
+            state.final_disposition = "Not Connected (No Answer)"
+            state.agent_summary = "Call disconnected before customer spoke"
+        else:
+            state.callee_connected = True
+            if state.final_disposition in ("Abruptly Disconnected Call", "Not Connected (No Answer)"):
+                if state.is_interested:
+                    state.final_disposition = "Interested (Disconnected)"
+                elif state.project_or_society or state.category:
+                    state.final_disposition = "Partial Details Captured (Disconnected)"
+                else:
+                    state.final_disposition = "Abruptly Disconnected Call"
         asyncio.create_task(_save_and_shutdown())
 
     ctx.add_shutdown_callback(_save_and_shutdown)
 
-    # 1. Wait for callee to answer the call
-    logger.info("Waiting for callee to answer phone...")
-    callee_connected = False
-    start_wait = time.time()
+    # 1. For inbound calls, wait for remote participant; for outbound calls, start session immediately
+    if direction == "inbound":
+        try:
+            if not ctx.room.remote_participants:
+                await asyncio.wait_for(ctx.wait_for_participant(), timeout=15.0)
+                logger.info("Remote participant joined room.")
+        except Exception as e:
+            logger.warning(f"Wait for participant completed or timed out: {e}")
 
-    while time.time() - start_wait < 45.0:
-        if state.hangup_started:
-            return
-
-        remotes = list(ctx.room.remote_participants.values())
-        if remotes:
-            p = remotes[0]
-            call_status = p.attributes.get("sip.callStatus")
-            # If web tester (no phone- prefix) or SIP call is active or participant present
-            if not p.identity.startswith("phone-") or call_status in ("active", "connected", "talking", "ready") or call_status is None:
-                logger.info(f"🎉 Callee answered! (Identity: {p.identity}, Status: {call_status}). Starting dialogue.")
-                callee_connected = True
-                state.callee_connected = True
-                state.start_time = time.time()
-                break
-            elif call_status in ("failed", "busy", "rejected", "hangup"):
-                logger.warning(f"Call ended before pickup: {call_status}")
-                if not state.is_interested:
-                    state.final_disposition = "Not Connected (No Answer)"
-                    state.agent_summary = f"Call disconnected by carrier (status: {call_status})"
-                await _save_and_shutdown()
-                return
-
-        await asyncio.sleep(0.5)
-
-    if not callee_connected:
-        logger.warning("Call ringing timed out after 45s without answer.")
-        if not state.is_interested:
-            state.final_disposition = "Not Connected (No Answer)"
-            state.agent_summary = "Call timed out before callee answered"
-        await _save_and_shutdown()
-        return
-
-    # 2. Start session on the room
+    # 2. Start session on the room immediately so audio pipeline & STT/VAD are active
     await session.start(room=ctx.room, agent=agent)
     logger.info("Real Estate agent session started in room.")
+    state.start_time = time.time()
+
+    # Mark call as answered in backend immediately so sweeper never sweeps it to NO_ANSWER
+    def _notify_answered():
+        if state.call_id:
+            try:
+                requests.post(
+                    f"{BACKEND_URL}/internal/real-estate/calls/{state.call_id}/answered",
+                    headers={"X-Internal-Secret": INTERNAL_SECRET},
+                    timeout=3.0,
+                )
+                logger.info(f"Marked call {state.call_id} as answered in backend")
+            except Exception as ex:
+                logger.debug(f"Failed to notify answered: {ex}")
+    asyncio.create_task(asyncio.to_thread(_notify_answered))
 
     # 3. Queue opening greeting
     greeting = (
-        "Hello, I’m Sagar, calling from My Estate Finder. Sir, we help property owners to sell or rent their properties. Are you also considering selling or renting a property of yours?"
+        "Hello, I’m Priya, calling from My Estate Finder. Sir, we help property owners to sell or rent their properties. Are you also considering selling or renting a property of yours?"
         if state.reply_lang == "en"
-        else "Hello, main Sagar bol raha hoon My Estate Finder se. Sir, hum property owners ko unki property sell ya rent karne mein help karte hain. Kya aap bhi apni koi property sell ya rent karne ka soch rahe hain?"
+        else "Hello, main Priya bol rahi hoon My Estate Finder se. Sir, hum property owners ko unki property sell ya rent karne mein help karte hain. Kya aap bhi apni koi property sell ya rent karne ka soch rahe hain?"
     )
 
     state.last_activity_time = time.time()
     opening_speech = session.say(greeting, allow_interruptions=False)
     state.add_transcript("assistant", greeting)
+    try:
+        conv_logger.log_agent(greeting)
+    except Exception:
+        pass
 
     # 4. Silence Watchdog loop (Friendly reprompts if caller is silent)
     async def silence_watchdog():
@@ -441,7 +567,8 @@ async def entrypoint(ctx: agents.JobContext):
                         await asyncio.wait_for(speech.wait_for_playout(), timeout=6.0)
                     except Exception:
                         pass
-                    if not state.is_interested and not state.callee_connected and len(state.transcript) < 2:
+                    has_customer = any(t.get("role") == "customer" for t in state.transcript)
+                    if not has_customer:
                         state.final_disposition = "Not Connected (No Answer)"
                     elif state.final_disposition in ("Abruptly Disconnected Call", "Not Connected (No Answer)"):
                         state.final_disposition = "Abruptly Disconnected Call"
@@ -491,4 +618,4 @@ async def entrypoint(ctx: agents.JobContext):
     except Exception as e:
         logger.warning(f"Initial greeting playout completed or timed out: {e}")
     state.last_activity_time = time.time()
-
+    

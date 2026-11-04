@@ -1,5 +1,5 @@
 /**
- * Real Estate (My Estate Finder / Sagar) Canonical Dispositions.
+ * Real Estate (My Estate Finder / Priya) Canonical Dispositions.
  * Mirrors the canonical disposition system in backend/src/utils/dispositions.ts (Airtel).
  */
 
@@ -153,15 +153,18 @@ export function matchRealEstateDisposition(
     return 'Qualified Lead';
   }
 
-  // 8. Technical: Not Connected / No Answer
+  // 8. Technical: Not Connected / No Answer (only when call duration is 0s)
   if (
-    statusUpper === 'NO ANSWER' ||
-    statusUpper === 'NO_ANSWER' ||
-    statusUpper === 'FAILED' ||
-    upper.includes('NOT CONNECTED') ||
-    upper.includes('NO ANSWER') ||
-    upper.includes('TIMEOUT') ||
-    (duration === 0 && (statusUpper.includes('FAIL') || statusUpper.includes('REJECT')))
+    duration === 0 && (
+      statusUpper === 'NO ANSWER' ||
+      statusUpper === 'NO_ANSWER' ||
+      statusUpper === 'FAILED' ||
+      upper.includes('NOT CONNECTED') ||
+      upper.includes('NO ANSWER') ||
+      upper.includes('TIMEOUT') ||
+      statusUpper.includes('FAIL') ||
+      statusUpper.includes('REJECT')
+    )
   ) {
     return 'Not Connected (No Answer)';
   }

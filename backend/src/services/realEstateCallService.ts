@@ -142,7 +142,7 @@ export class RealEstateCallService {
          script, company_name, voice_pipeline, is_test_call, pipeline
        )
        VALUES ($1, $2, 'initiated', 'initiated', $3, $4, 'outbound',
-               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Shubh - en-IN)', TRUE, 'real_estate')
+               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Priya - hi/en)', TRUE, 'real_estate')
        RETURNING *`,
       [callId, lead?.id || null, lead?.total_attempts || 1, roomName]
     );
@@ -185,7 +185,7 @@ export class RealEstateCallService {
          script, company_name, voice_pipeline, pipeline
        )
        VALUES ($1, $2, $3, 'initiated', 'initiated', $4, $5, 'outbound',
-               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Shubh - en-IN)', 'real_estate')
+               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Priya - hi/en)', 'real_estate')
        RETURNING *`,
       [callId, leadId, lead.campaign_id, attempt, roomName]
     );
@@ -219,7 +219,7 @@ export class RealEstateCallService {
           leadId: lead.id,
           ownerName: safeLeadName,
           phone: lead.phone,
-          preferredLanguage: lead.preferred_language || 'en',
+          preferredLanguage: lead.preferred_language || 'hi',
           direction: 'outbound',
         }),
       });

@@ -3,6 +3,8 @@ import crypto from 'crypto';
 import { z } from 'zod';
 import { env } from '../config/env.js';
 import { callService } from '../services/callService.js';
+import { realEstateCallService } from '../services/realEstateCallService.js';
+import { query } from '../db/index.js';
 import { validateRequest } from '../middleware/validate.js';
 import { AppError } from '../middleware/errorHandler.js';
 
@@ -53,6 +55,46 @@ const requireInternalSecret = (req: Request, _res: Response, next: NextFunction)
 };
 
 // POST /internal/calls/:callId/outcome - Idempotent outcome save
+// POST /internal/real-estate/calls/:callId/outcome - Save real estate call outcome
+internalRouter.post(
+  '/internal/real-estate/calls/:callId/outcome',
+  requireInternalSecret,
+  async (req: Request<{ callId: string }>, res: Response, next: NextFunction) => {
+    try {
+      const outcome = await realEstateCallService.saveOutcome(req.params.callId, req.body);
+      return res.status(200).json({
+        success: true,
+        message: 'Real estate call outcome and property details saved successfully',
+        outcome,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
+// POST /internal/real-estate/calls/:callId/answered - Mark call as active/answered
+internalRouter.post(
+  '/internal/real-estate/calls/:callId/answered',
+  requireInternalSecret,
+  async (req: Request<{ callId: string }>, res: Response, next: NextFunction) => {
+    try {
+      const { callId } = req.params;
+      await query(
+        `UPDATE calls
+         SET status = 'answered',
+             call_status = 'answered',
+             answered_at = COALESCE(answered_at, NOW())
+         WHERE id = $1 AND status IN ('initiated', 'dialing')`,
+        [callId]
+      );
+      return res.status(200).json({ success: true, message: 'Real estate call marked as answered' });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
 internalRouter.post(
   '/internal/calls/:callId/outcome',
   requireInternalSecret,

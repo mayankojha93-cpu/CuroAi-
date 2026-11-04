@@ -59,23 +59,23 @@ export const SCRIPT_PRESETS: ScriptPresetOption[] = [
 export const REAL_ESTATE_SCRIPT_PRESETS: ScriptPresetOption[] = [
   {
     id: 'my-estate-finder-intake',
-    title: 'My Estate Finder — Property Intake (Sagar)',
-    prompt: 'Hello, this is Sagar calling from My Estate Finder. I am calling to check if you are looking to sell or lease out your property.',
+    title: 'My Estate Finder — Property Intake (Priya)',
+    prompt: 'Hello, main Priya bol rahi hoon My Estate Finder se. Sir, hum property owners ko unki property sell ya rent karne mein help karte hain. Kya aap bhi apni koi property sell ya rent karne ka soch rahe hain?',
   },
   {
     id: 're-residential-sale',
     title: 'My Estate Finder — Residential Sale Qualification',
-    prompt: 'Hello, this is Sagar from My Estate Finder. We have active, verified buyers looking for residential flats and apartments. Are you interested in selling your residential property?',
+    prompt: 'Hello, main Priya bol rahi hoon My Estate Finder se. We have active, verified buyers looking for residential flats and apartments. Kya aap apni residential property sell karne mein interested hain?',
   },
   {
     id: 're-residential-lease',
     title: 'My Estate Finder — Residential Rental & Lease Intake',
-    prompt: 'Hello, this is Sagar calling from My Estate Finder. We have corporate tenants looking for apartments and flats on lease. Are you open to renting out your property?',
+    prompt: 'Hello, main Priya baat kar rahi hoon My Estate Finder se. We have corporate tenants looking for apartments on lease. Kya aap apni property rent par dena chahte hain?',
   },
   {
     id: 're-commercial-space',
     title: 'My Estate Finder — Commercial Space & Office Leasing',
-    prompt: 'Hello, this is Sagar from My Estate Finder. We have verified retail brands and corporate clients looking for commercial office spaces, shops, and showrooms.',
+    prompt: 'Hello, main Priya bol rahi hoon My Estate Finder se. We have verified retail brands and corporate clients looking for commercial office spaces, shops, and showrooms.',
   },
 ];
 
@@ -132,10 +132,8 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
   const [selectedScriptId, setSelectedScriptId] = useState<string>(() =>
     isRealEstate ? REAL_ESTATE_SCRIPT_PRESETS[0].id : 'delhi-routine'
   );
-  const [language, setLanguage] = useState(() => (isRealEstate ? 'en-IN' : 'hi-IN'));
-  const [voicePipeline, setVoicePipeline] = useState(() =>
-    isRealEstate ? 'Sarvam AI (Shubh - en-IN)' : 'Sarvam AI (Priya - hi-IN)'
-  );
+  const [language, setLanguage] = useState(() => (isRealEstate ? 'hi-IN' : 'hi-IN'));
+  const [voicePipeline, setVoicePipeline] = useState(() => 'Sarvam AI (Priya - hi-IN)');
 
   // Schedule
   const [scheduleStartTime, setScheduleStartTime] = useState('09:00');
@@ -173,15 +171,13 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
         if (!REAL_ESTATE_SCRIPT_PRESETS.some((p) => p.id === selectedScriptId)) {
           setSelectedScriptId(REAL_ESTATE_SCRIPT_PRESETS[0].id);
         }
-        setLanguage((prev) => (prev === 'hi-IN' ? 'en-IN' : prev));
-        setVoicePipeline((prev) => (prev === 'Sarvam AI (Priya - hi-IN)' ? 'Sarvam AI (Shubh - en-IN)' : prev));
+        setVoicePipeline('Sarvam AI (Priya - hi-IN)');
         setExpectedDispositions(REAL_ESTATE_DISPOSITIONS);
       } else {
         if (!SCRIPT_PRESETS.some((p) => p.id === selectedScriptId)) {
           setSelectedScriptId(SCRIPT_PRESETS[0].id);
         }
-        setLanguage((prev) => (prev === 'en-IN' ? 'hi-IN' : prev));
-        setVoicePipeline((prev) => (prev === 'Sarvam AI (Shubh - en-IN)' ? 'Sarvam AI (Priya - hi-IN)' : prev));
+        setVoicePipeline('Sarvam AI (Priya - hi-IN)');
         setExpectedDispositions(CANONICAL_DISPOSITIONS);
       }
     }
