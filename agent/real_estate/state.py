@@ -76,6 +76,11 @@ class RealEstateState:
         self.final_disposition: str = "Abruptly Disconnected Call"
         self.agent_summary: Optional[str] = None
         self.closing_spoken: bool = False
+        # Set by a tool when the next spoken line is already known; llm_node speaks it directly
+        # (skips the 2nd LLM call). Cleared at the start of every user turn.
+        self.direct_reply: Optional[str] = None
+        # Caller asked "what price/rate will I get?" -> closing = valuation line + short thank-you
+        self.valuation_requested: bool = False
         self.hangup_started: bool = False
         self.outcome_posted: bool = False
         self.silence_count: int = 0
