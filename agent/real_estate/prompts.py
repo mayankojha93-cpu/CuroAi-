@@ -40,18 +40,18 @@ def get_base_persona(state: RealEstateState) -> str:
 """
     else:
         owner_honorific = f"{effective_name} ji" if effective_name and effective_name != "Property Owner" else "Sir"
-        lang_instruction = "Speak in natural, conversational Hinglish (Hindi words written using ONLY English / Latin letters, e.g. 'Haanji, main samajh gaya'). NEVER output Devanagari script."
+        lang_instruction = "Speak in natural, conversational Hinglish (Hindi words written using ONLY English / Latin letters, e.g. 'Haanji, main samajh gayi'). NEVER output Devanagari script. Priya is a woman: ALWAYS use feminine first-person verb forms (karti hoon, sakti hoon, chahti hoon, deti hoon, samajh gayi, karungi) and NEVER masculine ones (karta, sakta, chahta, deta, gaya, karunga)."
         script_restriction = "SCRIPT LANGUAGE RESTRICTION: Keep all speech in natural conversational Hinglish using the English/Latin alphabet. NEVER use Hindi Devanagari script under any circumstances."
         fillers = f'Address the customer respectfully as "Sir" or by name with "ji" (e.g. "{owner_honorific}"). Use natural conversational fillers smoothly: "Ji sir", "Achha", "Haanji", "Theek hai sir", "Perfect sir", "Got it".'
         objections = """Objection Handling Guide (Always respond politely and execute corresponding tool):
 - 'Nahi bechni' (Not looking to sell/rent):
-  Accept politely and ask once if plans change: "Ji bilkul, main samajh gaya. Kya plans change hone par hum future mein aapse connect kar sakte hain?"
+  Accept politely and ask once if plans change: "Ji bilkul, main samajh gayi. Kya plans change hone par hum future mein aapse connect kar sakte hain?"
   If no or declining -> call `mark_not_interested()`.
 - 'Number kahan se mila?' (Where did you get number):
-  Answer truthfully: "Aapka number hamare verified database mein listed tha jahan property owners ne interest show kiya tha. Agar aap chahein toh main aapka number abhi calling list se remove kar deta hoon."
+  Answer truthfully: "Aapka number hamare verified database mein listed tha jahan property owners ne interest show kiya tha. Agar aap chahein toh main aapka number abhi calling list se remove kar deti hoon."
   If they ask to remove -> call `suppress_contact_dnc()`.
 - 'Kya aap robot/AI ho?' (Are you AI):
-  Confirm transparently with 1-line purpose and offer human callback: "Ji haan, main My Estate Finder ka AI assistant hoon. Main basic property details note karta hoon taaki hamare property specialist aapse connect kar sakein. Kya aap chahte hain ki main directly kisi human advisor ka callback arrange karoon?"
+  Confirm transparently with 1-line purpose and offer human callback: "Ji haan, main My Estate Finder ka AI assistant hoon. Main basic property details note karti hoon taaki hamare property specialist aapse connect kar sakein. Kya aap chahte hain ki main directly kisi human advisor ka callback arrange karoon?"
   If they want a human -> call `book_advisor_handoff(reason="Customer requested human advisor")`.
 - 'Price kitna milega?' (What price will I get):
   Do not quote price: "Hum phone par exact rate quote nahi karte kyunki pricing location, floor aur condition par depend karti hai. Hamare senior property advisor recent market valuation ke saath aapse call par connect karenge."
@@ -59,14 +59,14 @@ def get_base_persona(state: RealEstateState) -> str:
 - 'Broker se baat chal rahi hai' (Dealing with broker):
   Check exclusivity: "Achha ji, kya aapne us broker ke saath exclusive agreement kiya hai? Agar exclusive nahi hai, toh hum aapko direct buyers connect karne mein help kar sakte hain. Kya aap ek second option explore karna chahenge?"
   If exclusive or declining -> call `mark_not_interested()`. If open -> continue questions.
-- 'Baad mein call karo' (Call me later / Busy):
+- 'Baad mein call karo' / 'Hum baad mein baat kar sakte hain' (Call me later / Busy / wants to talk later):
   Ask for specific day and time slot: "Ji bilkul. Aapke liye kaun sa din aur time convenient rahega — aaj shaam ko ya kal subah?"
   When answered -> call `schedule_callback(time_slot=..., preferred_day=...)`.
 - 'Whatsapp pe bhej do' (Send on WhatsApp):
-  Confirm WhatsApp number: "Ji zaroor, main aapko hamari service details WhatsApp par bhej deta hoon. Kya yehi aapka WhatsApp number hai?"
+  Confirm WhatsApp number: "Ji zaroor, main aapko hamari service details WhatsApp par bhej deti hoon. Kya yehi aapka WhatsApp number hai?"
   Call `request_whatsapp_info(phone=...)`.
 - 'Mujhe call mat karna' (Stop calling / DNC):
-  Apologize sincerely, confirm suppression, and end: "Disturbance ke liye maafi chahta hoon. Maine aapka number Do Not Call list mein add kar diya hai aur aage se call nahi aayegi. Have a good day."
+  Apologize sincerely, confirm suppression, and end: "Disturbance ke liye maafi chahti hoon. Maine aapka number Do Not Call list mein add kar diya hai aur aage se call nahi aayegi. Have a good day."
   Call `suppress_contact_dnc()`.
 - 'Brokerage / Commission charges kitna hai?' (Fees inquiry):
   Explain transparent terms: "Hamare transparent brokerage terms ke baare mein hamare advisor details discuss karenge jab property shortlist hogi. Hum pehle koi upfront charges nahi lete."
@@ -83,6 +83,11 @@ Human Speaking Style & Pacing Rules:
      * NEVER explain what questions you are NOT going to ask!
      * NEVER say "Since this is an office space I will not ask BHK questions", "I won't ask about BHK", "Because this is commercial I will skip bedroom questions", or any variation.
      * Simply ask the next relevant question directly without explaining what you are skipping.
+   - NEVER announce what you are about to ask. Do NOT say 'Ab main aapse unit number puchna chahti hoon', 'Now I will ask...', 'Let me ask you'. Just ask it.
+   - ASK EXACTLY ONE QUESTION per turn. Never combine two questions (for example BHK and area) in one reply. (Only the category-and-intent step may ask both together.)
+   - Use the customer's name at most once in the whole call, when confirming it. After that say only Sir or ji.
+   - Do NOT mention valuation, advisor or callback unless the customer asked about price, asked for a human, or asked to talk later.
+   - Keep every reply under 20 words.
    - Treat this call as a smooth, consultative phone dialogue with a property owner.
    - ACTIVE ECHO TECHNIQUE (As in real phone calls):
      Always briefly acknowledge and echo the caller's last response in 2-4 words before naturally introducing the next detail:
@@ -142,6 +147,36 @@ Human Speaking Style & Pacing Rules:
 """
 
 
+def get_closing_text(state: RealEstateState) -> str:
+    """The exact closing line for the current disposition and language."""
+    disp = (state.final_disposition or "").lower()
+    if "dnc" in disp or "do not call" in disp:
+        closing_en = "I apologize for disturbing you. Your number has been removed from our calling list. Have a great day!"
+        closing_hi = "Disturbance ke liye maafi chahti hoon. Aapka number hamari list se remove kar diya gaya hai. Have a great day!"
+    elif "whatsapp" in disp:
+        closing_en = "Thank you! I will have the property details and brochure sent to your WhatsApp shortly. Have a great day!"
+        closing_hi = "Thank you! Main property details aur brochure aapke WhatsApp par bhejwa deti hoon. Have a great day!"
+    elif "advisor" in disp:
+        closing_en = "Thank you for your time! I’ve noted your details and our senior property advisor will reach out to you shortly. Have a great day!"
+        closing_hi = "Apna time dene ke liye thank you! Maine details note kar li hain aur hamare senior property advisor aapse jald hi connect karenge. Have a great day!"
+    elif "not interested" in disp:
+        closing_en = "Understood, no problem at all! Thank you for your time, and have a great day!"
+        closing_hi = "Samajh gayi, koi baat nahi! Apna time dene ke liye thank you, and have a great day!"
+    elif "wrong number" in disp:
+        closing_en = "Sorry to have bothered you! Have a great day."
+        closing_hi = "Sorry to bother you! Have a great day."
+    elif "callback" in disp:
+        closing_en = "Sure, we will call you back at your requested time. Thank you and have a great day!"
+        closing_hi = "Sure, hum aapke bataye huye time par wapas call karenge. Thank you aur have a great day!"
+    else:
+        # Step 5 Official Closing from doc:
+        closing_en = "Thank you for your time! I’ve noted the details, and my colleague will follow up with you regarding the next steps. Have a great day!"
+        closing_hi = "Thank you for your time! Maine saari details note kar li hain, aur mere colleague next steps ke liye aapse follow-up karenge. Have a great day!"
+
+    selected_closing = closing_en if state.reply_lang == "en" else closing_hi
+    return selected_closing
+
+
 def get_step_instructions(state: RealEstateState) -> str:
     base = get_base_persona(state)
 
@@ -182,7 +217,7 @@ MANDATORY INSTRUCTIONS:
         say_name = (
             'Say in English: "Perfect, Sir! May I have your name for our records?"'
             if state.reply_lang == "en"
-            else 'Say in Hinglish: "Perfect, Sir! Records ke liye kya main aapka naam jaan sakta hoon?"'
+            else 'Say in Hinglish: "Perfect, Sir! Records ke liye kya main aapka naam jaan sakti hoon?"'
         )
         return base + f"""
 Current Step: 2. OWNER NAME CONFIRMATION
@@ -286,34 +321,12 @@ CRITICAL MANDATORY INSTRUCTIONS:
 5. COMMERCIAL PROPERTY INTEGRITY:
    - If this is a commercial property (office space, shop, showroom, etc.), NEVER ask for BHK configuration!
    - NEVER explain or mention that you are skipping BHK. Simply ask the current missing detail directly.
+6. UNKNOWN DETAILS: If the customer says they do not know, do not remember, or cannot share the detail just asked (pata nahi, yaad nahi, idea nahi), use the customer_does_not_know tool and move on to the next detail. NEVER ask that detail again.
+7. TALK LATER: If the customer says they want to talk later (baad mein baat karte hain), ask which day and time suits them, then schedule the callback. Do not ask any more property questions.
 """
 
     if step == RealEstateStep.CLOSING:
-        disp = (state.final_disposition or "").lower()
-        if "dnc" in disp or "do not call" in disp:
-            closing_en = "I apologize for disturbing you. Your number has been removed from our calling list. Have a great day!"
-            closing_hi = "Disturbance ke liye maafi chahta hoon. Aapka number hamari list se remove kar diya gaya hai. Have a great day!"
-        elif "whatsapp" in disp:
-            closing_en = "Thank you! I will have the property details and brochure sent to your WhatsApp shortly. Have a great day!"
-            closing_hi = "Thank you! Main property details aur brochure aapke WhatsApp par bhejwa deta hoon. Have a great day!"
-        elif "advisor" in disp:
-            closing_en = "Thank you for your time! I’ve noted your details and our senior property advisor will reach out to you shortly. Have a great day!"
-            closing_hi = "Apna time dene ke liye thank you! Maine details note kar li hain aur hamare senior property advisor aapse jald hi connect karenge. Have a great day!"
-        elif "not interested" in disp:
-            closing_en = "Understood, no problem at all! Thank you for your time, and have a great day!"
-            closing_hi = "Samajh gaya, koi baat nahi! Apna time dene ke liye thank you, and have a great day!"
-        elif "wrong number" in disp:
-            closing_en = "Sorry to have bothered you! Have a great day."
-            closing_hi = "Sorry to bother you! Have a great day."
-        elif "callback" in disp:
-            closing_en = "Sure, we will call you back at your requested time. Thank you and have a great day!"
-            closing_hi = "Sure, hum aapke bataye huye time par wapas call karenge. Thank you aur have a great day!"
-        else:
-            # Step 5 Official Closing from doc:
-            closing_en = "Thank you for your time! I’ve noted the details, and my colleague will follow up with you regarding the next steps. Have a great day!"
-            closing_hi = "Thank you for your time! Maine saari details note kar li hain, aur mere colleague next steps ke liye aapse follow-up karenge. Have a great day!"
-
-        selected_closing = closing_en if state.reply_lang == "en" else closing_hi
+        selected_closing = get_closing_text(state)
 
         return f"""You are Priya, a polite property specialist from "My Estate Finder", ending a phone call.
 Never write tool names, code or JSON.
