@@ -21,7 +21,7 @@ def get_base_persona(state: RealEstateState) -> str:
   Confirm transparently: "Yes, I am the AI assistant for My Estate Finder. I assist with basic property details so our property specialist can connect with you. Would you like me to arrange a direct callback from our senior advisor?"
   If they want a human -> call `book_advisor_handoff(reason="Customer requested human advisor")`.
 - 'What price will I get?':
-  Do not quote price: "We do not quote fixed rates over the phone as valuation depends on location, floor, and condition. Our senior property advisor will connect with you with a comprehensive market valuation."
+  Do NOT quote any price and say NOTHING yourself: the system speaks the full valuation reply and the closing.
   Call `book_advisor_handoff(reason="Price valuation requested")`.
 - 'Already working with a broker':
   Check exclusivity: "Understood, do you have an exclusive agreement with them? If not, we can help connect you with direct buyers as an additional option. Would you like to explore that?"
@@ -54,7 +54,7 @@ def get_base_persona(state: RealEstateState) -> str:
   Confirm transparently with 1-line purpose and offer human callback: "Ji haan, main My Estate Finder ka AI assistant hoon. Main basic property details note karti hoon taaki hamare property specialist aapse connect kar sakein. Kya aap chahte hain ki main directly kisi human advisor ka callback arrange karoon?"
   If they want a human -> call `book_advisor_handoff(reason="Customer requested human advisor")`.
 - 'Price kitna milega?' (What price will I get):
-  Do not quote price: "Hum phone par exact rate quote nahi karte kyunki pricing location, floor aur condition par depend karti hai. Hamare senior property advisor recent market valuation ke saath aapse call par connect karenge."
+  Do NOT quote any price and say NOTHING yourself: the system speaks the full valuation reply and the closing.
   Call `book_advisor_handoff(reason="Price valuation requested")`.
 - 'Broker se baat chal rahi hai' (Dealing with broker):
   Check exclusivity: "Achha ji, kya aapne us broker ke saath exclusive agreement kiya hai? Agar exclusive nahi hai, toh hum aapko direct buyers connect karne mein help kar sakte hain. Kya aap ek second option explore karna chahenge?"
@@ -147,8 +147,36 @@ Human Speaking Style & Pacing Rules:
 """
 
 
+def _owner_call_name(state: RealEstateState) -> str:
+    """First name for addressing the caller; falls back to 'Sir' when no real name is known."""
+    n = (getattr(state, "owner_name_confirmed", None) or state.owner_name or "").strip()
+    if not n or n.lower() in ("property owner", "owner", "customer"):
+        return "Sir"
+    return n.split()[0]
+
+
+def get_valuation_closing_text(state: RealEstateState) -> str:
+    """Spoken when the caller asks what price/rate they will get: explains the advisor valuation,
+    then closes. One string = one TTS call = lowest latency."""
+    name = _owner_call_name(state)
+    what = "rent" if state.intent == "lease" else "selling price"
+    if state.reply_lang == "en":
+        return (
+            f"Sure, {name}. To give you an accurate {what}, our property advisors will check the market "
+            f"rates and prices of nearby properties. After that, they will suggest an expected {what} to you. "
+            "I’ve noted your details. Thank you for your time!"
+        )
+    return (
+        f"Ji {name}, bilkul. Aapko property ka sahi {what} batane ke liye hamare property advisor market rates "
+        f"aur nearby properties ki prices check karenge. Uske baad aapko ek expected {what} suggest karenge. "
+        "Maine details note kar li. Apna time dene ke liye thank you!"
+    )
+
+
 def get_closing_text(state: RealEstateState) -> str:
     """The exact closing line for the current disposition and language."""
+    if getattr(state, "valuation_requested", False):
+        return get_valuation_closing_text(state)
     disp = (state.final_disposition or "").lower()
     if "dnc" in disp or "do not call" in disp:
         closing_en = "I apologize for disturbing you. Your number has been removed from our calling list. Have a great day!"
