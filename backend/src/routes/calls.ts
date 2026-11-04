@@ -379,7 +379,11 @@ callsRouter.get('/api/calls/:id/audio', async (req: Request<{ id: string }>, res
       }
     }
 
-    if (requestingUser?.assigned_pipeline && requestingUser.assigned_pipeline !== 'all') {
+    if (!requestingUser) {
+      return res.status(401).json({ error: 'Authentication required to access recordings' });
+    }
+
+    if (requestingUser.assigned_pipeline && requestingUser.assigned_pipeline !== 'all') {
       const callPipeline = call.pipeline || 'airtel';
       if (callPipeline !== requestingUser.assigned_pipeline) {
         return res.status(403).json({ error: 'Access forbidden: You cannot access audio recordings from another pipeline' });
@@ -516,6 +520,3 @@ callsRouter.post(
     }
   }
 );
-
-
-
