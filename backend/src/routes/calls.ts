@@ -5,6 +5,7 @@ import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 import { query } from '../db/index.js';
 import { env } from '../config/env.js';
+import { logger } from '../config/logger.js';
 import { authService, UserPayload } from '../services/authService.js';
 import { callService } from '../services/callService.js';
 import { realEstateCallService } from '../services/realEstateCallService.js';
@@ -454,21 +455,31 @@ callsRouter.get('/api/calls/:id/audio', async (req: Request<{ id: string }>, res
   }
 });
 
-// POST /api/exotel/recording-callback & /api/webhooks/exotel - Real-time webhook from Exotel
-callsRouter.post(
+// POST & GET /api/exotel/recording-callback & /api/webhooks/exotel - Real-time webhook from Exotel
+callsRouter.all(
   ['/api/exotel/recording-callback', '/api/webhooks/exotel'],
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const {
-        CallSid,
-        RecordingUrl,
-        RecordingDuration,
-        To,
-        From,
-        CustomField,
-      } = req.body || {};
+      const payload: Record<string, any> = { ...req.query, ...req.body };
+      logger.info({ payload }, 'Received Exotel recording callback');
+
+      const CallSid = payload.CallSid || payload.CallSID || payload['Stream[StreamSID]'] || payload.Stream?.StreamSID;
+      const RecordingUrl =
+        payload['Stream[RecordingUrl]'] ||
+        payload.RecordingUrl ||
+        payload.Stream?.RecordingUrl ||
+        payload.recording_url;
+      const RecordingDuration =
+        payload['Stream[Duration]'] ||
+        payload.RecordingDuration ||
+        payload.Stream?.Duration ||
+        payload.Duration;
+      const To = payload.To || payload.to;
+      const From = payload.From || payload.from;
+      const CustomField = payload.CustomField || payload.custom_field;
 
       if (!RecordingUrl) {
+        logger.warn({ payload }, 'Missing RecordingUrl in Exotel webhook payload');
         return res.status(400).json({ error: 'Missing RecordingUrl in Exotel webhook payload' });
       }
 
