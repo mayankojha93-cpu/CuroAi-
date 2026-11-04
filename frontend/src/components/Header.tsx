@@ -86,7 +86,7 @@ export const Header: React.FC<HeaderProps> = ({
                 <span className="pulse-indicator" style={{
                   background: user?.assigned_pipeline === 'real_estate' ? '#38BDF8' : 'var(--curo-sage)',
                 }}></span>
-                {user?.assigned_pipeline === 'real_estate' ? 'Pipeline: My Estate Finder (Sagar)' : 'Pipeline: Airtel Telecom (Priya)'}
+                {user?.assigned_pipeline === 'real_estate' ? 'Pipeline: My Estate Finder (Priya)' : 'Pipeline: Airtel Telecom (Priya)'}
               </span>
             </div>
             <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
