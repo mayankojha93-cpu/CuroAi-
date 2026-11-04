@@ -177,7 +177,10 @@ export const TestCallModal: React.FC<TestCallModalProps> = ({ isOpen, onClose, o
 
     try {
       setIsDialing(true);
-      const res = await initiateTestCall(formData);
+      const res = await initiateTestCall({
+        ...formData,
+        property_location: formData.address,
+      });
       setDialResult(res.call);
       if (onCallInitiated) {
         onCallInitiated();
