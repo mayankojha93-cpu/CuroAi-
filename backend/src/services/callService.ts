@@ -1123,7 +1123,8 @@ export class CallService {
            ended_at = NOW()
        WHERE status IN ('initiated', 'dialing')
          AND COALESCE(direction, 'outbound') = 'outbound'
-         AND created_at < NOW() - INTERVAL '3 minutes'
+         AND (duration_seconds IS NULL OR duration_seconds = 0)
+         AND created_at < NOW() - INTERVAL '5 minutes'
        RETURNING id, customer_id, room_name, created_at`
     );
 
