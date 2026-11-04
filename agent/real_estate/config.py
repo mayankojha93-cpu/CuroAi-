@@ -56,6 +56,19 @@ TTS_TEMPERATURE = float(os.getenv("REAL_ESTATE_TTS_TEMPERATURE", "0.7"))
 OPENROUTER_PROVIDER_SORT = os.getenv("OPENROUTER_PROVIDER_SORT", "latency").strip()
 PREEMPTIVE_GENERATION = os.getenv("PREEMPTIVE_GENERATION", "1") == "1"
 
+# ── Latency switches (all env-controllable so each change can be A/B tested / rolled back) ──
+# FAST_TOOL_REPLY=1 : after a tool call, speak the canonical next question directly instead of
+#                     making a 2nd LLM round trip just to read it out. Set 0 to restore old behaviour.
+FAST_TOOL_REPLY = os.getenv("FAST_TOOL_REPLY", "1") == "1"
+# LATENCY_LOG=1 : per-turn EOU / LLM TTFT / TTS TTFB breakdown in the logs.
+LATENCY_LOG = os.getenv("LATENCY_LOG", "1") == "1"
+# VAD silence needed to end a speech segment. Default = your current value (0.45).
+# Try 0.30-0.35 only after reading the latency logs.
+VAD_MIN_SILENCE = float(os.getenv("VAD_MIN_SILENCE", "0.45"))
+# Optional OpenRouter provider pinning, e.g. OPENROUTER_PROVIDER_ORDER=Groq,Cerebras
+# Empty = keep using OPENROUTER_PROVIDER_SORT exactly as today.
+OPENROUTER_PROVIDER_ORDER = [p.strip() for p in os.getenv("OPENROUTER_PROVIDER_ORDER", "").split(",") if p.strip()]
+
 def _opt_float(name: str):
     v = os.getenv(name, "").strip()
     try:
@@ -65,6 +78,14 @@ def _opt_float(name: str):
 
 ENDPOINT_MIN_DELAY = _opt_float("ENDPOINT_MIN_DELAY") if _opt_float("ENDPOINT_MIN_DELAY") is not None else 0.15
 ENDPOINT_MAX_DELAY = _opt_float("ENDPOINT_MAX_DELAY") if _opt_float("ENDPOINT_MAX_DELAY") is not None else 0.45
+
+# Max tokens the LLM may generate per reply. 120 was too low: a tool call with many parameters
+# (save_property_details has 14) got CUT OFF mid-JSON and the caller heard nothing.
+# Short spoken replies are unaffected (generation stops at end-of-sequence), so this costs no latency.
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "300"))
+# Optional silero deactivation threshold (lower = VAD ends speech sooner on noisy phone lines).
+# Leave unset unless the logs show END_SPEECH arriving >1s after the caller stopped talking.
+VAD_DEACTIVATION = _opt_float("VAD_DEACTIVATION")
 
 # Backend & Secret
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:3000")
