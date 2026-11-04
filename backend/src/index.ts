@@ -50,7 +50,7 @@ app.use(express.text({ type: ['text/csv', 'text/plain'], limit: '10mb' }));
 app.use(healthRouter);
 app.use(internalRouter);
 app.use(authRouter);
-app.use(requireAuth, realEstateRouter);
+app.use(realEstateRouter);
 app.use(requireAuth, callsRouter);
 app.use(requireAuth, campaignsRouter);
 app.use(requireAuth, billingRouter);
