@@ -67,12 +67,20 @@ class RealEstateState:
         self.current_rent_received: Optional[str] = None
         self.immediate_occupancy: Optional[bool] = None
 
+        # Details the customer said they don't know / can't share (never re-asked)
+        self.skipped_fields: set = set()
+
         # Call outcome & tracking
         self.owner_name_confirmed: Optional[str] = None
         self.is_interested: Optional[bool] = None
         self.final_disposition: str = "Abruptly Disconnected Call"
         self.agent_summary: Optional[str] = None
         self.closing_spoken: bool = False
+        # Set by a tool when the next spoken line is already known; llm_node speaks it directly
+        # (skips the 2nd LLM call). Cleared at the start of every user turn.
+        self.direct_reply: Optional[str] = None
+        # Caller asked "what price/rate will I get?" -> closing = valuation line + short thank-you
+        self.valuation_requested: bool = False
         self.hangup_started: bool = False
         self.outcome_posted: bool = False
         self.silence_count: int = 0
@@ -127,19 +135,26 @@ class RealEstateState:
 
         if self.step == RealEstateStep.RESIDENTIAL_SALE:
             # 4.1 In case of Sale of Residential Premises
+            if not self.sector_or_location:
+                missing.append({
+                    "id": "location",
+                    "label": "Location or sector",
+                    "question_en": "Which area or sector is the property located in?",
+                    "question_hi": "Sir, ye property kis location ya sector mein hai?",
+                })
             if not self.project_or_society:
                 missing.append({
                     "id": "society_sector",
-                    "label": "Society name and sector",
-                    "question_en": "Could you share which society or project it is, and its location?",
-                    "question_hi": "So sir ye property jo hai iska location bata sakte hain aur kaun sa project hai?",
+                    "label": "Society or project name",
+                    "question_en": "And which society or project is it?",
+                    "question_hi": "Aur sir, society ya project ka naam kya hai?",
                 })
             if not (self.unit_number and self.floor_number):
                 missing.append({
                     "id": "unit_floor",
                     "label": "Unit number and floor",
                     "question_en": "Could you share the unit number and which floor it's on?",
-                    "question_hi": "Sir, main ye jaan sakta hoon unit number kya hai aur kaun se floor par hai ye?",
+                    "question_hi": "Sir, main ye jaan sakti hoon unit number kya hai aur kaun se floor par hai ye?",
                 })
             if not self.bhk_config:
                 missing.append({
@@ -172,19 +187,26 @@ class RealEstateState:
 
         elif self.step == RealEstateStep.RESIDENTIAL_LEASE:
             # 4.2 In case of Lease of Residential Premises
+            if not self.sector_or_location:
+                missing.append({
+                    "id": "location",
+                    "label": "Location or sector",
+                    "question_en": "Which area or sector is the property located in?",
+                    "question_hi": "Sir, ye property kis location ya sector mein hai?",
+                })
             if not self.project_or_society:
                 missing.append({
                     "id": "society_sector",
-                    "label": "Society name and sector",
-                    "question_en": "Could you share which society or project it is, and its location?",
-                    "question_hi": "So sir ye property jo hai iska location bata sakte hain aur kaun sa project hai?",
+                    "label": "Society or project name",
+                    "question_en": "And which society or project is it?",
+                    "question_hi": "Aur sir, society ya project ka naam kya hai?",
                 })
             if not (self.unit_number and self.floor_number):
                 missing.append({
                     "id": "unit_floor",
                     "label": "Unit number and floor",
                     "question_en": "Could you share the unit number and which floor it's on?",
-                    "question_hi": "Sir, main ye jaan sakta hoon unit number kya hai aur kaun se floor par hai ye?",
+                    "question_hi": "Sir, main ye jaan sakti hoon unit number kya hai aur kaun se floor par hai ye?",
                 })
             if not self.bhk_config:
                 missing.append({
@@ -224,19 +246,26 @@ class RealEstateState:
 
         elif self.step == RealEstateStep.COMMERCIAL_SALE:
             # 4.3 In case of Sale of Commercial Premises
+            if not self.sector_or_location:
+                missing.append({
+                    "id": "location",
+                    "label": "Location or sector",
+                    "question_en": "Which area or sector is the property located in?",
+                    "question_hi": "Sir, ye property kis location ya sector mein hai?",
+                })
             if not self.project_or_society:
                 missing.append({
                     "id": "project_sector",
-                    "label": "Project or building name and sector",
-                    "question_en": "Could you share which commercial project or building it is, and its location?",
-                    "question_hi": "So sir ye commercial property kaun se project ya building mein hai, aur location kya hai?",
+                    "label": "Project or building name",
+                    "question_en": "And which commercial project or building is it in?",
+                    "question_hi": "Aur sir, kaun se project ya building mein hai?",
                 })
             if not (self.unit_number and self.floor_number):
                 missing.append({
                     "id": "unit_floor",
                     "label": "Unit number and floor",
                     "question_en": "Could you share the unit number and which floor it's on?",
-                    "question_hi": "Sir, main ye jaan sakta hoon unit number kya hai aur kaun se floor par hai ye?",
+                    "question_hi": "Sir, main ye jaan sakti hoon unit number kya hai aur kaun se floor par hai ye?",
                 })
             if not self.commercial_type:
                 missing.append({
@@ -283,19 +312,26 @@ class RealEstateState:
 
         elif self.step == RealEstateStep.COMMERCIAL_LEASE:
             # 4.4 In case of Lease of Commercial Premises
+            if not self.sector_or_location:
+                missing.append({
+                    "id": "location",
+                    "label": "Location or sector",
+                    "question_en": "Which area or sector is the property located in?",
+                    "question_hi": "Sir, ye property kis location ya sector mein hai?",
+                })
             if not self.project_or_society:
                 missing.append({
                     "id": "project_sector",
-                    "label": "Project or building name and sector",
-                    "question_en": "Could you share which commercial project or building it is, and its location?",
-                    "question_hi": "So sir ye commercial property kaun se project ya building mein hai, aur location kya hai?",
+                    "label": "Project or building name",
+                    "question_en": "And which commercial project or building is it in?",
+                    "question_hi": "Aur sir, kaun se project ya building mein hai?",
                 })
             if not (self.unit_number and self.floor_number):
                 missing.append({
                     "id": "unit_floor",
                     "label": "Unit number and floor",
                     "question_en": "Could you share the unit number and which floor it's on?",
-                    "question_hi": "Sir, main ye jaan sakta hoon unit number kya hai aur kaun se floor par hai ye?",
+                    "question_hi": "Sir, main ye jaan sakti hoon unit number kya hai aur kaun se floor par hai ye?",
                 })
             if not self.commercial_type:
                 missing.append({
@@ -333,7 +369,7 @@ class RealEstateState:
                     "question_hi": "Kya yeh property immediate occupancy ke liye available hai, ya notice period hai?",
                 })
 
-        return missing
+        return [m for m in missing if m["id"] not in self.skipped_fields]
 
     def is_branch_complete(self) -> bool:
         """Check if all essential fields for the current branch have been collected."""

@@ -4,6 +4,15 @@ import type { CallRecord } from '../../types';
 import { fetchCallDetail } from '../../services/api.service';
 import { cleanEnglishOnly, formatVoicePipelineLabel } from '../../utils/textUtils';
 import { romanizeHindi } from '../../utils/transliteration';
+import { getStoredAuthToken } from '../../context/AuthContext';
+
+// <audio> and <a download> cannot send an Authorization header, so the (now login-protected)
+// recording endpoint receives the JWT as a query parameter.
+const withAuthToken = (url: string): string => {
+  const token = getStoredAuthToken();
+  if (!token) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
+};
 
 interface CallDetailModalProps {
   call: CallRecord | null;
@@ -458,7 +467,7 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
                   )}
                 </div>
                 <a
-                  href={activeCall.recording_url}
+                  href={withAuthToken(activeCall.recording_url)}
                   download={`call-${activeCall.id}.mp3`}
                   target="_blank"
                   rel="noreferrer"
@@ -480,7 +489,7 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
               </div>
               <audio
                 controls
-                src={activeCall.recording_url}
+                src={withAuthToken(activeCall.recording_url)}
                 style={{ width: '100%', height: 38, outline: 'none' }}
               />
             </div>
@@ -610,7 +619,7 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
                           <>
                             <Bot size={13} color={isRealEstate ? "#A78BFA" : "#38BDF8"} />
                             <span style={{ color: isRealEstate ? "#A78BFA" : "#38BDF8", fontWeight: 600 }}>
-                              {isRealEstate ? 'Sagar (My Estate Finder)' : 'Airtel Voice Agent'}
+                              {isRealEstate ? 'Priya (My Estate Finder)' : 'Airtel Voice Agent'}
                             </span>
                           </>
                         ) : (

@@ -47,6 +47,8 @@ const DEV_TO_ENGLISH: Record<string, string> = {
   'ऑलरेडी': 'already', 'रिटर्न्ड': 'returned', 'राइट': 'right', 'करेक्ट': 'correct',
   'नॉट': 'not', 'डोंट': 'dont', 'नेम': 'name', 'इंटरेस्टेड': 'interested', 'ओके': 'okay',
   'हेलो': 'hello', 'हैलो': 'hello', 'हाय': 'hi', 'हे': 'hey',
+  'आइडिया': 'idea', 'आईडिया': 'idea',
+  'गुड़गांव': 'Gurugram', 'गुडगांव': 'Gurugram', 'गुड़गाँव': 'Gurugram', 'गुडगाँव': 'Gurugram', 'गुरुग्राम': 'Gurugram',
 };
 
 const DEV_TO_HINGLISH: Record<string, string> = {
@@ -88,6 +90,8 @@ const DEV_TO_HINGLISH: Record<string, string> = {
   'दुकान': 'dukan', 'मकान': 'makaan', 'घर': 'ghar', 'कमरा': 'kamra',
   'नाम': 'naam', 'काम': 'kaam', 'बात': 'baat', 'समय': 'samay',
   'बाद': 'baad', 'पहले': 'pehle', 'अभी': 'abhi', 'आज': 'aaj', 'कल': 'kal',
+  'लिए': 'liye', 'लिये': 'liye', 'थोड़ा': 'thoda', 'थोड़ी': 'thodi', 'थोड़े': 'thode',
+  'वाला': 'wala', 'वाली': 'wali', 'वाले': 'wale', 'पता': 'pata', 'याद': 'yaad',
 };
 
 const CONSONANTS: Record<string, string> = {
