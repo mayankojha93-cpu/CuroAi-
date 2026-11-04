@@ -217,11 +217,11 @@ class RealEstateAgent(Agent):
             state.intent = detected_int
             logger.info(f"🎯 Proactively recognized intent: '{detected_int}' from utterance: '{text}'")
 
-        if state.step == RealEstateStep.CATEGORY_SELECT and state.category and state.intent:
+        if state.step in (RealEstateStep.CATEGORY_SELECT, RealEstateStep.ASK_NEW_LOCATION) and state.category and state.intent:
             if state.category == "commercial":
-                state.step = RealEstateStep.COMMERCIAL_SALE if state.intent != "lease" else RealEstateStep.COMMERCIAL_LEASE
+                state.step = RealEstateStep.COMMERCIAL_LEASE if state.intent == "lease" else RealEstateStep.COMMERCIAL_SALE
             else:
-                state.step = RealEstateStep.RESIDENTIAL_SALE if state.intent != "lease" else RealEstateStep.RESIDENTIAL_LEASE
+                state.step = RealEstateStep.RESIDENTIAL_LEASE if state.intent == "lease" else RealEstateStep.RESIDENTIAL_SALE
             step_changed = True
 
         # Greetings / backchannels like "Hello." must not flip the reply language.
