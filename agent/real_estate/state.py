@@ -6,6 +6,8 @@ from src.lang import detect_language
 
 class RealEstateStep(str, Enum):
     INTRODUCTION = "INTRODUCTION"
+    CHECK_OTHER_PROPERTY = "CHECK_OTHER_PROPERTY"
+    ASK_NEW_LOCATION = "ASK_NEW_LOCATION"
     OWNER_NAME = "OWNER_NAME"
     CATEGORY_SELECT = "CATEGORY_SELECT"
     RESIDENTIAL_SALE = "RESIDENTIAL_SALE"
@@ -28,6 +30,7 @@ class RealEstateState:
         phone: str = "",
         preferred_language: str = "hi",
         direction: str = "outbound",
+        property_location: str = "",
     ):
         self.call_id = call_id
         self.lead_id = lead_id
@@ -35,6 +38,17 @@ class RealEstateState:
         self.phone = phone
         self.preferred_language = preferred_language
         self.direction = direction
+
+        # Property location received from frontend data
+        self.initial_property_location: Optional[str] = property_location.strip() if property_location else None
+        self.sector_or_location: Optional[str] = self.initial_property_location
+        self.project_or_society: Optional[str] = self.initial_property_location
+
+        # Pre-confirm owner name so agent NEVER asks for owner name again
+        clean_name = (owner_name or "").strip()
+        self.owner_name_confirmed: Optional[str] = clean_name if clean_name else "Sir"
+
+        self.has_other_property: Optional[bool] = None
 
         # Default is Hindi + English (Hinglish/Hindi) 'hi' with simran_enhi_customer; switches dynamically to English ('en') with simran_en_sales if caller speaks English
         self.reply_lang: str = preferred_language if preferred_language in ("hi", "en") else "hi"
@@ -53,8 +67,6 @@ class RealEstateState:
         self.category: Optional[str] = None
 
         # Property detail slots (matching script 4.1 - 4.4)
-        self.project_or_society: Optional[str] = None
-        self.sector_or_location: Optional[str] = None
         self.unit_number: Optional[str] = None
         self.floor_number: Optional[str] = None
         self.bhk_config: Optional[str] = None
@@ -71,7 +83,6 @@ class RealEstateState:
         self.skipped_fields: set = set()
 
         # Call outcome & tracking
-        self.owner_name_confirmed: Optional[str] = None
         self.is_interested: Optional[bool] = None
         self.final_disposition: str = "Abruptly Disconnected Call"
         self.agent_summary: Optional[str] = None
