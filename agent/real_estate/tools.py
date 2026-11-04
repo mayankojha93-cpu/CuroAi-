@@ -4,7 +4,7 @@ import asyncio
 from typing import Optional, List, Dict, Any
 from livekit.agents import function_tool
 from .state import RealEstateState, RealEstateStep
-from .prompts import get_step_instructions
+from .prompts import get_step_instructions, get_closing_text
 
 logger = logging.getLogger("real-estate-tools")
 
@@ -17,16 +17,28 @@ COMMERCIAL_KEYWORDS = (
 RESIDENTIAL_KEYWORDS = (
     "residential", "रेजिडेंशियल", "रेसिडेंशियल", "flat", "फ्लैट", "apartment", "अपार्टमेंट",
     "house", "makaan", "makan", "मकान", "ghar", "घर", "villa", "विला", "plot", "प्लॉट",
-    "kothi", "कोठी", "bhk", "बीएचके", "studio", "penthouse", "floor", "builder floor", "duplex"
+    "kothi", "कोठी", "bhk", "बीएचके", "studio", "penthouse", "builder floor", "duplex"
 )
+
+
+def _kw_in(text: str, keywords) -> bool:
+    """Keyword match with letter boundaries for Latin words (so 'rent' does not match
+    'current' / 'different', and 'house' does not match 'warehouse'). Devanagari uses substring."""
+    for kw in keywords:
+        if kw.isascii():
+            if re.search(r"(?<![a-z])" + re.escape(kw) + r"(?![a-z])", text):
+                return True
+        elif kw in text:
+            return True
+    return False
 
 
 def classify_category(val: Any) -> Optional[str]:
     if not val:
         return None
     val_low = str(val).lower().strip()
-    has_comm = any(kw in val_low for kw in COMMERCIAL_KEYWORDS)
-    has_res = any(kw in val_low for kw in RESIDENTIAL_KEYWORDS)
+    has_comm = _kw_in(val_low, COMMERCIAL_KEYWORDS)
+    has_res = _kw_in(val_low, RESIDENTIAL_KEYWORDS)
     if has_comm and not has_res:
         return "commercial"
     if has_res and not has_comm:
@@ -36,19 +48,23 @@ def classify_category(val: Any) -> Optional[str]:
             return "commercial"
         if any(neg in val_low for neg in ("not commercial", "not comm", "commercial nahi")):
             return "residential"
-        if any(k in val_low for k in ("office", "shop", "retail", "showroom", "warehouse", "godown")):
+        if _kw_in(val_low, ("office", "shop", "retail", "showroom", "warehouse", "godown")):
             return "commercial"
         return "commercial" if "commercial" in val_low else "residential"
     return None
+
+
+_LEASE_WORDS = ("rent", "rented", "renting", "lease", "leasing", "kiraya", "kiraye", "kirayedar", "किराया", "किराए", "रेंट")
+_SALE_WORDS = ("sell", "selling", "sale", "bechna", "bechni", "bechne", "bechu", "bech", "बेचना", "बेचनी", "सेल")
 
 
 def classify_intent(val: Any) -> Optional[str]:
     if not val:
         return None
     val_low = str(val).lower().strip()
-    if any(k in val_low for k in ("rent", "lease", "renting", "leasing", "kiraya")):
+    if _kw_in(val_low, _LEASE_WORDS):
         return "lease"
-    if any(k in val_low for k in ("sell", "sale", "selling", "bechna", "bech")):
+    if _kw_in(val_low, _SALE_WORDS):
         return "sale"
     return None
 
@@ -80,6 +96,30 @@ class RealEstateTools:
                 logger.info(f"Transitioned to step: {next_step.value}")
             except Exception as e:
                 logger.warning(f"Error syncing step {next_step}: {e}")
+        if next_step == RealEstateStep.CLOSING:
+            self._speak_closing_and_hangup()
+
+    def _speak_closing_and_hangup(self):
+        """Say the closing line ourselves (uninterruptible, so a 'haan haan' backchannel cannot cut it
+        off), then hang up only after playout finishes."""
+        if self.state.closing_spoken or not self.agent:
+            return
+        self.state.closing_spoken = True
+        self._hangup_scheduled = True  # we own the hangup; skip the fixed-delay fallback
+        text = get_closing_text(self.state)
+
+        async def _run():
+            try:
+                handle = self.agent.session.say(text, allow_interruptions=False)
+                await handle.wait_for_playout()
+            except Exception as e:
+                logger.warning(f"Closing speech failed: {e}")
+                await asyncio.sleep(3.5)
+            await asyncio.sleep(0.4)
+            if self.hangup_func:
+                await self.hangup_func()
+
+        asyncio.create_task(_run())
 
     # ── Tool Definitions ──────────────────────────────────────────
 
@@ -287,6 +327,20 @@ class RealEstateTools:
         return f"Details saved. Echo what the caller mentioned, and naturally ask: '{q}'"
 
     @function_tool
+    async def customer_does_not_know(self, field_id: Optional[str] = None) -> str:
+        """Call when the customer says they do not know, do not remember, or cannot share the detail that was just asked."""
+        missing = self.state.get_missing_fields()
+        ids = {m["id"] for m in missing}
+        target = field_id if field_id in ids else (missing[0]["id"] if missing else None)
+        if target:
+            self.state.skipped_fields.add(target)
+        missing = self.state.get_missing_fields()
+        if not missing:
+            return await self.finish_property_intake()
+        q = missing[0]["question_en"] if self.state.reply_lang == "en" else missing[0]["question_hi"]
+        return f"No problem, that detail is skipped. Acknowledge in 2-3 words and ask only: '{q}'"
+
+    @function_tool
     async def finish_property_intake(self) -> str:
         """Call when all property details have been collected to wrap up."""
         missing = self.state.get_missing_fields()
@@ -437,8 +491,9 @@ class RealEstateTools:
             RealEstateStep.COMMERCIAL_SALE,
             RealEstateStep.COMMERCIAL_LEASE,
         ):
-            return [self.save_property_details, self.finish_property_intake] + self._objection_tools()
+            return [self.save_property_details, self.customer_does_not_know, self.finish_property_intake] + self._objection_tools()
         elif step == RealEstateStep.CLOSING:
             # No tools in closing step: prevents LLM tool hallucinations completely
             return []
         return []
+        
