@@ -2,9 +2,16 @@ import path from 'path';
 import dotenv from 'dotenv';
 import { z } from 'zod';
 
-// Load from local backend/.env first, then fallback to root .env
+// Load from local backend/.env and search all candidate parent locations for root .env
 dotenv.config();
-dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
+for (const p of [
+  path.resolve(process.cwd(), '.env'),
+  path.resolve(process.cwd(), '../.env'),
+  path.resolve(__dirname, '../../../.env'),
+  path.resolve(__dirname, '../../../../.env')
+]) {
+  dotenv.config({ path: p });
+}
 
 const envSchema = z.object({
   PORT: z.coerce.number().default(3000),
