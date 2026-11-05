@@ -41,16 +41,17 @@ class ConversationState:
         self.customer_name = customer_name
         self.phone = phone
         self.address = address
-        self.language = language
+        clean_lang = "en" if str(language or "hi").strip().lower() in ("en", "english", "en-in") else "hi"
+        self.language: str = clean_lang
+        self.initial_language: str = clean_lang
+        self.reply_lang: str = clean_lang
+        self.language_switched: bool = False
         self.account_no = account_no
         self.subs_del_no = subs_del_no
         self.service_end_date = service_end_date
         self.r_date = r_date
         self.attempt_number = attempt_number
         self.direction = direction
-
-
-        self.reply_lang: str = "hi"
 
         # Timing and latency measurement
         self.start_time: float = time.time()
@@ -91,11 +92,17 @@ class ConversationState:
         self.hangup_started: bool = False  # clean_hangup runs at most once
 
     def update_reply_lang(self, text: Optional[str]) -> bool:
-        """Follow the customer's language. Returns True if the reply language just changed.
-        Unclear / too-short text leaves the language as it is."""
+        """Follow the customer's language. Can switch only once:
+        - If initial is English ('en') and customer speaks Hinglish/Hindi, switch to Hinglish once.
+        - If initial is Hinglish/Hindi ('hi') and customer speaks English, switch to English once.
+        - Once switched, no further language switching is allowed."""
+        if self.language_switched:
+            return False
+
         lang = detect_language(text)
         if lang and lang != self.reply_lang:
             self.reply_lang = lang
+            self.language_switched = True
             return True
         return False
 

@@ -208,6 +208,9 @@ def post_re_outcome_sync(state: RealEstateState) -> bool:
         "transcript": state.transcript,
         "duration_seconds": duration,
         "median_latency_ms": int(sum(state.latency_samples) / len(state.latency_samples) * 1000) if state.latency_samples else None,
+        "language": state.reply_lang,
+        "initial_language": state.initial_language,
+        "language_switched": state.language_switched,
     }
 
     logger.info(f"📤 Posting RE outcome to {url} for call {state.call_id} (duration={duration}s, turns={len(state.transcript)}, disp={state.final_disposition})")
@@ -242,11 +245,22 @@ async def entrypoint(ctx: agents.JobContext):
         call_id = ctx.room.name[5:]
 
     phone = metadata.get("phone", "")
-    owner_name = metadata.get("customerName") or metadata.get("ownerName", "Property Owner")
-    preferred_language = metadata.get("preferredLanguage", DEFAULT_LANGUAGE)
+    owner_name = metadata.get("customerName") or metadata.get("ownerName", "")
+    clean_owner = (owner_name or "").strip()
+    if not clean_owner or clean_owner in ("Property Owner", "Test Subscriber", "Test Customer", "None", "null"):
+        owner_name = "Raja Nayak"
+    else:
+        owner_name = clean_owner
+
+    raw_pref = (metadata.get("preferredLanguage") or metadata.get("language") or DEFAULT_LANGUAGE).strip().lower()
+    preferred_language = "en" if raw_pref in ("en", "english", "en-in") else "hi"
     lead_id = metadata.get("leadId")
     direction = metadata.get("direction", "outbound")
-    property_location = metadata.get("propertyLocation") or metadata.get("address") or metadata.get("location") or ""
+    raw_loc = (metadata.get("propertyLocation") or metadata.get("address") or metadata.get("location") or "").strip()
+    if not raw_loc or raw_loc in ("Delhi, 110011, burari, sant nagar", "None", "null"):
+        property_location = "DLF Phase 5, Sector 54, Gurgaon"
+    else:
+        property_location = raw_loc
 
     # Audio & speech pipeline
     stt = sarvam.STT(
@@ -355,16 +369,18 @@ async def entrypoint(ctx: agents.JobContext):
 
         now_str = datetime.now().strftime("%H:%M:%S")
         if is_agent:
-            logger.info(f"🤖 [Agent]: \"{clean}\"")
-            print(f"\n\033[1;36m[{now_str}] 🤖 [Agent (Priya)]:\033[0m {clean}\n", flush=True)
+            banner = f"[{now_str}] 🤖 [Agent (Priya)]: {clean}"
+            print(f"\n\033[1;36m{banner}\033[0m\n", flush=True)
+            logger.info(banner)
             state.add_transcript("assistant", clean)
             try:
                 conv_logger.log_agent(clean)
             except Exception:
                 pass
         else:
-            logger.info(f"🗣️ [Customer]: \"{clean}\"")
-            print(f"\n\033[1;32m[{now_str}] 🗣️ [Customer]:\033[0m {clean}\n", flush=True)
+            banner = f"[{now_str}] 🗣️ [Customer]: {clean}"
+            print(f"\n\033[1;32m{banner}\033[0m\n", flush=True)
+            logger.info(banner)
             state.add_transcript("customer", clean)
             try:
                 conv_logger.log_customer(clean)
@@ -376,18 +392,28 @@ async def entrypoint(ctx: agents.JobContext):
     def print_console_summary(s: RealEstateState):
         duration_s = int(time.time() - s.start_time)
         mins, secs = divmod(duration_s, 60)
-        print("\n" + "=" * 70, flush=True)
-        print(f"  📞 REAL ESTATE CONVERSATION SUMMARY (Call ID: {s.call_id})", flush=True)
-        print(f"  Owner: {s.owner_name_confirmed or s.owner_name} | Phone: {s.phone}", flush=True)
-        print("-" * 70, flush=True)
+        summary_lines = [
+            "",
+            "=" * 70,
+            f"  📞 REAL ESTATE CONVERSATION SUMMARY (Call ID: {s.call_id})",
+            f"  Owner: {s.owner_name_confirmed or s.owner_name} | Phone: {s.phone}",
+            "-" * 70,
+        ]
         for t in s.transcript:
             role_label = "\033[1;36m🤖 Priya   \033[0m" if t.get("role") in ("assistant", "agent") else "\033[1;32m🗣️ Customer\033[0m"
-            print(f"  {role_label}: {t.get('text')}", flush=True)
-        print("-" * 70, flush=True)
-        print(f"  Disposition: \033[1;33m{s.final_disposition}\033[0m | Duration: {mins}m {secs}s", flush=True)
-        if s.agent_summary:
-            print(f"  Summary    : {s.agent_summary}", flush=True)
-        print("=" * 70 + "\n", flush=True)
+            summary_lines.append(f"  {role_label}: {t.get('text')}")
+        summary_lines.extend([
+            "-" * 70,
+            f"  Disposition: \033[1;33m{s.final_disposition}\033[0m | Duration: {mins}m {secs}s",
+            f"  Summary    : {s.agent_summary or 'N/A'}",
+            "=" * 70,
+            "",
+        ])
+        summary_text = "\n".join(summary_lines)
+        print(summary_text, flush=True)
+        for line in summary_lines:
+            if line:
+                logger.info(line)
 
     turn_opts = {"preemptive_generation": {"enabled": PREEMPTIVE_GENERATION}}
     endpointing_opts = {}

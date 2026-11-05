@@ -40,18 +40,27 @@ class RealEstateState:
         self.direction = direction
 
         # Property location received from frontend data
-        self.initial_property_location: Optional[str] = property_location.strip() if property_location else None
-        self.sector_or_location: Optional[str] = self.initial_property_location
-        self.project_or_society: Optional[str] = self.initial_property_location
+        loc = (property_location or "").strip()
+        if not loc or loc in ("Delhi, 110011, burari, sant nagar", "None", "null"):
+            loc = "DLF Phase 5, Sector 54, Gurgaon"
+        self.initial_property_location: Optional[str] = loc
+        self.sector_or_location: Optional[str] = loc
+        self.project_or_society: Optional[str] = loc
 
         # Pre-confirm owner name so agent NEVER asks for owner name again
         clean_name = (owner_name or "").strip()
-        self.owner_name_confirmed: Optional[str] = clean_name if clean_name else "Sir"
+        if not clean_name or clean_name in ("Property Owner", "Test Subscriber", "Test Customer", "None", "null"):
+            clean_name = "Raja Nayak"
+        self.owner_name = clean_name
+        self.owner_name_confirmed: Optional[str] = clean_name
 
         self.has_other_property: Optional[bool] = None
 
-        # Default is Hindi + English (Hinglish/Hindi) 'hi' with simran_enhi_customer; switches dynamically to English ('en') with simran_en_sales if caller speaks English
-        self.reply_lang: str = preferred_language if preferred_language in ("hi", "en") else "hi"
+        # Selected language flow: English ('en') or Hinglish ('hi')
+        clean_pref = "en" if str(preferred_language or "").strip().lower() in ("en", "english", "en-in") else "hi"
+        self.initial_language: str = clean_pref
+        self.reply_lang: str = clean_pref
+        self.language_switched: bool = False
         self.callee_connected: bool = False
         self.start_time: float = time.time()
         self.last_activity_time: float = time.time()
@@ -114,10 +123,19 @@ class RealEstateState:
                 self.last_activity_time = time.time()
 
     def update_reply_lang(self, text: Optional[str]) -> bool:
-        """Detect and follow the customer's language (Hindi vs English)."""
+        """Detect and follow the customer's language (Hinglish vs English).
+        Can switch only once:
+        - If initial is English ('en') and customer speaks Hinglish ('hi'), switch to Hinglish once.
+        - If initial is Hinglish ('hi') and customer speaks English ('en'), switch to English once.
+        - Once switched, no further language switching is allowed.
+        """
+        if self.language_switched:
+            return False
+
         lang = detect_language(text)
         if lang and lang != self.reply_lang:
             self.reply_lang = lang
+            self.language_switched = True
             return True
         return False
 

@@ -55,6 +55,9 @@ export interface SaveRealEstateOutcomeInput {
   transcript?: any;
   duration_seconds?: number | null;
   median_latency_ms?: number | null;
+  language?: string | null;
+  initial_language?: string | null;
+  language_switched?: boolean | null;
 }
 
 /**
@@ -98,13 +101,35 @@ export class RealEstateCallService {
       normalizedPhone.includes('8658250208') ||
       (Boolean(env.TEST_PHONE) && normalizePhone(env.TEST_PHONE) === normalizedPhone);
     const defaultTestName = env.TEST_CUSTOMER_NAME || 'Raja Nayak';
-    const passedName = data.owner_name || data.name || (isTestCustomerPhone ? defaultTestName : undefined);
-    const ownerName = passedName || (isTestCustomerPhone ? defaultTestName : 'Test Property Owner');
-    const propertyLocation = (data.property_location || data.address || '').trim() || null;
+    const rawPassedName = (data.owner_name || data.name || '').trim();
+    const passedName = (rawPassedName && rawPassedName !== 'Test Subscriber')
+      ? rawPassedName
+      : (isTestCustomerPhone ? defaultTestName : undefined);
+    const ownerName = passedName || (isTestCustomerPhone ? defaultTestName : 'Raja Nayak');
+    let propertyLocation = (data.property_location || data.address || '').trim() || null;
+    if (propertyLocation === 'Delhi, 110011, burari, sant nagar') {
+      propertyLocation = null;
+    }
+
+    const rawLang = (data.language || 'hi').trim().toLowerCase();
+    const cleanLang = (rawLang === 'en' || rawLang === 'english' || rawLang.startsWith('en-')) ? 'en' : 'hi';
 
     // Reuse existing lead or create new lead
     const existingLead = await query(`SELECT * FROM real_estate_leads WHERE phone = $1 LIMIT 1`, [normalizedPhone]);
     let lead: any;
+
+    if (!propertyLocation && existingLead.rows.length > 0) {
+      const propRes = await query(
+        `SELECT sector_or_location, project_or_society FROM real_estate_properties WHERE lead_id = $1 ORDER BY created_at DESC LIMIT 1`,
+        [existingLead.rows[0].id]
+      );
+      if (propRes.rows.length > 0) {
+        propertyLocation = (propRes.rows[0].sector_or_location || propRes.rows[0].project_or_society || '').trim() || null;
+      }
+    }
+    if (!propertyLocation) {
+      propertyLocation = 'DLF Phase 5, Sector 54, Gurgaon';
+    }
 
     if (existingLead.rows.length > 0) {
       const currentName = existingLead.rows[0].owner_name || '';
@@ -116,14 +141,14 @@ export class RealEstateCallService {
                WHEN LOWER(owner_name) LIKE '%radha%' THEN 'Raja Nayak'
                ELSE owner_name
              END,
-             preferred_language = COALESCE($2, preferred_language),
+             preferred_language = $2,
              notes = COALESCE($3, notes),
              total_attempts = COALESCE(total_attempts, 0) + 1,
              last_called_at = NOW(),
              updated_at = NOW()
          WHERE id = $4
          RETURNING *`,
-        [nameToUpdate, data.language || 'en', data.notes || 'Developer Test Call', existingLead.rows[0].id]
+        [nameToUpdate, cleanLang, data.notes || 'Developer Test Call', existingLead.rows[0].id]
       );
       lead = upd.rows[0];
     } else {
@@ -131,7 +156,7 @@ export class RealEstateCallService {
         `INSERT INTO real_estate_leads (owner_name, phone, preferred_language, notes, total_attempts, max_attempts, last_called_at)
          VALUES ($1, $2, $3, $4, 1, 3, NOW())
          RETURNING *`,
-        [ownerName, normalizedPhone, data.language || 'en', data.notes || 'Developer Test Call']
+        [ownerName, normalizedPhone, cleanLang, data.notes || 'Developer Test Call']
       );
       lead = ins.rows[0];
     }
@@ -142,12 +167,12 @@ export class RealEstateCallService {
     const insertCall = await query(
       `INSERT INTO calls (
          id, re_lead_id, status, call_status, attempt_number, room_name, direction,
-         script, company_name, voice_pipeline, is_test_call, pipeline
+         script, company_name, voice_pipeline, is_test_call, pipeline, language, initial_language, language_switched
        )
        VALUES ($1, $2, 'initiated', 'initiated', $3, $4, 'outbound',
-               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Priya - hi/en)', TRUE, 'real_estate')
+               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Priya - hi/en)', TRUE, 'real_estate', $5, $5, FALSE)
        RETURNING *`,
-      [callId, lead?.id || null, lead?.total_attempts || 1, roomName]
+      [callId, lead?.id || null, lead?.total_attempts || 1, roomName, cleanLang]
     );
     const call = insertCall.rows[0];
 
@@ -185,12 +210,12 @@ export class RealEstateCallService {
     const insCall = await query(
       `INSERT INTO calls (
          id, re_lead_id, campaign_id, status, call_status, attempt_number, room_name, direction,
-         script, company_name, voice_pipeline, pipeline
+         script, company_name, voice_pipeline, pipeline, language, initial_language, language_switched
        )
        VALUES ($1, $2, $3, 'initiated', 'initiated', $4, $5, 'outbound',
-               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Priya - hi/en)', 'real_estate')
+               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Priya - hi/en)', 'real_estate', $6, $6, FALSE)
        RETURNING *`,
-      [callId, leadId, lead.campaign_id, attempt, roomName]
+      [callId, leadId, lead.campaign_id, attempt, roomName, lead.preferred_language || 'hi']
     );
     const call = insCall.rows[0];
 
@@ -199,9 +224,12 @@ export class RealEstateCallService {
       `SELECT sector_or_location, project_or_society FROM real_estate_properties WHERE lead_id = $1 ORDER BY created_at DESC LIMIT 1`,
       [leadId]
     );
-    const propertyLocation = propRes.rows.length > 0
-      ? (propRes.rows[0].sector_or_location || propRes.rows[0].project_or_society)
+    let propertyLocation = propRes.rows.length > 0
+      ? (propRes.rows[0].sector_or_location || propRes.rows[0].project_or_society || '').trim() || null
       : null;
+    if (!propertyLocation) {
+      propertyLocation = 'DLF Phase 5, Sector 54, Gurgaon';
+    }
 
     this.executeOutboundWorkflow(callId, lead, roomName, propertyLocation).catch((err) => {
       logger.error({ err, callId }, 'Unhandled error in real estate outbound call workflow');
@@ -221,9 +249,11 @@ export class RealEstateCallService {
       logger.info({ roomName, agentName }, 'Creating real estate agent dispatch');
 
       const rawLeadName = lead.owner_name || '';
-      const safeLeadName = (lead.phone?.includes('8658250208') || rawLeadName.toLowerCase().includes('radha'))
+      const safeLeadName = (lead.phone?.includes('8658250208') || rawLeadName.toLowerCase().includes('radha') || rawLeadName === 'Test Subscriber' || !rawLeadName)
         ? 'Raja Nayak'
-        : (rawLeadName || 'Property Owner');
+        : (rawLeadName || 'Raja Nayak');
+
+      const effectiveLocation = (propertyLocation || '').trim() || 'DLF Phase 5, Sector 54, Gurgaon';
 
       await this.dispatchClient.createDispatch(roomName, agentName, {
         metadata: JSON.stringify({
@@ -233,7 +263,7 @@ export class RealEstateCallService {
           phone: lead.phone,
           preferredLanguage: lead.preferred_language || 'hi',
           direction: 'outbound',
-          propertyLocation: propertyLocation || null,
+          propertyLocation: effectiveLocation,
         }),
       });
 
@@ -314,6 +344,11 @@ export class RealEstateCallService {
       try {
         const prompt = `Extract all property details and owner information from this real estate intake phone call transcript.
 Ensure all names, locations, and society names are written strictly in English (Latin alphabet), never in Devanagari or Hindi script.
+IMPORTANT RULES:
+- ONLY extract category ("residential" or "commercial") and intent ("sale" or "lease") if the CUSTOMER explicitly stated or confirmed them.
+- If the customer never stated or confirmed whether it is residential or commercial, set "category": null.
+- If the customer never stated or confirmed whether they want to sell or rent, set "intent": null.
+- DO NOT assume or guess based on what the agent asked.
 Return ONLY valid JSON matching this exact schema:
 {
   "owner_name": string or null,
@@ -744,9 +779,10 @@ ${dialogueText.slice(0, 4000)}`;
     const outcomeRes = await query(
       `INSERT INTO real_estate_outcomes (
          call_id, lead_id, property_id, final_disposition, is_interested,
-         owner_name_confirmed, transcript, agent_summary, duration_seconds, median_latency_ms
+         owner_name_confirmed, transcript, agent_summary, duration_seconds, median_latency_ms,
+         language, initial_language, language_switched
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        ON CONFLICT (call_id)
        DO UPDATE SET
          final_disposition = EXCLUDED.final_disposition,
@@ -756,7 +792,10 @@ ${dialogueText.slice(0, 4000)}`;
          transcript = EXCLUDED.transcript,
          agent_summary = EXCLUDED.agent_summary,
          duration_seconds = EXCLUDED.duration_seconds,
-         median_latency_ms = EXCLUDED.median_latency_ms
+         median_latency_ms = EXCLUDED.median_latency_ms,
+         language = COALESCE(EXCLUDED.language, real_estate_outcomes.language),
+         initial_language = COALESCE(EXCLUDED.initial_language, real_estate_outcomes.initial_language),
+         language_switched = COALESCE(EXCLUDED.language_switched, real_estate_outcomes.language_switched)
        RETURNING *`,
       [
         callId,
@@ -769,6 +808,9 @@ ${dialogueText.slice(0, 4000)}`;
         data.agent_summary || null,
         data.duration_seconds || 0,
         data.median_latency_ms || null,
+        data.language || null,
+        data.initial_language || null,
+        data.language_switched ?? null,
       ]
     );
 
@@ -787,13 +829,28 @@ ${dialogueText.slice(0, 4000)}`;
            duration_seconds = GREATEST($3, COALESCE(duration_seconds, 0)),
            median_latency_ms = $4,
            answered_at = COALESCE(answered_at, CASE WHEN $3 > 0 THEN NOW() - ($3 || ' seconds')::interval ELSE NOW() END),
-           ended_at = NOW()
+           ended_at = NOW(),
+           language = COALESCE($6, language),
+           initial_language = COALESCE($7, initial_language),
+           language_switched = COALESCE($8, language_switched)
        WHERE id = $5`,
-      [mappedStatus, canonicalDisp, data.duration_seconds || 0, data.median_latency_ms || null, callId]
+      [
+        mappedStatus,
+        canonicalDisp,
+        data.duration_seconds || 0,
+        data.median_latency_ms || null,
+        callId,
+        data.language || null,
+        data.initial_language || null,
+        data.language_switched ?? null,
+      ]
     );
 
     // 5. Update lead status if lead exists
     if (leadId) {
+      if (data.language) {
+        await query(`UPDATE real_estate_leads SET preferred_language = $1 WHERE id = $2`, [data.language, leadId]);
+      }
       let leadStatus = 'CONTACTED';
       if (canonicalDisp === 'Qualified Lead') leadStatus = 'QUALIFIED';
       else if (canonicalDisp === 'Schedule Callback' || canonicalDisp === 'Advisor Callback Booked') leadStatus = 'CALLBACK';
@@ -910,79 +967,44 @@ ${dialogueText.slice(0, 4000)}`;
         )
       `).catch(() => {});
 
+      // Only process orphaned outcomes that have NO property record at all (limit to 5)
       const candidates = await query(`
-        SELECT c.id as call_id, ro.transcript, ro.property_id, rp.id as existing_prop_id
+        SELECT c.id as call_id, ro.transcript, ro.property_id
         FROM calls c
         JOIN real_estate_outcomes ro ON c.id = ro.call_id
         LEFT JOIN real_estate_properties rp ON ro.property_id = rp.id
         WHERE c.pipeline = 'real_estate'
           AND ro.transcript IS NOT NULL
-          AND (rp.project_or_society IS NULL OR rp.sector_or_location IS NULL OR rp.unit_number IS NULL)
+          AND rp.id IS NULL
+        LIMIT 5
       `);
 
       for (const row of candidates.rows) {
         if (!row.transcript) continue;
         const extracted = await this.extractDetailsFromTranscript(row.transcript);
         if (extracted.project_or_society || extracted.sector_or_location || extracted.unit_number || extracted.category) {
-          logger.info({ callId: row.call_id, extracted }, 'Auto-backfilled missing property details from transcript');
-          if (row.existing_prop_id) {
-            await query(
-              `UPDATE real_estate_properties
-               SET project_or_society = COALESCE($1, project_or_society),
-                   sector_or_location = COALESCE($2, sector_or_location),
-                   unit_number = COALESCE($3, unit_number),
-                   floor_number = COALESCE($4, floor_number),
-                   bhk_config = COALESCE($5, bhk_config),
-                   commercial_type = COALESCE($6, commercial_type),
-                   approx_area_sqft = COALESCE($7, approx_area_sqft),
-                   furnishing_status = COALESCE($8, furnishing_status),
-                   expected_sale_price = COALESCE($9, expected_sale_price),
-                   expected_monthly_rent = COALESCE($10, expected_monthly_rent),
-                   category = COALESCE($11, category),
-                   intent = COALESCE($12, intent),
-                   raw_notes = COALESCE($13, raw_notes)
-               WHERE id = $14`,
-              [
-                extracted.project_or_society || null,
-                extracted.sector_or_location || null,
-                extracted.unit_number || null,
-                extracted.floor_number || null,
-                extracted.bhk_config || null,
-                extracted.commercial_type || null,
-                extracted.approx_area_sqft || null,
-                extracted.furnishing_status || null,
-                extracted.expected_sale_price || null,
-                extracted.expected_monthly_rent || null,
-                extracted.category || null,
-                extracted.intent || null,
-                extracted.agent_summary || null,
-                row.existing_prop_id,
-              ]
-            );
-          } else {
-            // Insert property if none existed
-            const newProp = await query(
-              `INSERT INTO real_estate_properties (
-                 call_id, category, intent, project_or_society, sector_or_location,
-                 unit_number, floor_number, bhk_config, commercial_type, raw_notes
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-               RETURNING id`,
-              [
-                row.call_id,
-                extracted.category || 'residential',
-                extracted.intent || 'sale',
-                extracted.project_or_society || null,
-                extracted.sector_or_location || null,
-                extracted.unit_number || null,
-                extracted.floor_number || null,
-                extracted.bhk_config || null,
-                extracted.commercial_type || null,
-                extracted.agent_summary || null,
-              ]
-            );
-            if (newProp.rows[0]?.id) {
-              await query(`UPDATE real_estate_outcomes SET property_id = $1 WHERE call_id = $2`, [newProp.rows[0].id, row.call_id]);
-            }
+          logger.info({ callId: row.call_id, extracted }, 'Backfilled missing property record for completed call');
+          const newProp = await query(
+            `INSERT INTO real_estate_properties (
+               call_id, category, intent, project_or_society, sector_or_location,
+               unit_number, floor_number, bhk_config, commercial_type, raw_notes
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             RETURNING id`,
+            [
+              row.call_id,
+              extracted.category || null,
+              extracted.intent || null,
+              extracted.project_or_society || null,
+              extracted.sector_or_location || null,
+              extracted.unit_number || null,
+              extracted.floor_number || null,
+              extracted.bhk_config || null,
+              extracted.commercial_type || null,
+              extracted.agent_summary || null,
+            ]
+          );
+          if (newProp.rows[0]?.id) {
+            await query(`UPDATE real_estate_outcomes SET property_id = $1 WHERE call_id = $2`, [newProp.rows[0].id, row.call_id]).catch(() => {});
           }
 
           if (extracted.owner_name_confirmed) {

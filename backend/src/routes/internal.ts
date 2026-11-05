@@ -32,6 +32,9 @@ const outcomeSchema = {
     median_latency_ms: z.number().nullable().optional(),
     cost_estimate_inr: z.number().nullable().optional(),
     recording_url: z.string().nullable().optional(),
+    language: z.string().nullable().optional(),
+    initial_language: z.string().nullable().optional(),
+    language_switched: z.boolean().nullable().optional(),
   }),
 };
 

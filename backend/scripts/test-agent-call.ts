@@ -58,19 +58,43 @@ async function main() {
     console.log('\n👉 LiveKit room and agent dispatch created.');
     console.log('👉 Dispatched to Exotel SIP gateway:', env.SIP_DOMAIN || 'in.voip.exotel.com:5070');
     console.log('👉 Agent Priya will greet the customer upon pickup.');
-    console.log('\nMonitoring call status for 20 seconds...');
-
-    for (let i = 0; i < 20; i++) {
-      await new Promise((res) => setTimeout(res, 1000));
+    console.log('\nMonitoring call and waiting for conversation...');
+    let lastStatus = '';
+    for (let i = 0; i < 90; i++) {
+      await new Promise((res) => setTimeout(res, 2000));
       const statusRes = await callService.getCall(call.id);
-      process.stdout.write(`\r[Second ${i + 1}] Call Status: ${statusRes.status} | SIP Call ID: ${statusRes.sip_call_id || 'connecting...'}`);
-      if (statusRes.status === 'answered' || statusRes.status === 'completed') {
-        console.log('\n\n🎉 Call answered/active with AI Agent Priya!');
+      if (statusRes.status !== lastStatus) {
+        lastStatus = statusRes.status;
+        console.log(`\n[Call Status] -> ${statusRes.status.toUpperCase()} | Duration: ${statusRes.duration_seconds || 0}s`);
+      } else {
+        process.stdout.write('.');
+      }
+
+      if (['completed', 'failed', 'no_answer', 'busy', 'cancelled'].includes(statusRes.status)) {
+        console.log(`\n\nCall finished. Final Disposition: ${statusRes.final_disposition || 'N/A'}`);
+
+        const rawTranscript = statusRes.transcript;
+        const turns = Array.isArray(rawTranscript)
+          ? rawTranscript
+          : typeof rawTranscript === 'string'
+          ? JSON.parse(rawTranscript || '[]')
+          : [];
+
+        if (turns.length > 0) {
+          console.log('\n======================================================');
+          console.log(`  📞 AIRTEL TELECOM CONVERSATION LOG (Call ID: ${call.id})`);
+          console.log('------------------------------------------------------');
+          for (const t of turns) {
+            const isAgent = t.role === 'assistant' || t.role === 'agent';
+            console.log(`  ${isAgent ? '🤖 Priya   ' : '🗣️ Customer'}: ${t.text}`);
+          }
+          console.log('======================================================\n');
+        }
         break;
       }
     }
 
-    console.log('\n\nTest call dispatched. Exiting CLI.\n');
+    console.log('\nTest call monitoring complete.\n');
     process.exit(0);
   } catch (err: any) {
     console.error('\n❌ Failed to initiate test call:');

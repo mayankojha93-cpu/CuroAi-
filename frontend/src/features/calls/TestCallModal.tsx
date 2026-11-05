@@ -91,7 +91,10 @@ const REAL_ESTATE_PRESETS: SamplePreset[] = [
       name: 'Raja Nayak',
       phone: '+919811122233',
       address: 'DLF Phase 5, Sector 54, Gurgaon',
+      property_location: 'DLF Phase 5, Sector 54, Gurgaon',
       language: 'en',
+      script: 'My Estate Finder — Property Intake (Priya)',
+      company_name: 'My Estate Finder',
     },
   },
   {
@@ -103,7 +106,10 @@ const REAL_ESTATE_PRESETS: SamplePreset[] = [
       name: 'Amit Verma',
       phone: '+919845012345',
       address: 'Grand Arch, Sector 58, Gurgaon',
+      property_location: 'Grand Arch, Sector 58, Gurgaon',
       language: 'en',
+      script: 'My Estate Finder — Property Intake (Priya)',
+      company_name: 'My Estate Finder',
     },
   },
   {
@@ -115,7 +121,10 @@ const REAL_ESTATE_PRESETS: SamplePreset[] = [
       name: 'Priya Sharma',
       phone: '+919810987654',
       address: 'Cyber City, DLF Phase 2, Gurgaon',
+      property_location: 'Cyber City, DLF Phase 2, Gurgaon',
       language: 'en',
+      script: 'My Estate Finder — Property Intake (Priya)',
+      company_name: 'My Estate Finder',
     },
   },
 ];

@@ -23,6 +23,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("real-estate-agent")
 
+# Suppress noisy internal LiveKit/Sarvam debug spam so conversation logs stand out cleanly
+for _name in ("livekit.plugins.sarvam", "livekit.plugins.silero", "livekit.agents", "livekit"):
+    logging.getLogger(_name).setLevel(logging.INFO)
+
 # Agent Name registered on LiveKit Server
 AGENT_NAME = os.getenv("REAL_ESTATE_AGENT_NAME", "my-estate-finder-agent")
 

@@ -540,24 +540,8 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
                     cursor: 'pointer',
                   }}
                 >
-                  {isRealEstate ? (
-                    <>
-                      <option value="en-IN" style={{ background: '#0B0F17' }}>English (India - en-IN)</option>
-                      <option value="hi-Latn" style={{ background: '#0B0F17' }}>Hinglish (hi-Latn)</option>
-                      <option value="hi-IN" style={{ background: '#0B0F17' }}>Hindi (hi-IN)</option>
-                    </>
-                  ) : (
-                    <>
-                      <option value="hi-IN" style={{ background: '#0B0F17' }}>Hindi (hi-IN)</option>
-                      <option value="en-IN" style={{ background: '#0B0F17' }}>English (India - en-IN)</option>
-                      <option value="hi-Latn" style={{ background: '#0B0F17' }}>Hinglish (hi-Latn)</option>
-                      <option value="ta-IN" style={{ background: '#0B0F17' }}>Tamil (ta-IN)</option>
-                      <option value="te-IN" style={{ background: '#0B0F17' }}>Telugu (te-IN)</option>
-                      <option value="kn-IN" style={{ background: '#0B0F17' }}>Kannada (kn-IN)</option>
-                      <option value="bn-IN" style={{ background: '#0B0F17' }}>Bengali (bn-IN)</option>
-                      <option value="mr-IN" style={{ background: '#0B0F17' }}>Marathi (mr-IN)</option>
-                    </>
-                  )}
+                  <option value="en-IN" style={{ background: '#0B0F17' }}>English</option>
+                  <option value="hi-IN" style={{ background: '#0B0F17' }}>Hinglish</option>
                 </select>
               </div>
 

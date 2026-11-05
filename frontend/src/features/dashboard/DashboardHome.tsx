@@ -135,7 +135,7 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
 
   const getCallLanguage = (call: any) => {
     const lang = (call.customer_language || call.language || '').toLowerCase();
-    if (lang === 'hi' || lang === 'hindi') return 'Hindi';
+    if (lang === 'hi' || lang === 'hindi' || lang === 'hinglish') return 'Hinglish';
     if (lang === 'en' || lang === 'english') return 'English';
     return call.customer_language || call.language || '—';
   };

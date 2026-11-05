@@ -25,6 +25,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("telecom-voice-agent")
 
+# Suppress noisy internal LiveKit/Sarvam debug spam so conversation logs stand out cleanly
+for _name in ("livekit.plugins.sarvam", "livekit.plugins.silero", "livekit.agents", "livekit"):
+    logging.getLogger(_name).setLevel(logging.INFO)
+
 # Agent Config
 AGENT_NAME = os.getenv("AGENT_NAME", "telecom-router-pickup-agent")
 

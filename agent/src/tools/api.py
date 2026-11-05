@@ -36,6 +36,9 @@ def post_outcome_to_backend(state: ConversationState) -> bool:
         "duration_seconds": state.get_duration_seconds(),
         "median_latency_ms": state.get_median_latency(),
         "cost_estimate_inr": state.get_estimated_cost_inr(),
+        "language": state.reply_lang,
+        "initial_language": state.initial_language,
+        "language_switched": state.language_switched,
     }
 
     # Backend endpoint is an idempotent upsert, so retrying is safe.

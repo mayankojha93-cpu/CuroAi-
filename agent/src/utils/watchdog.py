@@ -90,6 +90,23 @@ async def clean_hangup(ctx: agents.JobContext, session: AgentSession, state: Con
     if not state.outcome_posted:
         logger.error(f"❌ Outcome for call {state.call_id} was NOT saved to the backend.")
 
+    # Print conversation summary to console
+    try:
+        duration_s = int(time.time() - getattr(state, "start_time", time.time()))
+        mins, secs = divmod(duration_s, 60)
+        print("\n" + "=" * 70, flush=True)
+        print(f"  📞 AIRTEL TELECOM CONVERSATION SUMMARY (Call ID: {state.call_id})", flush=True)
+        print(f"  Customer: {getattr(state, 'customer_name', 'Customer')} | Phone: {getattr(state, 'phone', 'N/A')}", flush=True)
+        print("-" * 70, flush=True)
+        for t in state.transcript:
+            role_label = "\033[1;36m🤖 Priya   \033[0m" if t.get("role") in ("assistant", "agent") else "\033[1;32m🗣️ Customer\033[0m"
+            print(f"  {role_label}: {t.get('text')}", flush=True)
+        print("-" * 70, flush=True)
+        print(f"  Disposition: \033[1;33m{state.final_disposition}\033[0m | Duration: {mins}m {secs}s", flush=True)
+        print("=" * 70 + "\n", flush=True)
+    except Exception:
+        pass
+
     # Gracefully close the agent session
     try:
         if hasattr(session, "aclose"):

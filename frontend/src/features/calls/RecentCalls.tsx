@@ -272,7 +272,7 @@ export const RecentCalls: React.FC<RecentCallsProps> = ({ calls, onSelectCall })
                     : (normStatus === 'SUCCESSFUL' ? 'Confirmed For Pickup' : (normStatus === 'NO_ANSWER' ? 'Not Connected (No Answer)' : 'Not Connected (Failed)')));
 
                 const isEnglish = (call as any).language === 'en' || (call as any).customer_language === 'en';
-                const langText = isEnglish ? 'English' : (isRealEstateCall ? 'Hinglish' : 'Hindi');
+                const langText = isEnglish ? 'English' : 'Hinglish';
                 const durationText = formatDuration(call.duration_seconds);
                 const timeText = (call as any).formatted_time || formatTime(call.created_at);
 
