@@ -24,8 +24,12 @@ logging.basicConfig(
 logger = logging.getLogger("real-estate-agent")
 
 # Suppress noisy internal LiveKit/Sarvam debug spam so conversation logs stand out cleanly
-for _name in ("livekit.plugins.sarvam", "livekit.plugins.silero", "livekit.agents", "livekit"):
+for _name in ("livekit.plugins.silero", "livekit.agents", "livekit"):
     logging.getLogger(_name).setLevel(logging.INFO)
+# The Sarvam plugin sets DEBUG on its own child loggers (".log", ".log.SpeechStream"), so the parent
+# level alone is ignored and every 100 audio chunks / VAD event is printed 3x. Silence them explicitly.
+for _name in ("livekit.plugins.sarvam", "livekit.plugins.sarvam.log", "livekit.plugins.sarvam.log.SpeechStream"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
 
 # Agent Name registered on LiveKit Server
 AGENT_NAME = os.getenv("REAL_ESTATE_AGENT_NAME", "my-estate-finder-agent")
@@ -68,10 +72,17 @@ FAST_TOOL_REPLY = os.getenv("FAST_TOOL_REPLY", "1") == "1"
 LATENCY_LOG = os.getenv("LATENCY_LOG", "1") == "1"
 # VAD silence needed to end a speech segment. Default = your current value (0.45).
 # Try 0.30-0.35 only after reading the latency logs.
-VAD_MIN_SILENCE = float(os.getenv("VAD_MIN_SILENCE", "0.45"))
-# Optional OpenRouter provider pinning, e.g. OPENROUTER_PROVIDER_ORDER=Groq,Cerebras
-# Empty = keep using OPENROUTER_PROVIDER_SORT exactly as today.
-OPENROUTER_PROVIDER_ORDER = [p.strip() for p in os.getenv("OPENROUTER_PROVIDER_ORDER", "").split(",") if p.strip()]
+VAD_MIN_SILENCE = float(os.getenv("VAD_MIN_SILENCE", "0.35"))
+# Optional OpenRouter provider pinning, e.g. OPENROUTER_PROVIDER_ORDER=Groq,Cerebras (allow_fallbacks stays
+# True in worker.py). Default is OFF (OPENROUTER_PROVIDER_SORT as before): in a recent test log LLM TTFT was
+# 1.6-2.4s vs 0.7-0.9s earlier, so pinning must be A/B tested against your own latency logs before enabling.
+# "none" or empty = off.
+_prov_raw = os.getenv("OPENROUTER_PROVIDER_ORDER", "")
+OPENROUTER_PROVIDER_ORDER = [] if _prov_raw.strip().lower() == "none" else [p.strip() for p in _prov_raw.split(",") if p.strip()]
+# Max chat-history items sent to the LLM per call (system instructions are always kept). Every step's
+# instructions already carry the next missing field, so old turns add prompt tokens (-> TTFT) but no value.
+# 0 disables trimming.
+CHAT_CTX_MAX_ITEMS = int(os.getenv("CHAT_CTX_MAX_ITEMS", "16"))
 
 def _opt_float(name: str):
     v = os.getenv(name, "").strip()
@@ -80,7 +91,7 @@ def _opt_float(name: str):
     except ValueError:
         return None
 
-ENDPOINT_MIN_DELAY = _opt_float("ENDPOINT_MIN_DELAY") if _opt_float("ENDPOINT_MIN_DELAY") is not None else 0.15
+ENDPOINT_MIN_DELAY = _opt_float("ENDPOINT_MIN_DELAY") if _opt_float("ENDPOINT_MIN_DELAY") is not None else 0.05  # VAD already waits VAD_MIN_SILENCE; an extra 0.15s on top was pure dead time
 ENDPOINT_MAX_DELAY = _opt_float("ENDPOINT_MAX_DELAY") if _opt_float("ENDPOINT_MAX_DELAY") is not None else 0.45
 
 # Max tokens the LLM may generate per reply. 120 was too low: a tool call with many parameters
