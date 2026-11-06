@@ -13,7 +13,7 @@ async function authFetch(input: RequestInfo | URL, init: RequestInit = {}): Prom
     headers.set('Authorization', `Bearer ${token}`);
   }
 
-  const res = await fetch(input, { ...init, headers });
+  const res = await fetch(input, { ...init, headers, cache: 'no-store' });
   if (res.status === 401) {
     localStorage.removeItem('curo_auth_token');
     localStorage.removeItem('curo_auth_user');
@@ -26,7 +26,7 @@ async function authFetch(input: RequestInfo | URL, init: RequestInit = {}): Prom
  * Checks system and database connectivity health (public)
  */
 export async function fetchHealth(): Promise<SystemHealth> {
-  const res = await fetch(`${API_BASE}/api/health`);
+  const res = await fetch(`${API_BASE}/api/health`, { cache: 'no-store' });
   if (!res.ok) throw new Error(`Health check failed: ${res.statusText}`);
   return res.json();
 }
