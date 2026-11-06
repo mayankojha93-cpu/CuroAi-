@@ -1,7 +1,7 @@
 import re
 import logging
 import asyncio
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from livekit.agents import function_tool
 from .state import RealEstateState, RealEstateStep
 from .prompts import get_step_instructions, get_closing_text
@@ -70,6 +70,13 @@ def classify_intent(val: Any) -> Optional[str]:
     return None
 
 
+_DONT_KNOW_RE = re.compile(
+    r"(pata\s*nahi|pata\s*nhi|nahi\s*pata|yaad\s*nahi|yad\s*nahi|idea\s*nahi|nahi\s*(bata|bol)\s*(sakta|sakti|sakte)"
+    r"|maloom\s*nahi|malum\s*nahi|don'?t\s*know|do\s*not\s*know|don'?t\s*remember|not\s*sure|no\s*idea|can'?t\s*say|cannot\s*share|nahi\s*batana)"
+)
+_DONT_KNOW_DEV = re.compile(r"(पता\s*नहीं|नहीं\s*पता|याद\s*नहीं|आइडिया\s*नहीं|मालूम\s*नहीं|नहीं\s*बता|नहीं\s*बताना)")
+
+
 def _clean_str(val: Any) -> Optional[str]:
     if val is None:
         return None
@@ -77,6 +84,29 @@ def _clean_str(val: Any) -> Optional[str]:
     if s.lower() in ("null", "none", "undefined", "n/a", "not provided", ""):
         return None
     return s
+
+
+# Commercial unit types the caller can name. The type is stored AS THE CALLER SAID IT, never assumed.
+_COMM_TYPE_TERMS = (
+    "office space", "office", "ऑफिस", "retail shop", "retail", "shop", "दुकान", "dukan", "dukaan",
+    "showroom", "शोरूम", "warehouse", "godown", "गोदाम", "godam", "coworking", "co-working", "cowork",
+    "workstation", "booth", "sco", "factory", "industrial",
+)
+_COMM_OTHER_TERMS = ("other", "something else", "doosra", "dusra", "doosri", "koi aur", "kuch aur")
+
+
+def commercial_type_from_speech(text: Any) -> Optional[str]:
+    """The commercial unit type the caller actually named in `text`, in their own words
+    ('office', 'shop', ...). 'Other' when they say it is something else. None if they named nothing."""
+    low = str(text or "").lower().strip()
+    if not low:
+        return None
+    for term in _COMM_TYPE_TERMS:
+        if _kw_in(low, (term,)):
+            return term
+    if _kw_in(low, _COMM_OTHER_TERMS):
+        return "Other"
+    return None
 
 
 class RealEstateTools:
@@ -341,12 +371,15 @@ class RealEstateTools:
         intent: Optional[str] = None,
     ) -> str:
         """Set property category (residential/commercial) and intent (sale/lease/rent)."""
+        # The LLM sometimes invents category='residential', intent='sale' after a bare "haan".
+        # Accept an argument only if the caller's latest words actually support it.
+        heard = (self.state.last_user_text or "").strip()
         classified_cat = classify_category(category)
-        if classified_cat:
+        if classified_cat and (not heard or classify_category(heard) == classified_cat):
             self.state.category = classified_cat
 
         classified_int = classify_intent(intent)
-        if classified_int:
+        if classified_int and (not heard or classify_intent(heard) == classified_int):
             self.state.intent = classified_int
 
         # If both category and intent are established, transition to the respective branch 4.1 to 4.4
@@ -395,17 +428,21 @@ class RealEstateTools:
         floor_number: Optional[str] = None,
         bhk_config: Optional[str] = None,
         commercial_type: Optional[str] = None,
-        approx_area_sqft: Optional[float] = None,
+        # Number / boolean fields also accept str: the LLM often sends the literal string "null" for fields it
+        # was told to omit, which made livekit reject the WHOLE call (nothing saved, 2nd LLM call, ~3.5s turn).
+        # The body below already parses str values and ignores "null".
+        approx_area_sqft: Optional[Union[float, str]] = None,
         furnishing_status: Optional[str] = None,
         expected_sale_price: Optional[str] = None,
         expected_monthly_rent: Optional[str] = None,
-        is_currently_leased: Optional[bool] = None,
+        is_currently_leased: Optional[Union[bool, str]] = None,
         current_rent_received: Optional[str] = None,
-        immediate_occupancy: Optional[bool] = None,
+        immediate_occupancy: Optional[Union[bool, str]] = None,
     ) -> str:
         """Save ONLY the property details the customer explicitly stated in their latest message.
         Pass just those parameters and OMIT every other parameter. Never pass null and never guess
-        or reuse values from earlier turns."""
+        or reuse values from earlier turns. commercial_type must be exactly the unit type the caller
+        said (office, shop, showroom...); never assume it."""
         clean_society = _clean_str(project_or_society)
         if clean_society:
             self.state.project_or_society = clean_society
@@ -427,6 +464,16 @@ class RealEstateTools:
             self.state.bhk_config = clean_bhk
 
         clean_comm = _clean_str(commercial_type)
+        if clean_comm:
+            # NEVER assume the unit type: keep only what the caller actually said in their latest words.
+            heard = (self.state.last_user_text or "").strip()
+            if heard:
+                said = commercial_type_from_speech(heard)
+                if said:
+                    clean_comm = said
+                else:
+                    logger.info(f"Ignoring commercial_type='{clean_comm}' from LLM: caller did not say it ('{heard[:80]}')")
+                    clean_comm = None
         if clean_comm:
             self.state.commercial_type = clean_comm
 
@@ -514,6 +561,11 @@ class RealEstateTools:
     async def customer_does_not_know(self, field_id: Optional[str] = None) -> str:
         """Call when the customer says they do not know, do not remember, or cannot share the detail that was just asked."""
         missing = self.state.get_missing_fields()
+        heard = (self.state.last_user_text or "").strip()
+        if heard and missing and not _DONT_KNOW_RE.search(heard.lower()) and not _DONT_KNOW_DEV.search(heard):
+            # Caller did NOT say they don't know (e.g. asked us to repeat) -> never skip the field.
+            q = missing[0]["question_en"] if self.state.reply_lang == "en" else missing[0]["question_hi"]
+            return self._fast(q, f"Do not skip. Ask again: '{q}'", ack=None)
         ids = {m["id"] for m in missing}
         target = field_id if field_id in ids else (missing[0]["id"] if missing else None)
         if target:
