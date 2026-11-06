@@ -65,6 +65,9 @@ export interface SaveOutcomeInput {
   median_latency_ms?: number | null;
   cost_estimate_inr?: number | null;
   recording_url?: string | null;
+  language?: string | null;
+  initial_language?: string | null;
+  language_switched?: boolean | null;
 }
 
 export interface LeadInput {
@@ -227,10 +230,10 @@ export class CallService {
       );
 
       const insertRes = await client.query(
-        `INSERT INTO calls (id, customer_id, campaign_id, status, call_status, attempt_number, room_name, direction)
-         VALUES ($1, $2, $3, 'initiated', 'initiated', $4, $5, 'outbound')
+        `INSERT INTO calls (id, customer_id, campaign_id, status, call_status, attempt_number, room_name, direction, language, initial_language, language_switched)
+         VALUES ($1, $2, $3, 'initiated', 'initiated', $4, $5, 'outbound', $6, $6, FALSE)
          RETURNING *`,
-        [callId, customerId, customer.campaign_id || null, currentAttempt, roomName]
+        [callId, customerId, customer.campaign_id || null, currentAttempt, roomName, customer.language || 'hi']
       );
       call = insertRes.rows[0];
       await client.query('COMMIT');
@@ -270,6 +273,9 @@ export class CallService {
     const normalizedServiceEnd = normalizeDate(data.service_end_date);
     const normalizedRDate = normalizeDate(data.r_date);
 
+    const rawLang = (data.language || 'hi').trim().toLowerCase();
+    const cleanLang = (rawLang === 'en' || rawLang === 'english' || rawLang.startsWith('en-')) ? 'en' : 'hi';
+
     const custRes = await query(
       `INSERT INTO customers (
          name, phone, address, language, account_no, subs_del_no, service_end_date, r_date,
@@ -290,7 +296,7 @@ export class CallService {
         custName,
         normalizedPhone,
         data.address || (data.company_name ? `${data.company_name} HQ` : 'Delhi, 110011, burari, sant nagar'),
-        data.language || 'en',
+        cleanLang,
         data.account_no || '20022941256',
         data.subs_del_no || '01121344121_wifi',
         normalizedServiceEnd || '2026-08-27',
@@ -317,15 +323,19 @@ export class CallService {
 
     await query(
       `UPDATE calls 
-       SET script = $1, company_name = $2, voice_pipeline = $3, is_test_call = TRUE 
+       SET script = $1, company_name = $2, voice_pipeline = $3, is_test_call = TRUE,
+           language = $5, initial_language = $5, language_switched = FALSE 
        WHERE id = $4`,
-      [scriptName, companyName, voicePipeline, call.id]
+      [scriptName, companyName, voicePipeline, call.id, cleanLang]
     );
 
     call.script = scriptName;
     call.company_name = companyName;
     call.voice_pipeline = voicePipeline;
     call.is_test_call = true;
+    (call as any).language = cleanLang;
+    (call as any).initial_language = cleanLang;
+    (call as any).language_switched = false;
 
     return { call, customer: serializeCustomer(customer) };
   }
@@ -636,17 +646,33 @@ export class CallService {
       }
     }
 
-    const transcriptJson = data.transcript ? JSON.stringify(romanizeTranscript(data.transcript)) : null;
+    const processedTranscript = data.transcript ? romanizeTranscript(data.transcript) : null;
+    const transcriptJson = processedTranscript ? JSON.stringify(processedTranscript) : null;
     const baseOutcome = data.outcome || finalDisp.toLowerCase();
+
+    // Log the complete conversation in backend console
+    if (processedTranscript && Array.isArray(processedTranscript) && processedTranscript.length > 0) {
+      console.log(`\n======================================================================`);
+      console.log(`  📞 AIRTEL CALL TRANSCRIPT (Call ID: ${callId})`);
+      console.log(`  Disposition: ${finalDisp}`);
+      console.log(`----------------------------------------------------------------------`);
+      for (const turn of processedTranscript) {
+        const isAgent = turn.role === 'assistant' || turn.role === 'agent';
+        const speaker = isAgent ? '🤖 Priya   ' : '🗣️ Customer';
+        console.log(`  ${speaker}: ${turn.text}`);
+      }
+      console.log(`======================================================================\n`);
+    }
 
     const outcomeRes = await query(
       `INSERT INTO call_outcomes (
          call_id, outcome, pickup_date, address_confirmed, corrected_address, transcript,
          identity_confirmed, pickup_accepted, proposed_date, confirmed_date,
          registered_address_confirmed, new_address, alternate_phone,
-         final_disposition, customer_note, escalation_required, transcript_reference
+         final_disposition, customer_note, escalation_required, transcript_reference,
+         language, initial_language, language_switched
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
        ON CONFLICT (call_id)
        DO UPDATE SET
          outcome = EXCLUDED.outcome,
@@ -664,7 +690,10 @@ export class CallService {
          final_disposition = EXCLUDED.final_disposition,
          customer_note = EXCLUDED.customer_note,
          escalation_required = EXCLUDED.escalation_required,
-         transcript_reference = EXCLUDED.transcript_reference
+         transcript_reference = EXCLUDED.transcript_reference,
+         language = COALESCE(EXCLUDED.language, call_outcomes.language),
+         initial_language = COALESCE(EXCLUDED.initial_language, call_outcomes.initial_language),
+         language_switched = COALESCE(EXCLUDED.language_switched, call_outcomes.language_switched)
        RETURNING *`,
       [
         callId,
@@ -684,6 +713,9 @@ export class CallService {
         data.customer_note || null,
         data.escalation_required ?? false,
         data.transcript_reference || null,
+        data.language || null,
+        data.initial_language || null,
+        data.language_switched ?? null,
       ]
     );
 
@@ -718,10 +750,28 @@ export class CallService {
            cost_estimate_inr = $5,
            recording_url = COALESCE($6, recording_url),
            answered_at = COALESCE(answered_at, CASE WHEN $3 > 0 THEN NOW() - ($3 || ' seconds')::interval ELSE NOW() END),
-           ended_at = COALESCE(ended_at, NOW())
+           ended_at = COALESCE(ended_at, NOW()),
+           language = COALESCE($8, language),
+           initial_language = COALESCE($9, initial_language),
+           language_switched = COALESCE($10, language_switched)
        WHERE id = $7`,
-      [mappedStatus, finalDisp, duration, medianLatency, costEstimate, data.recording_url || null, callId]
+      [
+        mappedStatus,
+        finalDisp,
+        duration,
+        medianLatency,
+        costEstimate,
+        data.recording_url || null,
+        callId,
+        data.language || null,
+        data.initial_language || null,
+        data.language_switched ?? null,
+      ]
     );
+
+    if (call.customer_id && data.language) {
+      await query(`UPDATE customers SET language = $1 WHERE id = $2`, [data.language, call.customer_id]);
+    }
 
     // Update campaign counters if call is associated with a campaign
     if (call.campaign_id) {
@@ -1279,7 +1329,10 @@ export class CallService {
               COALESCE(cust.name, rl.owner_name) as customer_name,
               COALESCE(cust.phone, rl.phone) as customer_phone,
               cust.subs_del_no,
-              COALESCE(cust.language, rl.preferred_language) as customer_language,
+              COALESCE(c.language, cust.language, rl.preferred_language, 'hi') as customer_language,
+              c.language as language,
+              c.initial_language as initial_language,
+              c.language_switched as language_switched,
               camp.id as campaign_id, camp.name as campaign_name,
               COALESCE(co.final_disposition, ro.final_disposition) as final_disposition,
               co.confirmed_date, co.pickup_date,

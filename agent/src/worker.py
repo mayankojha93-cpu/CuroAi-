@@ -1,6 +1,7 @@
 import json
 import time
 import asyncio
+from datetime import datetime
 from livekit import agents
 from livekit.agents import AgentSession, Agent, AgentServer, TurnHandlingOptions
 from livekit.plugins import sarvam, silero, openai
@@ -87,7 +88,8 @@ async def entrypoint(ctx: agents.JobContext):
     customer_name = metadata.get("customerName", "Customer")
     address = metadata.get("address", "Flat 402, Sunshine Heights, Koramangala 4th Block, Bengaluru")
     phone = metadata.get("phone", "")
-    language = metadata.get("preferredLanguage", "hi")
+    raw_lang = (metadata.get("preferredLanguage") or metadata.get("language") or "hi").strip().lower()
+    language = "en" if raw_lang in ("en", "english", "en-in") else "hi"
     account_no = metadata.get("accountNo", "")
     subs_del_no = metadata.get("subsDelNo", "")
     service_end_date = metadata.get("serviceEndDate", "")
@@ -132,8 +134,9 @@ async def entrypoint(ctx: agents.JobContext):
         **llm_extra,
     )
 
+    initial_tts_lang = TTS_LANGUAGE_EN if language == "en" else TTS_LANGUAGE_HI
     tts = sarvam.TTS(
-        target_language_code=TTS_LANGUAGE_HI,
+        target_language_code=initial_tts_lang,
         model="bulbul:v3",
         speaker="priya",
         api_key=SARVAM_API_KEY,
@@ -377,6 +380,7 @@ async def entrypoint(ctx: agents.JobContext):
             timing_tracker["stt_final"] = time.time()
             state.stt_retry_count = 0  # Reset on successful transcription
             logger.info(f"🗣️ [Customer]: \"{romanized_text}\"")
+            print(f"\n\033[1;32m[{datetime.now().strftime('%H:%M:%S')}] 🗣️ [Customer]:\033[0m \033[1;37m{romanized_text}\033[0m\n", flush=True)
             state.add_transcript("customer", romanized_text)
             state.silence_count = 0
 
@@ -505,6 +509,7 @@ async def entrypoint(ctx: agents.JobContext):
                 if content_str and not is_raw_tool_json(content_str):
                     timing_tracker["last_activity_time"] = time.time()
                     logger.info(f"🤖 [Agent]: \"{content_str}\"")
+                    print(f"\n\033[1;36m[{datetime.now().strftime('%H:%M:%S')}] 🤖 [Agent (Priya)]:\033[0m \033[1;37m{content_str}\033[0m\n", flush=True)
                     state.add_transcript("assistant", content_str)
 
                 # Terminal state reached and the LLM (not a direct-speak tool) spoke the closing line:
@@ -595,27 +600,43 @@ async def entrypoint(ctx: agents.JobContext):
 
     ctx.add_shutdown_callback(_final_save)
 
-    # 5. Opening line (Hindi greeting). Built BEFORE session.start so nothing waits on it afterwards.
+    # 5. Opening line (English or Hinglish based on initial selection). Built BEFORE session.start so nothing waits on it afterwards.
     if direction == "inbound":
         name_lower = (customer_name or "").lower().strip()
         is_generic = not name_lower or any(t in name_lower for t in ["customer", "subscriber", "inbound", "caller"])
-        if not is_generic:
-            opening_line = (
-                f"नमस्ते {customer_name} जी, एयरटेल में आपका स्वागत है। मैं प्रिया बोल रही हूँ। क्या आपने अपने वाई-फाई राउटर पिकअप या अकाउंट के संबंध में कॉल किया है?"
-            )
+        if state.reply_lang == "en":
+            if not is_generic:
+                opening_line = (
+                    f"Hello {customer_name}, welcome to Airtel. I am Priya. Have you called regarding your Wi-Fi router pickup or account?"
+                )
+            else:
+                opening_line = (
+                    "Hello, welcome to Airtel. I am Priya. How may I assist you today?"
+                )
         else:
-            opening_line = (
-                "नमस्ते, एयरटेल में आपका स्वागत है। मैं प्रिया बोल रही हूँ। मैं आपकी क्या मदद कर सकती हूँ?"
-            )
+            if not is_generic:
+                opening_line = (
+                    f"नमस्ते {customer_name} जी, एयरटेल में आपका स्वागत है। मैं प्रिया बोल रही हूँ। क्या आपने अपने वाई-फाई राउटर पिकअप या अकाउंट के संबंध में कॉल किया है?"
+                )
+            else:
+                opening_line = (
+                    "नमस्ते, एयरटेल में आपका स्वागत है। मैं प्रिया बोल रही हूँ। मैं आपकी क्या मदद कर सकती हूँ?"
+                )
     else:
         _n = (customer_name or "").lower().strip()
-        if not _n or any(t in _n for t in ["customer", "subscriber", "user", "airtel", "client"]):
-            who = "एयरटेल वाई-फाई कनेक्शन के रजिस्टर्ड ग्राहक"
+        if state.reply_lang == "en":
+            who = "the registered Airtel Wi-Fi customer" if not _n or any(t in _n for t in ["customer", "subscriber", "user", "airtel", "client"]) else f"{customer_name}"
+            opening_line = (
+                f"Hello, I am Priya calling from Airtel. Am I speaking with {who}?"
+            )
         else:
-            who = f"{customer_name} जी"
-        opening_line = (
-            f"नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं {who} से बात कर रही हूँ?"
-        )
+            if not _n or any(t in _n for t in ["customer", "subscriber", "user", "airtel", "client"]):
+                who = "एयरटेल वाई-फाई कनेक्शन के रजिस्टर्ड ग्राहक"
+            else:
+                who = f"{customer_name} जी"
+            opening_line = (
+                f"नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं {who} से बात कर रही हूँ?"
+            )
 
     # 6. Start the session. The greeting is queued immediately, so the TTS request goes out the moment the audio
     #    pipeline is ready (no extra await between start and say, no work left to do before the first word).
@@ -624,6 +645,7 @@ async def entrypoint(ctx: agents.JobContext):
 
     logger.info(f"Speaking opening line ({direction}): {opening_line}")
     state.add_transcript("assistant", opening_line)
+    print(f"\n\033[1;36m[{datetime.now().strftime('%H:%M:%S')}] 🤖 [Agent (Priya)]:\033[0m \033[1;37m{opening_line}\033[0m\n", flush=True)
     # Uninterruptible: a hold/IVR announcement or early 'hello' must not cut the greeting off mid-sentence.
     opening_speech = session.say(opening_line, allow_interruptions=False)
 

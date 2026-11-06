@@ -6,6 +6,7 @@ from livekit.agents import Agent, StopResponse
 from src.carrier_filter import classify_carrier_message
 from .prompts import get_step_instructions
 from .state import RealEstateState
+from .config import CHAT_CTX_MAX_ITEMS
 
 # Leak patterns for tool-call text that the LLM sometimes types instead of calling the tool.
 _LEAK_PATTERNS = [
@@ -103,12 +104,77 @@ def _asks_agent_for_price(text: str) -> bool:
     return any(_PRICE_Q_LATIN.search((c or "").lower()) for c in cands)
 
 
+# ── Caller asks us to REPEAT the last question ("aapne pichhle kya puchha tha?") ──
+# Previously the LLM treated this as "don't know" and silently skipped the open field.
+# Handled deterministically: re-ask the currently open question, no tool call.
+_REPEAT_LATIN = re.compile(
+    r"(kya\s+(pu|poo)\w*"
+    r"|kya\s+(bola|bole|kaha|kaho)\b"
+    r"|pich\w*\s+kya"
+    r"|pehle\s+kya"
+    r"|phir\s+se|fir\s+se|dobara|dubara|ek\s+baar\s+(aur|phir)"
+    r"|samajh\s+nahi|samjha\s+nahi|sun\s+nahi|suna\s+nahi"
+    r"|\brepeat\b|say\s+again|\bpardon\b|what\s+did\s+you\s+(say|ask)|what\s+was\s+the\s+question"
+    # STT often garbles "repeat" on phone lines ("Parali, please" in a real call), and callers say these too
+    r"|\bre+p[ei]+a?t\w*|\bri+p[ei]+a?t\w*|\bpa+r[ae]li\b"
+    r"|once\s+more|one\s+more\s+time|come\s+again|again\s+please|phir\s+bolo|fir\s+bolo|dobara\s+bolo)",
+    re.I,
+)
+_REPEAT_DEV = re.compile(
+    r"(क्या\s*(पूछ|पुछ|बोल|कहा)|पिछले\s*क्या|पहले\s*क्या|दोबारा|फिर\s*से|रिपीट|समझ\s*नहीं|सुन\s*नहीं)"
+)
+
+
+def _asks_repeat(text: str) -> bool:
+    if not text:
+        return False
+    if _REPEAT_DEV.search(text):
+        return True
+    cands = [text]
+    try:
+        from src.transliteration import romanize_hindi
+        cands.append(romanize_hindi(text))
+    except Exception:
+        pass
+    return any(_REPEAT_LATIN.search((c or "").lower()) for c in cands)
+
+
 def _chunk_text(chunk):
     """Text carried by an llm_node chunk (str or ChatChunk); None for tool-call/empty chunks."""
     if isinstance(chunk, str):
         return chunk
     delta = getattr(chunk, "delta", None)
     return getattr(delta, "content", None) if delta else None
+
+
+def _chunk_has_tool_call(chunk) -> bool:
+    """True for a genuine (structured) tool-call chunk."""
+    if isinstance(chunk, str):
+        return False
+    delta = getattr(chunk, "delta", None)
+    return bool(delta and getattr(delta, "tool_calls", None))
+
+
+# A tool call typed as text ANYWHERE in the reply (not just at the start), e.g.
+# "Third floor, noted Sir. <function=save_property_details>{...}</function> Is the property leased?"
+_INLINE_CALL_RE = re.compile(
+    r'<function[=\s>]'
+    r'|"name"\s*:\s*"[a-z]+(?:_[a-z0-9]+)+"'
+    r'|\b[a-z]+(?:_[a-z0-9]+)+\s*[\(\{]'
+)
+
+_Q_LEAD_RE = re.compile(r"^(?:ji sir|sure sir|sorry sir|sir)\s*[,.]?\s+", re.I)
+
+
+def _extract_question(spoken: str) -> str:
+    """The question part of a spoken line: from the first sentence that ends with '?' to the end.
+    Drops acks like 'Okay.' and re-ask leads like 'Ji Sir,' so a later 'repeat' sounds clean."""
+    parts = re.split(r"(?<=[.!?।])\s+", (spoken or "").strip())
+    for i, p in enumerate(parts):
+        if p.rstrip().endswith("?"):
+            q = " ".join(parts[i:]).strip()
+            return _Q_LEAD_RE.sub("", q).strip()
+    return ""
 
 
 def _parse_text_tool_call(raw: str):
@@ -173,7 +239,61 @@ class RealEstateAgent(Agent):
             raise StopResponse()
 
         state = self._re_state
+        state.last_user_text = text
         low_text = text.lower()
+
+        # Caller asks us to repeat / says "what did you ask?" -> re-ask the open question (no LLM,
+        # no tool call, nothing skipped). Runs BEFORE category detection because the caller's
+        # words often quote the question itself ("residential hai ya commercial hai na?").
+        from .state import RealEstateStep as _S
+        from .tools import classify_category, classify_intent
+        _intake = (_S.RESIDENTIAL_SALE, _S.RESIDENTIAL_LEASE, _S.COMMERCIAL_SALE, _S.COMMERCIAL_LEASE)
+        if state.step in _intake or state.step == _S.CATEGORY_SELECT:
+            _neutral = _is_neutral_utterance(text)
+            _reask = None
+            if state.step == _S.CATEGORY_SELECT and (_asks_repeat(text) or _neutral):
+                # A bare "haan"/"ji" does not answer "residential or commercial? sell or rent?"
+                # (often it is just a backchannel that interrupted the question).
+                _cat, _int = classify_category(text), classify_intent(text)
+                if _asks_repeat(text) or not (_cat or _int):
+                    en = state.reply_lang == "en"
+                    if state.category and not state.intent:
+                        _reask = "Are you looking to sell or rent it out?" if en else "Aap ise sell karna chahte hain ya rent par dena chahte hain?"
+                    elif state.intent and not state.category:
+                        _reask = "Is it a residential or commercial property?" if en else "Yeh residential property hai ya commercial?"
+                    else:
+                        _reask = (
+                            "Is it a residential or commercial property? And are you looking to sell or rent it out?"
+                            if en else
+                            "Yeh residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
+                        )
+            elif state.step in _intake and _asks_repeat(text):
+                _missing = state.get_missing_fields()
+                if _missing:
+                    _reask = _missing[0]["question_en"] if state.reply_lang == "en" else _missing[0]["question_hi"]
+            if _reask:
+                lead = "Sure Sir, " if state.reply_lang == "en" else "Ji Sir, "
+                logger.info(f"🔁 Repeat/backchannel -> re-asking open question (no LLM): '{_reask}'")
+                try:
+                    self.session.say(lead + _reask, allow_interruptions=True)
+                except Exception as e:
+                    logger.warning(f"Re-ask failed, falling back to LLM: {e}")
+                else:
+                    raise StopResponse()
+
+        # "Repeat" at ANY other step (intro, other-property, new location, name): say the last question
+        # we actually asked, verbatim. Repeating only happens when the caller asks for it.
+        if state.step not in _intake and state.step != _S.CATEGORY_SELECT and state.step != _S.CLOSING \
+                and _asks_repeat(text) and state.last_agent_question:
+            lead = "Sure Sir, " if state.reply_lang == "en" else "Ji Sir, "
+            logger.info(f"🔁 Repeat requested -> re-asking last question (no LLM): '{state.last_agent_question}'")
+            try:
+                self.session.say(lead + state.last_agent_question, allow_interruptions=True)
+            except Exception as e:
+                logger.warning(f"Re-ask failed, falling back to LLM: {e}")
+            else:
+                raise StopResponse()
+
         impatient_phrases = (
             "jaldi bolo", "jaldi batao", "time nahi", "time nhi", "bahut sawal", "kitna sawal",
             "kitne sawal", "hurry up", "don't have time", "dont have time", "wrap it up",
@@ -184,7 +304,7 @@ class RealEstateAgent(Agent):
             state.impatient_detected = True
 
         # Proactively detect category & intent directly from caller utterance
-        from .tools import classify_category, classify_intent
+        from .tools import classify_category, classify_intent, commercial_type_from_speech
         from .state import RealEstateStep
 
         detected_cat = classify_category(text)
@@ -196,6 +316,12 @@ class RealEstateAgent(Agent):
             state.category = detected_cat
             if detected_cat == "commercial":
                 state.bhk_config = None
+                # Keep exactly what the caller said as the unit type ("office", "shop"...). Never assumed:
+                # if they only said "commercial", the type stays empty and is asked next.
+                _said = commercial_type_from_speech(text)
+                if _said and _said != "Other" and not state.commercial_type:
+                    state.commercial_type = _said
+                    logger.info(f"🏢 Commercial unit type from caller's words: '{_said}'")
                 if state.step == RealEstateStep.RESIDENTIAL_SALE:
                     state.step = RealEstateStep.COMMERCIAL_SALE
                     step_changed = True
@@ -217,11 +343,11 @@ class RealEstateAgent(Agent):
             state.intent = detected_int
             logger.info(f"🎯 Proactively recognized intent: '{detected_int}' from utterance: '{text}'")
 
-        if state.step == RealEstateStep.CATEGORY_SELECT and state.category and state.intent:
+        if state.step in (RealEstateStep.CATEGORY_SELECT, RealEstateStep.ASK_NEW_LOCATION) and state.category and state.intent:
             if state.category == "commercial":
-                state.step = RealEstateStep.COMMERCIAL_SALE if state.intent != "lease" else RealEstateStep.COMMERCIAL_LEASE
+                state.step = RealEstateStep.COMMERCIAL_LEASE if state.intent == "lease" else RealEstateStep.COMMERCIAL_SALE
             else:
-                state.step = RealEstateStep.RESIDENTIAL_SALE if state.intent != "lease" else RealEstateStep.RESIDENTIAL_LEASE
+                state.step = RealEstateStep.RESIDENTIAL_LEASE if state.intent == "lease" else RealEstateStep.RESIDENTIAL_SALE
             step_changed = True
 
         # Greetings / backchannels like "Hello." must not flip the reply language.
@@ -295,38 +421,53 @@ class RealEstateAgent(Agent):
                 return
             tools = []
 
-        # Stream the LLM. The first non-blank chunk decides: normal speech streams straight through
-        # (zero added latency); output that looks like a tool call typed as text is held back and
-        # recovered, so the caller never gets dead air.
-        mode = None            # None = undecided, "speech", "textcall"
-        pending, head, raw = [], "", ""
+        # LATENCY: cap history sent to the LLM (fewer prompt tokens -> faster TTFT). The system
+        # instructions are preserved by truncate(); step instructions already hold the open question.
+        if CHAT_CTX_MAX_ITEMS > 0 and len(items) > CHAT_CTX_MAX_ITEMS:
+            try:
+                chat_ctx = chat_ctx.copy()
+                chat_ctx.truncate(max_items=CHAT_CTX_MAX_ITEMS)
+            except Exception as e:
+                logger.debug(f"chat_ctx truncate skipped: {e}")
+
+        # Stream the LLM, but HOLD its text until the generation ends. Why: Llama often says a sentence
+        # AND calls a tool in the same turn. The tool then speaks the canonical next question (FAST_REPLY),
+        # so the caller heard two questions (the LLM's own, frequently for the wrong field, plus ours) and
+        # questions got repeated. Tool-call chunks are still forwarded immediately, so tool turns lose no time
+        # (the call has to finish before the tool can run anyway); only text-only turns wait for the short
+        # reply to finish.
+        #   - real tool call in this generation -> drop the LLM text; the tool's reply is the only thing spoken
+        #   - tool call typed as text (anywhere in the reply) -> recover it, speak the canonical reply
+        #   - plain speech -> flush as-is
+        held = []
+        saw_tool = False
         async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
-            text = _chunk_text(chunk)
-            if mode == "speech" or not text:
-                yield chunk                      # speech, or a genuine tool-call chunk
+            if _chunk_has_tool_call(chunk):
+                saw_tool = True
+                yield chunk
                 continue
-            if mode == "textcall":
-                raw += text
+            if not _chunk_text(chunk):
+                yield chunk                      # empty / metadata chunk
                 continue
-            pending.append(chunk)
-            head += text
-            if not head.strip():
-                continue
-            if _TEXT_CALL_RE.match(head):
-                mode, raw = "textcall", head
-                pending = []
-            else:
-                mode = "speech"
-                for c in pending:
-                    yield c
-                pending = []
-        if mode is None:
-            for c in pending:
-                yield c
-        elif mode == "textcall":
-            recovered = await self._recover_text_tool_call(raw)
+            held.append(chunk)
+
+        full = "".join(_chunk_text(c) or "" for c in held)
+        if saw_tool:
+            if full.strip():
+                logger.info(f"🔇 Dropped LLM text that came with a tool call (avoids double question): {full.strip()[:140]!r}")
+            return
+        m = _INLINE_CALL_RE.search(full)
+        if m or _TEXT_CALL_RE.match(full):
+            start = m.start() if m else 0
+            if m and m.group(0).startswith('"name"'):
+                brace = full.rfind("{", 0, m.start())
+                start = brace if brace >= 0 else m.start()
+            recovered = await self._recover_text_tool_call(full[start:])
             if recovered:
                 yield recovered
+            return
+        for c in held:
+            yield c
 
     async def _recover_text_tool_call(self, raw: str):
         """The LLM typed a tool call as text. Execute it safely and return the line to speak."""
@@ -386,9 +527,15 @@ class RealEstateAgent(Agent):
                 if not _call_open(buf) and buf.rstrip().endswith((".", "?", "!", "\u0964")):
                     out, buf = _clean_leaks(buf), ""
                     if out.strip():
+                        _q = _extract_question(out)
+                        if _q:
+                            self._re_state.last_agent_question = _q   # for "repeat that"
                         yield out
             out = _clean_leaks(buf)
             if out.strip():
+                _q = _extract_question(out)
+                if _q:
+                    self._re_state.last_agent_question = _q
                 yield out
 
         return Agent.default.tts_node(self, guard(), model_settings)

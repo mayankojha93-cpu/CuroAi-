@@ -6,6 +6,8 @@ from src.lang import detect_language
 
 class RealEstateStep(str, Enum):
     INTRODUCTION = "INTRODUCTION"
+    CHECK_OTHER_PROPERTY = "CHECK_OTHER_PROPERTY"
+    ASK_NEW_LOCATION = "ASK_NEW_LOCATION"
     OWNER_NAME = "OWNER_NAME"
     CATEGORY_SELECT = "CATEGORY_SELECT"
     RESIDENTIAL_SALE = "RESIDENTIAL_SALE"
@@ -28,6 +30,7 @@ class RealEstateState:
         phone: str = "",
         preferred_language: str = "hi",
         direction: str = "outbound",
+        property_location: str = "",
     ):
         self.call_id = call_id
         self.lead_id = lead_id
@@ -36,8 +39,28 @@ class RealEstateState:
         self.preferred_language = preferred_language
         self.direction = direction
 
-        # Default is Hindi + English (Hinglish/Hindi) 'hi' with simran_enhi_customer; switches dynamically to English ('en') with simran_en_sales if caller speaks English
-        self.reply_lang: str = preferred_language if preferred_language in ("hi", "en") else "hi"
+        # Property location received from frontend data
+        loc = (property_location or "").strip()
+        if not loc or loc in ("Delhi, 110011, burari, sant nagar", "None", "null"):
+            loc = "DLF Phase 5, Sector 54, Gurgaon"
+        self.initial_property_location: Optional[str] = loc
+        self.sector_or_location: Optional[str] = loc
+        self.project_or_society: Optional[str] = loc
+
+        # Pre-confirm owner name so agent NEVER asks for owner name again
+        clean_name = (owner_name or "").strip()
+        if not clean_name or clean_name in ("Property Owner", "Test Subscriber", "Test Customer", "None", "null"):
+            clean_name = "Raja Nayak"
+        self.owner_name = clean_name
+        self.owner_name_confirmed: Optional[str] = clean_name
+
+        self.has_other_property: Optional[bool] = None
+
+        # Selected language flow: English ('en') or Hinglish ('hi')
+        clean_pref = "en" if str(preferred_language or "").strip().lower() in ("en", "english", "en-in") else "hi"
+        self.initial_language: str = clean_pref
+        self.reply_lang: str = clean_pref
+        self.language_switched: bool = False
         self.callee_connected: bool = False
         self.start_time: float = time.time()
         self.last_activity_time: float = time.time()
@@ -53,8 +76,6 @@ class RealEstateState:
         self.category: Optional[str] = None
 
         # Property detail slots (matching script 4.1 - 4.4)
-        self.project_or_society: Optional[str] = None
-        self.sector_or_location: Optional[str] = None
         self.unit_number: Optional[str] = None
         self.floor_number: Optional[str] = None
         self.bhk_config: Optional[str] = None
@@ -71,7 +92,6 @@ class RealEstateState:
         self.skipped_fields: set = set()
 
         # Call outcome & tracking
-        self.owner_name_confirmed: Optional[str] = None
         self.is_interested: Optional[bool] = None
         self.final_disposition: str = "Abruptly Disconnected Call"
         self.agent_summary: Optional[str] = None
@@ -81,6 +101,10 @@ class RealEstateState:
         self.direct_reply: Optional[str] = None
         # Caller asked "what price/rate will I get?" -> closing = valuation line + short thank-you
         self.valuation_requested: bool = False
+        # Raw text of the customer's latest turn (used by tools to reject hallucinated args)
+        self.last_user_text: str = ""
+        # The last question Priya actually spoke (for "repeat that" at any step)
+        self.last_agent_question: str = ""
         self.hangup_started: bool = False
         self.outcome_posted: bool = False
         self.silence_count: int = 0
@@ -103,10 +127,19 @@ class RealEstateState:
                 self.last_activity_time = time.time()
 
     def update_reply_lang(self, text: Optional[str]) -> bool:
-        """Detect and follow the customer's language (Hindi vs English)."""
+        """Detect and follow the customer's language (Hinglish vs English).
+        Can switch only once:
+        - If initial is English ('en') and customer speaks Hinglish ('hi'), switch to Hinglish once.
+        - If initial is Hinglish ('hi') and customer speaks English ('en'), switch to English once.
+        - Once switched, no further language switching is allowed.
+        """
+        if self.language_switched:
+            return False
+
         lang = detect_language(text)
         if lang and lang != self.reply_lang:
             self.reply_lang = lang
+            self.language_switched = True
             return True
         return False
 
@@ -260,19 +293,20 @@ class RealEstateState:
                     "question_en": "And which commercial project or building is it in?",
                     "question_hi": "Aur sir, kaun se project ya building mein hai?",
                 })
-            if not (self.unit_number and self.floor_number):
-                missing.append({
-                    "id": "unit_floor",
-                    "label": "Unit number and floor",
-                    "question_en": "Could you share the unit number and which floor it's on?",
-                    "question_hi": "Sir, main ye jaan sakti hoon unit number kya hai aur kaun se floor par hai ye?",
-                })
+            # Asked right after the category, BEFORE unit/floor (never skipped, never assumed)
             if not self.commercial_type:
                 missing.append({
                     "id": "commercial_type",
                     "label": "Office space, retail shop, or another commercial unit",
                     "question_en": "Is it an office space, retail shop, or another commercial unit?",
                     "question_hi": "Yeh office space hai, retail shop hai, ya koi doosra commercial unit hai?",
+                })
+            if not (self.unit_number and self.floor_number):
+                missing.append({
+                    "id": "unit_floor",
+                    "label": "Unit number and floor",
+                    "question_en": "Could you share the unit number and which floor it's on?",
+                    "question_hi": "Sir, main ye jaan sakti hoon unit number kya hai aur kaun se floor par hai ye?",
                 })
             if self.is_currently_leased is None:
                 missing.append({
@@ -326,19 +360,20 @@ class RealEstateState:
                     "question_en": "And which commercial project or building is it in?",
                     "question_hi": "Aur sir, kaun se project ya building mein hai?",
                 })
-            if not (self.unit_number and self.floor_number):
-                missing.append({
-                    "id": "unit_floor",
-                    "label": "Unit number and floor",
-                    "question_en": "Could you share the unit number and which floor it's on?",
-                    "question_hi": "Sir, main ye jaan sakti hoon unit number kya hai aur kaun se floor par hai ye?",
-                })
+            # Asked right after the category, BEFORE unit/floor (never skipped, never assumed)
             if not self.commercial_type:
                 missing.append({
                     "id": "commercial_type",
                     "label": "Office space, retail shop, or another commercial unit",
                     "question_en": "Is it an office space, retail shop, or another commercial unit?",
                     "question_hi": "Yeh office space hai, retail shop hai, ya koi doosra commercial unit hai?",
+                })
+            if not (self.unit_number and self.floor_number):
+                missing.append({
+                    "id": "unit_floor",
+                    "label": "Unit number and floor",
+                    "question_en": "Could you share the unit number and which floor it's on?",
+                    "question_hi": "Sir, main ye jaan sakti hoon unit number kya hai aur kaun se floor par hai ye?",
                 })
             if not self.approx_area_sqft:
                 missing.append({

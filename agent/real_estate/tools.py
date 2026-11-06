@@ -1,7 +1,7 @@
 import re
 import logging
 import asyncio
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from livekit.agents import function_tool
 from .state import RealEstateState, RealEstateStep
 from .prompts import get_step_instructions, get_closing_text
@@ -70,6 +70,13 @@ def classify_intent(val: Any) -> Optional[str]:
     return None
 
 
+_DONT_KNOW_RE = re.compile(
+    r"(pata\s*nahi|pata\s*nhi|nahi\s*pata|yaad\s*nahi|yad\s*nahi|idea\s*nahi|nahi\s*(bata|bol)\s*(sakta|sakti|sakte)"
+    r"|maloom\s*nahi|malum\s*nahi|don'?t\s*know|do\s*not\s*know|don'?t\s*remember|not\s*sure|no\s*idea|can'?t\s*say|cannot\s*share|nahi\s*batana)"
+)
+_DONT_KNOW_DEV = re.compile(r"(पता\s*नहीं|नहीं\s*पता|याद\s*नहीं|आइडिया\s*नहीं|मालूम\s*नहीं|नहीं\s*बता|नहीं\s*बताना)")
+
+
 def _clean_str(val: Any) -> Optional[str]:
     if val is None:
         return None
@@ -79,12 +86,36 @@ def _clean_str(val: Any) -> Optional[str]:
     return s
 
 
+# Commercial unit types the caller can name. The type is stored AS THE CALLER SAID IT, never assumed.
+_COMM_TYPE_TERMS = (
+    "office space", "office", "ऑफिस", "retail shop", "retail", "shop", "दुकान", "dukan", "dukaan",
+    "showroom", "शोरूम", "warehouse", "godown", "गोदाम", "godam", "coworking", "co-working", "cowork",
+    "workstation", "booth", "sco", "factory", "industrial",
+)
+_COMM_OTHER_TERMS = ("other", "something else", "doosra", "dusra", "doosri", "koi aur", "kuch aur")
+
+
+def commercial_type_from_speech(text: Any) -> Optional[str]:
+    """The commercial unit type the caller actually named in `text`, in their own words
+    ('office', 'shop', ...). 'Other' when they say it is something else. None if they named nothing."""
+    low = str(text or "").lower().strip()
+    if not low:
+        return None
+    for term in _COMM_TYPE_TERMS:
+        if _kw_in(low, (term,)):
+            return term
+    if _kw_in(low, _COMM_OTHER_TERMS):
+        return "Other"
+    return None
+
+
 class RealEstateTools:
     def __init__(self, state: RealEstateState, post_outcome_func, hangup_func):
         self.state = state
         self.agent = None  # Bound by worker
         self.post_outcome_func = post_outcome_func
         self.hangup_func = hangup_func
+        self.log_dialogue_func = None  # Bound by worker
         self._hangup_scheduled = False
         self._ack_i = 0
 
@@ -128,6 +159,12 @@ class RealEstateTools:
         self.state.closing_spoken = True
         self._hangup_scheduled = True  # we own the hangup; skip the fixed-delay fallback
         text = get_closing_text(self.state)
+        if self.log_dialogue_func:
+            self.log_dialogue_func("assistant", text)
+        else:
+            self.state.add_transcript("assistant", text)
+            print(f"\n\033[1;36m🤖 [Agent (Priya)]:\033[0m {text}\n", flush=True)
+            logger.info(f"🤖 [Agent]: \"{text}\"")
 
         async def _run():
             try:
@@ -145,28 +182,160 @@ class RealEstateTools:
     # ── Tool Definitions ──────────────────────────────────────────
 
     @function_tool
-    async def customer_interested(
-        self,
-        intent: Optional[str] = None,
-        category: Optional[str] = None,
-    ) -> str:
+    async def customer_interested(self) -> str:
         """Call when customer confirms they are interested in selling or renting their property."""
         self.state.is_interested = True
-        classified_intent = classify_intent(intent)
-        if classified_intent:
-            self.state.intent = classified_intent
+
+        # Both customer name and property location are already provided from data/records.
+        # It is STRICTLY FORBIDDEN to ask customer name or property location.
+        if not self.state.owner_name_confirmed:
+            self.state.owner_name_confirmed = (self.state.owner_name or "").strip() or "Sir"
+
+        # Transition to CATEGORY_SELECT: Ask BOTH category (residential/commercial) AND intent (sell/rent)
+        await self._go(RealEstateStep.CATEGORY_SELECT)
+        cat_int_q = (
+            "Is it a residential or commercial property? And are you looking to sell or rent it out?"
+            if self.state.reply_lang == "en"
+            else "Yeh residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
+        )
+        return self._fast(cat_int_q, f"Ask category and intent: '{cat_int_q}'", ack="auto")
+
+    @function_tool
+    async def not_interested_in_this_location(self) -> str:
+        """Call when customer says they are not looking to sell or rent the property at the currently mentioned location, but may consider other properties."""
+        await self._go(RealEstateStep.CHECK_OTHER_PROPERTY)
+        q = (
+            "Understood, Sir. Do you have any other property location that you would like to sell or rent?"
+            if self.state.reply_lang == "en"
+            else "Ji Sir, samajh gayi. Kya aapki koi doosri property hai jise aap sell ya rent karna chahte hain?"
+        )
+        return self._fast(q, f"Ask if they have another property to sell or rent: '{q}'", ack=None)
+
+    @function_tool
+    async def has_other_property(
+        self,
+        has_other: bool,
+        new_location: Optional[str] = None,
+        category: Optional[str] = None,
+        intent: Optional[str] = None,
+    ) -> str:
+        """Call when customer answers whether they have another property location to sell or rent.
+        If customer states the new location in the same sentence, pass it in new_location.
+        If they also state category (residential/commercial) or intent (sale/rent), pass them."""
+        if not has_other:
+            return await self.mark_not_interested()
+
+        self.state.has_other_property = True
+
+        if new_location:
+            clean_loc = _clean_str(new_location)
+            if clean_loc:
+                self.state.sector_or_location = clean_loc
+                self.state.project_or_society = clean_loc
 
         classified_cat = classify_category(category)
         if classified_cat:
             self.state.category = classified_cat
 
-        await self._go(RealEstateStep.OWNER_NAME)
-        name_q = (
-            "Perfect, Sir! May I have your name for our records?"
-            if self.state.reply_lang == "en"
-            else "Perfect, Sir! Records ke liye kya main aapka naam jaan sakti hoon?"
-        )
-        return self._fast(name_q, "Customer confirmed interest. Ask for owner name for our records.", ack=None)
+        classified_int = classify_intent(intent)
+        if classified_int:
+            self.state.intent = classified_int
+
+        # If location is not yet known, ask for the new property's location
+        if not self.state.sector_or_location or self.state.sector_or_location == getattr(self.state, "initial_property_location", None):
+            await self._go(RealEstateStep.ASK_NEW_LOCATION)
+            q = (
+                "Great, Sir! Which location or sector is that property in?"
+                if self.state.reply_lang == "en"
+                else "Achha Sir, wo property kis location ya sector mein hai?"
+            )
+            return self._fast(q, f"Ask for new property location: '{q}'", ack=None)
+
+        # Location is known! Check if category and intent are established
+        if not (self.state.category and self.state.intent):
+            await self._go(RealEstateStep.CATEGORY_SELECT)
+            q = (
+                "Is it a residential or commercial property? And are you looking to sell or rent it out?"
+                if self.state.reply_lang == "en"
+                else "Yeh residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
+            )
+            return self._fast(q, f"Ask category and intent: '{q}'", ack=None)
+
+        # Location, category, and intent are all established -> Proceed to intake branch and ask unit/floor
+        cat = self.state.category
+        intn = self.state.intent
+        if cat == "residential" and intn == "sale":
+            next_step = RealEstateStep.RESIDENTIAL_SALE
+        elif cat == "residential" and intn == "lease":
+            next_step = RealEstateStep.RESIDENTIAL_LEASE
+        elif cat == "commercial" and intn == "sale":
+            next_step = RealEstateStep.COMMERCIAL_SALE
+        else:
+            next_step = RealEstateStep.COMMERCIAL_LEASE
+
+        await self._go(next_step)
+        missing = self.state.get_missing_fields()
+        first_q = missing[0]["question_en"] if self.state.reply_lang == "en" else missing[0]["question_hi"]
+        return self._fast(first_q, f"Setup complete. Ask for unit number and floor: '{first_q}'")
+
+    @function_tool
+    async def set_new_property_location(
+        self,
+        location: str,
+        category: Optional[str] = None,
+        intent: Optional[str] = None,
+    ) -> str:
+        """Call when customer provides the location/sector of their new property to sell or rent."""
+        clean_loc = _clean_str(location)
+        if clean_loc:
+            self.state.sector_or_location = clean_loc
+            self.state.project_or_society = clean_loc
+
+        classified_cat = classify_category(category)
+        if classified_cat:
+            self.state.category = classified_cat
+
+        classified_int = classify_intent(intent)
+        if classified_int:
+            self.state.intent = classified_int
+
+        if self.state.category and self.state.intent:
+            cat = self.state.category
+            intn = self.state.intent
+            if cat == "residential" and intn == "sale":
+                next_step = RealEstateStep.RESIDENTIAL_SALE
+            elif cat == "residential" and intn == "lease":
+                next_step = RealEstateStep.RESIDENTIAL_LEASE
+            elif cat == "commercial" and intn == "sale":
+                next_step = RealEstateStep.COMMERCIAL_SALE
+            else:
+                next_step = RealEstateStep.COMMERCIAL_LEASE
+
+            await self._go(next_step)
+            missing = self.state.get_missing_fields()
+            first_q = missing[0]["question_en"] if self.state.reply_lang == "en" else missing[0]["question_hi"]
+            return self._fast(first_q, f"Setup complete. Ask for unit number and floor: '{first_q}'")
+
+        await self._go(RealEstateStep.CATEGORY_SELECT)
+        if self.state.intent:
+            q = (
+                "Is it a residential or commercial property?"
+                if self.state.reply_lang == "en"
+                else "Yeh residential property hai ya commercial?"
+            )
+        elif self.state.category:
+            q = (
+                "Are you looking to sell or rent it out?"
+                if self.state.reply_lang == "en"
+                else "Aap ise sell karna chahte hain ya rent par dena chahte hain?"
+            )
+        else:
+            q = (
+                "Is it a residential or commercial property? And are you looking to sell or rent it out?"
+                if self.state.reply_lang == "en"
+                else "Yeh residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
+            )
+        return self._fast(q, f"Ask category and intent: '{q}'", ack="auto")
 
     @function_tool
     async def confirm_owner_name(self, name: str) -> str:
@@ -202,12 +371,15 @@ class RealEstateTools:
         intent: Optional[str] = None,
     ) -> str:
         """Set property category (residential/commercial) and intent (sale/lease/rent)."""
+        # The LLM sometimes invents category='residential', intent='sale' after a bare "haan".
+        # Accept an argument only if the caller's latest words actually support it.
+        heard = (self.state.last_user_text or "").strip()
         classified_cat = classify_category(category)
-        if classified_cat:
+        if classified_cat and (not heard or classify_category(heard) == classified_cat):
             self.state.category = classified_cat
 
         classified_int = classify_intent(intent)
-        if classified_int:
+        if classified_int and (not heard or classify_intent(heard) == classified_int):
             self.state.intent = classified_int
 
         # If both category and intent are established, transition to the respective branch 4.1 to 4.4
@@ -232,8 +404,19 @@ class RealEstateTools:
             )
 
         if not self.state.category:
-            return "Intent recorded. Please ask if the property is residential or commercial."
-        return "Category recorded. Please ask whether they want to sell it or rent it out."
+            q = (
+                "Is it a residential or commercial property?"
+                if self.state.reply_lang == "en"
+                else "Yeh residential property hai ya commercial?"
+            )
+            return self._fast(q, f"Ask category: '{q}'", ack=None)
+
+        q = (
+            "Are you looking to sell or rent it out?"
+            if self.state.reply_lang == "en"
+            else "Aap ise sell karna chahte hain ya rent par dena chahte hain?"
+        )
+        return self._fast(q, f"Ask intent: '{q}'", ack=None)
 
     @function_tool
     async def save_property_details(
@@ -245,17 +428,21 @@ class RealEstateTools:
         floor_number: Optional[str] = None,
         bhk_config: Optional[str] = None,
         commercial_type: Optional[str] = None,
-        approx_area_sqft: Optional[float] = None,
+        # Number / boolean fields also accept str: the LLM often sends the literal string "null" for fields it
+        # was told to omit, which made livekit reject the WHOLE call (nothing saved, 2nd LLM call, ~3.5s turn).
+        # The body below already parses str values and ignores "null".
+        approx_area_sqft: Optional[Union[float, str]] = None,
         furnishing_status: Optional[str] = None,
         expected_sale_price: Optional[str] = None,
         expected_monthly_rent: Optional[str] = None,
-        is_currently_leased: Optional[bool] = None,
+        is_currently_leased: Optional[Union[bool, str]] = None,
         current_rent_received: Optional[str] = None,
-        immediate_occupancy: Optional[bool] = None,
+        immediate_occupancy: Optional[Union[bool, str]] = None,
     ) -> str:
         """Save ONLY the property details the customer explicitly stated in their latest message.
         Pass just those parameters and OMIT every other parameter. Never pass null and never guess
-        or reuse values from earlier turns."""
+        or reuse values from earlier turns. commercial_type must be exactly the unit type the caller
+        said (office, shop, showroom...); never assume it."""
         clean_society = _clean_str(project_or_society)
         if clean_society:
             self.state.project_or_society = clean_society
@@ -278,6 +465,16 @@ class RealEstateTools:
 
         clean_comm = _clean_str(commercial_type)
         if clean_comm:
+            # NEVER assume the unit type: keep only what the caller actually said in their latest words.
+            heard = (self.state.last_user_text or "").strip()
+            if heard:
+                said = commercial_type_from_speech(heard)
+                if said:
+                    clean_comm = said
+                else:
+                    logger.info(f"Ignoring commercial_type='{clean_comm}' from LLM: caller did not say it ('{heard[:80]}')")
+                    clean_comm = None
+        if clean_comm:
             self.state.commercial_type = clean_comm
 
         # Dynamic category switching and step realignment
@@ -286,7 +483,7 @@ class RealEstateTools:
             self.state.category = "commercial"
             self.state.bhk_config = None  # Commercial properties never have BHK
             if self.state.step in (RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.CATEGORY_SELECT):
-                target_step = RealEstateStep.COMMERCIAL_SALE if (self.state.intent != "lease") else RealEstateStep.COMMERCIAL_LEASE
+                target_step = RealEstateStep.COMMERCIAL_LEASE if (self.state.intent == "lease") else RealEstateStep.COMMERCIAL_SALE
                 await self._go(target_step)
             elif self.state.step == RealEstateStep.RESIDENTIAL_LEASE:
                 await self._go(RealEstateStep.COMMERCIAL_LEASE)
@@ -294,7 +491,7 @@ class RealEstateTools:
             self.state.category = "residential"
             self.state.commercial_type = None  # Residential properties never have commercial type
             if self.state.step in (RealEstateStep.COMMERCIAL_SALE, RealEstateStep.CATEGORY_SELECT):
-                target_step = RealEstateStep.RESIDENTIAL_SALE if (self.state.intent != "lease") else RealEstateStep.RESIDENTIAL_LEASE
+                target_step = RealEstateStep.RESIDENTIAL_LEASE if (self.state.intent == "lease") else RealEstateStep.RESIDENTIAL_SALE
                 await self._go(target_step)
             elif self.state.step == RealEstateStep.COMMERCIAL_LEASE:
                 await self._go(RealEstateStep.RESIDENTIAL_LEASE)
@@ -364,6 +561,11 @@ class RealEstateTools:
     async def customer_does_not_know(self, field_id: Optional[str] = None) -> str:
         """Call when the customer says they do not know, do not remember, or cannot share the detail that was just asked."""
         missing = self.state.get_missing_fields()
+        heard = (self.state.last_user_text or "").strip()
+        if heard and missing and not _DONT_KNOW_RE.search(heard.lower()) and not _DONT_KNOW_DEV.search(heard):
+            # Caller did NOT say they don't know (e.g. asked us to repeat) -> never skip the field.
+            q = missing[0]["question_en"] if self.state.reply_lang == "en" else missing[0]["question_hi"]
+            return self._fast(q, f"Do not skip. Ask again: '{q}'", ack=None)
         ids = {m["id"] for m in missing}
         target = field_id if field_id in ids else (missing[0]["id"] if missing else None)
         if target:
@@ -517,7 +719,11 @@ class RealEstateTools:
 
     def tools_for_step(self, step: RealEstateStep) -> List[Any]:
         if step == RealEstateStep.INTRODUCTION:
-            return [self.customer_interested] + self._objection_tools()
+            return [self.customer_interested, self.not_interested_in_this_location] + self._objection_tools()
+        elif step == RealEstateStep.CHECK_OTHER_PROPERTY:
+            return [self.has_other_property, self.set_new_property_location, self.mark_not_interested] + self._objection_tools()
+        elif step == RealEstateStep.ASK_NEW_LOCATION:
+            return [self.set_new_property_location, self.set_category_and_intent] + self._objection_tools()
         elif step == RealEstateStep.OWNER_NAME:
             return [self.confirm_owner_name] + self._objection_tools()
         elif step == RealEstateStep.CATEGORY_SELECT:

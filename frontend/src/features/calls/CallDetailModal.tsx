@@ -63,6 +63,24 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
     return [];
   }, [activeCall]);
 
+  // Log conversation transcript to browser console
+  useEffect(() => {
+    if (transcriptList.length > 0) {
+      const callId = activeCall?.id || (activeCall as any)?.call_id || 'N/A';
+      console.log(`%c======================================================`, 'color: #06b6d4; font-weight: bold;');
+      console.log(`%c📞 [Conversation Transcript] (Call ID: ${callId})`, 'color: #06b6d4; font-weight: bold; font-size: 13px;');
+      transcriptList.forEach((turn) => {
+        const isAgent = turn.role === 'assistant' || turn.role === 'agent';
+        console.log(
+          `%c${isAgent ? '🤖 Priya' : '🗣️ Customer'}:%c ${turn.text}`,
+          `color: ${isAgent ? '#0ea5e9' : '#10b981'}; font-weight: bold;`,
+          'color: inherit;'
+        );
+      });
+      console.log(`%c======================================================`, 'color: #06b6d4; font-weight: bold;');
+    }
+  }, [transcriptList, activeCall]);
+
   if (!call || !activeCall) return null;
 
   const rawStatus = (activeCall.status || '').toLowerCase();

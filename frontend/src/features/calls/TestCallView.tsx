@@ -29,9 +29,7 @@ const SCRIPTS = [
 ];
 
 const LANGUAGES = [
-  { id: 'multilingual', label: 'Multilingual' },
   { id: 'en', label: 'English' },
-  { id: 'hi', label: 'Hindi' },
   { id: 'hinglish', label: 'Hinglish' },
 ];
 
@@ -63,15 +61,16 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
   // phone no, Customer name, Company Org name, Script, Language, Voice pipeline
   const [phone, setPhone] = useState('');
   const [customerName, setCustomerName] = useState('');
+  const [propertyLocation, setPropertyLocation] = useState(() =>
+    isRealEstate ? 'DLF Phase 5, Sector 54, Gurgaon' : ''
+  );
   const [companyName, setCompanyName] = useState(() =>
     isRealEstate ? 'My Estate Finder' : 'Airtel Telecom'
   );
   const [selectedScript, setSelectedScript] = useState(() =>
     isRealEstate ? 'My Estate Finder — Property Intake (Priya)' : 'Airtel Wi-Fi Router Return'
   );
-  const [selectedLanguage, setSelectedLanguage] = useState(() =>
-    isRealEstate ? 'Hinglish' : 'Multilingual'
-  );
+  const [selectedLanguage, setSelectedLanguage] = useState(() => 'Hinglish');
   const [selectedPipeline, setSelectedPipeline] = useState(() =>
     'Sarvam AI (Priya - hi-IN)'
   );
@@ -82,11 +81,13 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
       setCompanyName('My Estate Finder');
       setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
       setSelectedLanguage('Hinglish');
+      setPropertyLocation('DLF Phase 5, Sector 54, Gurgaon');
     } else {
       setSelectedScript('Airtel Wi-Fi Router Return');
       setCompanyName('Airtel Telecom');
       setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
-      setSelectedLanguage('Multilingual');
+      setSelectedLanguage('Hinglish');
+      setPropertyLocation('');
     }
   }, [isRealEstate]);
 
@@ -101,18 +102,22 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
       if (found.id === 'my_estate_finder') {
         setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
         setSelectedLanguage('Hinglish');
+        setPropertyLocation('DLF Phase 5, Sector 54, Gurgaon');
       } else if (found.id === 'airtel_return') {
         setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
       }
     }
   };
 
-  const applyPreset = (preset: { phone: string; name: string; script: string; pipeline: string; company: string }) => {
+  const applyPreset = (preset: { phone: string; name: string; script: string; pipeline: string; company: string; location?: string }) => {
     setPhone(preset.phone);
     setCustomerName(preset.name);
     setSelectedScript(preset.script);
     setSelectedPipeline(preset.pipeline);
     setCompanyName(preset.company);
+    if (preset.location !== undefined) {
+      setPropertyLocation(preset.location);
+    }
     setFeedback(null);
   };
 
@@ -127,6 +132,21 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
     try {
       const calls = await fetchTestCallHistory();
       setHistoryCalls(calls);
+      if (calls.length > 0 && (calls[0] as any).transcript) {
+        const rawT = (calls[0] as any).transcript;
+        const list = Array.isArray(rawT) ? rawT : (typeof rawT === 'string' ? JSON.parse(rawT) : []);
+        if (list.length > 0) {
+          console.log(`%c📞 LATEST CONVERSATION (Call ID: ${calls[0].id || (calls[0] as any).call_id})`, 'color: #06b6d4; font-weight: bold; font-size: 13px;');
+          list.forEach((t: any) => {
+            const isAgent = t.role === 'assistant' || t.role === 'agent';
+            console.log(
+              `%c${isAgent ? '🤖 Priya' : '🗣️ Customer'}:%c ${t.text}`,
+              `color: ${isAgent ? '#0ea5e9' : '#10b981'}; font-weight: bold;`,
+              'color: inherit;'
+            );
+          });
+        }
+      }
     } catch {
       // keep existing
     } finally {
@@ -156,14 +176,17 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
     const formattedPhone = cleanPhone.startsWith('+') ? cleanPhone : `+91${cleanPhone.replace(/\D/g, '')}`;
 
     try {
-      const langCode = (selectedLanguage === 'Hindi' || selectedLanguage === 'Hinglish') ? 'hi' : 'en';
+      const langCode = selectedLanguage === 'English' ? 'en' : 'hi';
       const res = await initiateTestCall({
         phone: formattedPhone,
         customer_name: customerName.trim() || undefined,
+        name: customerName.trim() || undefined,
         company_name: org,
         script: scriptKey,
         language: langCode,
         voice_pipeline: selectedPipeline,
+        property_location: propertyLocation.trim() || undefined,
+        address: propertyLocation.trim() || undefined,
       });
 
       setFeedback({
@@ -176,7 +199,14 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
 
       // Clear phone input after success
       setPhone('');
-      setCustomerName('');
+      if (isRealEstate) {
+        setCustomerName('Raja Nayak');
+        if (!propertyLocation.trim()) {
+          setPropertyLocation('DLF Phase 5, Sector 54, Gurgaon');
+        }
+      } else {
+        setCustomerName('');
+      }
     } catch (err: any) {
       setFeedback({
         type: 'error',
@@ -569,6 +599,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                         script: 'My Estate Finder — Property Intake (Priya)',
                         pipeline: 'Sarvam AI (Priya - hi-IN)',
                         company: 'My Estate Finder',
+                        location: 'DLF Phase 5, Sector 54, Gurgaon',
                       },
                       {
                         title: '🏢 Commercial Lease',
@@ -577,6 +608,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                         script: 'My Estate Finder — Property Intake (Priya)',
                         pipeline: 'Sarvam AI (Priya - hi-IN)',
                         company: 'My Estate Finder',
+                        location: 'DLF Phase 5, Sector 54, Gurgaon',
                       },
                     ]
                   : [
@@ -700,20 +732,21 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                 />
               </div>
 
-              {/* Field 3: Company / Org Name */}
+              {/* Field: Property Location */}
               <div>
-                <label style={{ display: 'block', fontSize: '0.82rem', color: '#94A3B8', fontWeight: 600, marginBottom: 8 }}>
-                  Company / Org Name
+                <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.82rem', color: isRealEstate ? '#38BDF8' : '#94A3B8', fontWeight: 600, marginBottom: 8 }}>
+                  <span>Property Location / Sector</span>
+                  {isRealEstate && <span style={{ color: '#10B981', fontSize: '0.72rem', fontWeight: 500 }}>Sent to Priya</span>}
                 </label>
                 <input
                   type="text"
-                  value={companyName}
-                  onChange={(e) => setCompanyName(e.target.value)}
-                  placeholder="Leave empty for script default"
+                  value={propertyLocation}
+                  onChange={(e) => setPropertyLocation(e.target.value)}
+                  placeholder={isRealEstate ? "e.g. DLF Phase 5, Sector 54, Gurgaon" : "e.g. Registered address / sector"}
                   style={{
                     width: '100%',
                     background: '#070A12',
-                    border: '1px solid rgba(255, 255, 255, 0.08)',
+                    border: isRealEstate ? '1px solid rgba(56, 189, 248, 0.35)' : '1px solid rgba(255, 255, 255, 0.08)',
                     borderRadius: 8,
                     color: '#FFFFFF',
                     fontSize: '0.9rem',
@@ -723,6 +756,8 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                   }}
                 />
               </div>
+
+
 
               {/* Two columns: Script and Language */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
@@ -783,13 +818,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                         cursor: 'pointer',
                       }}
                     >
-                      {LANGUAGES.filter((l) => {
-                        // For 2nd pipeline (Estate Finder), keep only English and Hinglish (remove Hindi)
-                        if (selectedScript.includes('Estate Finder') && l.id === 'hi') {
-                          return false;
-                        }
-                        return true;
-                      }).map((l) => (
+                      {LANGUAGES.map((l) => (
                         <option key={l.id} value={l.label} style={{ background: '#0B0F19', color: '#FFFFFF' }}>
                           {l.label}
                         </option>

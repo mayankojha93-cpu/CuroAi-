@@ -44,6 +44,7 @@ from .config import (
 from .state import RealEstateState, RealEstateStep
 from .agent import RealEstateAgent
 from .tools import RealEstateTools
+from .prompts import _owner_call_name
 from src.transliteration import romanize_hindi
 
 server = AgentServer()
@@ -207,6 +208,9 @@ def post_re_outcome_sync(state: RealEstateState) -> bool:
         "transcript": state.transcript,
         "duration_seconds": duration,
         "median_latency_ms": int(sum(state.latency_samples) / len(state.latency_samples) * 1000) if state.latency_samples else None,
+        "language": state.reply_lang,
+        "initial_language": state.initial_language,
+        "language_switched": state.language_switched,
     }
 
     logger.info(f"📤 Posting RE outcome to {url} for call {state.call_id} (duration={duration}s, turns={len(state.transcript)}, disp={state.final_disposition})")
@@ -241,10 +245,22 @@ async def entrypoint(ctx: agents.JobContext):
         call_id = ctx.room.name[5:]
 
     phone = metadata.get("phone", "")
-    owner_name = metadata.get("customerName") or metadata.get("ownerName", "Property Owner")
-    preferred_language = metadata.get("preferredLanguage", DEFAULT_LANGUAGE)
+    owner_name = metadata.get("customerName") or metadata.get("ownerName", "")
+    clean_owner = (owner_name or "").strip()
+    if not clean_owner or clean_owner in ("Property Owner", "Test Subscriber", "Test Customer", "None", "null"):
+        owner_name = "Raja Nayak"
+    else:
+        owner_name = clean_owner
+
+    raw_pref = (metadata.get("preferredLanguage") or metadata.get("language") or DEFAULT_LANGUAGE).strip().lower()
+    preferred_language = "en" if raw_pref in ("en", "english", "en-in") else "hi"
     lead_id = metadata.get("leadId")
     direction = metadata.get("direction", "outbound")
+    raw_loc = (metadata.get("propertyLocation") or metadata.get("address") or metadata.get("location") or "").strip()
+    if not raw_loc or raw_loc in ("Delhi, 110011, burari, sant nagar", "None", "null"):
+        property_location = "DLF Phase 5, Sector 54, Gurgaon"
+    else:
+        property_location = raw_loc
 
     # Audio & speech pipeline
     stt = sarvam.STT(
@@ -317,6 +333,7 @@ async def entrypoint(ctx: agents.JobContext):
         phone=phone,
         preferred_language=preferred_language,
         direction=direction,
+        property_location=property_location,
     )
 
     conv_logger = ConversationFileLogger(
@@ -330,6 +347,73 @@ async def entrypoint(ctx: agents.JobContext):
     agent = RealEstateAgent(state, tools_instance)
     tools_instance.agent = agent
     agent.on_language_change = _set_tts_language
+
+    # ── Console & Transcript Logger ────────────────────────────────
+    _last_logged = {"role": None, "text": None}
+
+    def log_dialogue(role: str, text: str):
+        clean = (text or "").strip()
+        if not clean:
+            return
+        is_agent = role in ("assistant", "agent")
+        if is_agent:
+            clean = re.sub(r'\b[a-zA-Z_][a-zA-Z0-9_]*\s*\{[^}]*\}', '', clean).strip()
+            if not clean:
+                return
+
+        norm_role = "assistant" if is_agent else "customer"
+        if _last_logged["role"] == norm_role and _last_logged["text"] == clean:
+            return
+        _last_logged["role"] = norm_role
+        _last_logged["text"] = clean
+
+        now_str = datetime.now().strftime("%H:%M:%S")
+        if is_agent:
+            banner = f"[{now_str}] 🤖 [Agent (Priya)]: {clean}"
+            print(f"\n\033[1;36m{banner}\033[0m\n", flush=True)
+            logger.info(banner)
+            state.add_transcript("assistant", clean)
+            try:
+                conv_logger.log_agent(clean)
+            except Exception:
+                pass
+        else:
+            banner = f"[{now_str}] 🗣️ [Customer]: {clean}"
+            print(f"\n\033[1;32m{banner}\033[0m\n", flush=True)
+            logger.info(banner)
+            state.add_transcript("customer", clean)
+            try:
+                conv_logger.log_customer(clean)
+            except Exception:
+                pass
+
+    tools_instance.log_dialogue_func = log_dialogue
+
+    def print_console_summary(s: RealEstateState):
+        duration_s = int(time.time() - s.start_time)
+        mins, secs = divmod(duration_s, 60)
+        summary_lines = [
+            "",
+            "=" * 70,
+            f"  📞 REAL ESTATE CONVERSATION SUMMARY (Call ID: {s.call_id})",
+            f"  Owner: {s.owner_name_confirmed or s.owner_name} | Phone: {s.phone}",
+            "-" * 70,
+        ]
+        for t in s.transcript:
+            role_label = "\033[1;36m🤖 Priya   \033[0m" if t.get("role") in ("assistant", "agent") else "\033[1;32m🗣️ Customer\033[0m"
+            summary_lines.append(f"  {role_label}: {t.get('text')}")
+        summary_lines.extend([
+            "-" * 70,
+            f"  Disposition: \033[1;33m{s.final_disposition}\033[0m | Duration: {mins}m {secs}s",
+            f"  Summary    : {s.agent_summary or 'N/A'}",
+            "=" * 70,
+            "",
+        ])
+        summary_text = "\n".join(summary_lines)
+        print(summary_text, flush=True)
+        for line in summary_lines:
+            if line:
+                logger.info(line)
 
     turn_opts = {"preemptive_generation": {"enabled": PREEMPTIVE_GENERATION}}
     endpointing_opts = {}
@@ -412,6 +496,10 @@ async def entrypoint(ctx: agents.JobContext):
         if _shutdown_in_progress:
             return
         _shutdown_in_progress = True
+        try:
+            print_console_summary(state)
+        except Exception as e:
+            logger.debug(f"Error printing console summary: {e}")
         if not state.outcome_posted and state.call_id:
             await asyncio.to_thread(post_re_outcome_sync, state)
             state.outcome_posted = True
@@ -447,12 +535,7 @@ async def entrypoint(ctx: agents.JobContext):
             romanized_text = romanize_hindi(clean_text)
             state.callee_connected = True
             state.last_activity_time = time.time()
-            logger.info(f"🗣️ [Customer]: \"{romanized_text}\"")
-            state.add_transcript("customer", romanized_text)
-            try:
-                conv_logger.log_customer(romanized_text)
-            except Exception:
-                pass
+            log_dialogue("customer", romanized_text)
 
     @session.on("conversation_item_added")
     def on_conversation_item(ev):
@@ -482,24 +565,13 @@ async def entrypoint(ctx: agents.JobContext):
                 romanized_text = romanize_hindi(clean_user_text)
                 state.callee_connected = True
                 state.last_activity_time = time.time()
-                if not (state.transcript and state.transcript[-1].get("role") == "customer" and state.transcript[-1].get("text") == romanized_text):
-                    logger.info(f"🗣️ [Customer via chat item]: \"{romanized_text}\"")
-                    state.add_transcript("customer", romanized_text)
-                    try:
-                        conv_logger.log_customer(romanized_text)
-                    except Exception:
-                        pass
+                log_dialogue("customer", romanized_text)
 
             elif role == "assistant" and content_str:
                 # Clean any leaked function-call syntax like close_call{}
                 clean_agent_text = re.sub(r'\b[a-zA-Z_][a-zA-Z0-9_]*\s*\{[^}]*\}', '', content_str).strip()
-                if clean_agent_text and not (state.transcript and state.transcript[-1].get("text") == clean_agent_text):
-                    logger.info(f"🤖 [Agent]: \"{clean_agent_text}\"")
-                    state.add_transcript("assistant", clean_agent_text)
-                    try:
-                        conv_logger.log_agent(clean_agent_text)
-                    except Exception:
-                        pass
+                if clean_agent_text:
+                    log_dialogue("assistant", clean_agent_text)
 
                 if state.step == RealEstateStep.CLOSING or "close_call" in content_str:
                     logger.info("Closing message spoken; initiating delayed hangup...")
@@ -592,19 +664,27 @@ async def entrypoint(ctx: agents.JobContext):
     asyncio.create_task(asyncio.to_thread(_notify_answered))
 
     # 3. Queue opening greeting
-    greeting = (
-        "Hello, I’m Priya, calling from My Estate Finder. Sir, we help property owners to sell or rent their properties. Are you also considering selling or renting a property of yours?"
-        if state.reply_lang == "en"
-        else "Hello, main Priya bol rahi hoon My Estate Finder se. Sir, hum property owners ko unki property sell ya rent karne mein help karte hain. Kya aap bhi apni koi property sell ya rent karne ka soch rahe hain?"
-    )
+    loc = state.initial_property_location
+    name_call = _owner_call_name(state)
+    salutation_en = f"Hello {name_call} Sir" if name_call != "Sir" else "Hello Sir"
+    salutation_hi = f"Hello {name_call} ji" if name_call != "Sir" else "Hello Sir"
+
+    if loc:
+        greeting = (
+            f"{salutation_en}, I’m Priya, calling from My Estate Finder. Sir, regarding your property at {loc}, are you considering selling or renting it out?"
+            if state.reply_lang == "en"
+            else f"{salutation_hi}, main Priya bol rahi hoon My Estate Finder se. Sir, {loc} par jo aapki property hai, kya aap use sell ya rent karne ka soch rahe hain?"
+        )
+    else:
+        greeting = (
+            "Hello, I’m Priya, calling from My Estate Finder. Sir, we help property owners to sell or rent their properties. Are you also considering selling or renting a property of yours?"
+            if state.reply_lang == "en"
+            else "Hello, main Priya bol rahi hoon My Estate Finder se. Sir, hum property owners ko unki property sell ya rent karne mein help karte hain. Kya aap bhi apni koi property sell ya rent karne ka soch rahe hain?"
+        )
 
     state.last_activity_time = time.time()
     opening_speech = session.say(greeting, allow_interruptions=False)
-    state.add_transcript("assistant", greeting)
-    try:
-        conv_logger.log_agent(greeting)
-    except Exception:
-        pass
+    log_dialogue("assistant", greeting)
 
     # 4. Silence Watchdog loop (Friendly reprompts if caller is silent)
     async def silence_watchdog():
@@ -625,6 +705,7 @@ async def entrypoint(ctx: agents.JobContext):
                     )
                     try:
                         session.say(reprompt, allow_interruptions=True)
+                        log_dialogue("assistant", reprompt)
                     except Exception:
                         pass
                 elif consecutive_silence >= 2:
@@ -635,6 +716,7 @@ async def entrypoint(ctx: agents.JobContext):
                     )
                     try:
                         speech = session.say(goodbye, allow_interruptions=False)
+                        log_dialogue("assistant", goodbye)
                         await asyncio.wait_for(speech.wait_for_playout(), timeout=6.0)
                     except Exception:
                         pass
@@ -675,7 +757,7 @@ async def entrypoint(ctx: agents.JobContext):
                 )
                 try:
                     speech = session.say(wrapup_line, allow_interruptions=False)
-                    state.add_transcript("assistant", wrapup_line)
+                    log_dialogue("assistant", wrapup_line)
                     await asyncio.wait_for(speech.wait_for_playout(), timeout=7.0)
                 except Exception as e:
                     logger.warning(f"Safety ceiling wrapup playout error: {e}")

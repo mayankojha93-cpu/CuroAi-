@@ -117,8 +117,9 @@ Human Speaking Style & Pacing Rules:
      * This is 100% a COMMERCIAL property.
      * NEVER ask for BHK, bedroom count, or residential configurations under ANY circumstances!
      * NEVER utter meta-commentary like "Since this is an office space I wouldn't ask BHK questions" or "I won't ask BHK".
-     * Always save the commercial unit type and mark the category as commercial.
-     * Ask ONLY commercial questions: leased status (leased or vacant), total area in sq ft, furnishing/bare-shell, and expected price/rent.
+     * Mark the category as commercial. Save the commercial unit type EXACTLY as the caller said it (e.g. "office", "shop"). NEVER assume, guess or fill in the unit type yourself and never say "office space" unless the caller said it.
+     * Right after the category is known, the unit type MUST be asked (never skipped): "Is it an office space, retail shop, or another commercial unit?"
+     * Ask ONLY commercial questions: unit type (office, retail or other), unit number and floor, total area in sq ft, furnishing/bare-shell, and expected price/rent (plus leased status for a sale, occupancy for a lease).
 12. REPEAT & CLARIFICATION HANDLING:
    - If the customer says "repeat", "say again", "pardon", "what did you say", "what?", "phir se bolo", "dobara bolo", "kya bola", "samjha nahi", "samajh nahi aaya", "ek baar aur", or similar:
      Simply re-phrase the most recent question you asked, slightly differently. DO NOT call any tool. DO NOT move to a new question.
@@ -218,27 +219,82 @@ Politely acknowledge their time, invoke `book_advisor_handoff(reason="Customer i
     step = state.step
 
     if step == RealEstateStep.INTRODUCTION:
-        intro_text = (
-            'Initial greeting to speak in English: "Hello, I’m Priya, calling from My Estate Finder. Sir, we help property owners to sell or rent their properties. Are you also considering selling or renting a property of yours?"'
-            if state.reply_lang == "en"
-            else 'Initial greeting to speak in Hinglish: "Hello, main Priya bol rahi hoon My Estate Finder se. Sir, hum property owners ko unki property sell ya rent karne mein help karte hain. Kya aap bhi apni koi property sell ya rent karne ka soch rahe hain?"'
-        )
+        loc = state.initial_property_location
+        name_call = _owner_call_name(state)
+        salutation_en = f"Hello {name_call} Sir" if name_call != "Sir" else "Hello Sir"
+        salutation_hi = f"Hello {name_call} ji" if name_call != "Sir" else "Hello Sir"
+
+        if loc:
+            intro_text = (
+                f'Initial greeting to speak in English: "{salutation_en}, I’m Priya, calling from My Estate Finder. Sir, regarding your property at {loc}, are you considering selling or renting it out?"'
+                if state.reply_lang == "en"
+                else f'Initial greeting to speak in Hinglish: "{salutation_hi}, main Priya bol rahi hoon My Estate Finder se. Sir, {loc} par jo aapki property hai, kya aap use sell ya rent karne ka soch rahe hain?"'
+            )
+        else:
+            intro_text = (
+                'Initial greeting to speak in English: "Hello, I’m Priya, calling from My Estate Finder. Sir, we help property owners to sell or rent their properties. Are you also considering selling or renting a property of yours?"'
+                if state.reply_lang == "en"
+                else 'Initial greeting to speak in Hinglish: "Hello, main Priya bol rahi hoon My Estate Finder se. Sir, hum property owners ko unki property sell ya rent karne mein help karte hain. Kya aap bhi apni koi property sell ya rent karne ka soch rahe hain?"'
+            )
         return base + f"""
 Current Step: 1. INTRODUCTION
-Goal: Greet the customer and determine if they are considering selling or renting a property.
+Goal: Greet the customer and determine if they are considering selling or renting their property{f' at {loc}' if loc else ''}.
 
 {intro_text}
 
 MANDATORY INSTRUCTIONS:
-- If the customer indicates interest (e.g. "Yes", "I want to sell", "Residential property to sell", "Rent par dena hai"):
-  YOU MUST EXECUTE `customer_interested(intent=..., category=...)`.
-  - Pass intent="sale" or intent="lease" ONLY if the customer explicitly said sell/sale or rent/lease. Do NOT guess intent.
-  - Pass category="residential" or category="commercial" ONLY if the customer explicitly mentioned it. Do NOT guess category.
-  - If the customer says ONLY "yes", "haan", "haanji", "soch raha hoon" WITHOUT specifying sale/rent or property type:
-    Call `customer_interested()` with NO intent and NO category. The next steps will collect those details.
-- If NOT interested / not looking to sell or rent: call `mark_not_interested()`.
+- If the customer indicates interest in selling or renting the property at this location (e.g. "Yes", "I want to sell", "Rent par dena hai", "Haanji", "Haan"):
+  YOU MUST EXECUTE `customer_interested()`.
+  - STRICT PROHIBITION: Customer name and property location are ALREADY STORED from records. You MUST NEVER ask for the customer's name or property location!
+  - You must ask BOTH whether the property is residential or commercial, and whether they want to sell or rent it:
+    "Yeh residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
+    (In English: "Is it a residential or commercial property? And are you looking to sell or rent it out?")
+- If the customer indicates they are NOT interested in selling or renting AT THIS SPECIFIC LOCATION (e.g. "is location pe nahi bechna", "ye wali nahi", "not at this location", "wahan ka nahi bechna", "not that property"):
+  YOU MUST EXECUTE `not_interested_in_this_location()`.
+- If completely NOT interested / not looking to sell or rent any property anywhere: call `mark_not_interested()`.
 - If wrong number: call `mark_wrong_number()`.
 - If busy / callback requested: call `schedule_callback()`.
+"""
+
+    if step == RealEstateStep.CHECK_OTHER_PROPERTY:
+        say_other = (
+            'Say in English: "Understood, Sir. Do you have any other property location that you would like to sell or rent?"'
+            if state.reply_lang == "en"
+            else 'Say in Hinglish: "Ji Sir, samajh gayi. Kya aapki koi doosri property hai jise aap sell ya rent karna chahte hain?"'
+        )
+        return base + f"""
+Current Step: CHECK_OTHER_PROPERTY
+Goal: Ask whether the customer has any other property location they would like to sell or rent.
+
+{say_other}
+
+MANDATORY INSTRUCTIONS:
+- If the customer says YES (e.g. "Yes", "Haan", "Haan doosri property hai", "I have another flat"):
+  - If they also tell the new location in the same sentence (e.g. "Haan, Noida Sector 62 mein hai"):
+    Call `set_new_property_location(location="Noida Sector 62")`.
+  - Otherwise, call `has_other_property(has_other=True)`.
+- If the customer says NO (e.g. "No", "Nahi", "Nahi koi aur nahi hai", "Nothing else", "No other property"):
+  Call `mark_not_interested()`.
+- If busy / callback requested: call `schedule_callback()`.
+- If DNC: call `suppress_contact_dnc()`.
+"""
+
+    if step == RealEstateStep.ASK_NEW_LOCATION:
+        say_loc = (
+            'Say in English: "Great, Sir! Which location or sector is that property in?"'
+            if state.reply_lang == "en"
+            else 'Say in Hinglish: "Achha Sir, wo property kis location ya sector mein hai?"'
+        )
+        return base + f"""
+Current Step: ASK_NEW_LOCATION
+Goal: Ask for the location or sector of their new property.
+
+{say_loc}
+
+MANDATORY INSTRUCTIONS:
+- When the customer provides the new location (e.g. "Noida Sector 62", "Indiranagar", "Sector 82 Gurgaon"):
+  Call `set_new_property_location(location=...)`.
+  - If they also mention category (residential/commercial) or intent (sell/rent), pass them in the tool call.
 """
 
     if step == RealEstateStep.OWNER_NAME:
@@ -283,14 +339,25 @@ Goal: Clarify whether the property is Residential or Commercial, and whether the
 {say_cat}
 
 MANDATORY RULES FOR THIS STEP:
+- STRICT RULE: Do NOT ask for the caller's name, property location, or society name. They are already confirmed.
+- ZERO ASSUMPTIONS: NEVER assume category='residential' or intent='sale'. You MUST record EXACTLY what the caller says:
+  * If the caller says "commercial" / "office" / "shop" / "retail", category is commercial.
+  * If the caller says "residential" / "flat" / "apartment" / "house", category is residential.
+  * If the caller says "sell" / "bechna" / "sale", intent is sale.
+  * If the caller says "rent" / "lease" / "kiraye par", intent is lease.
 - You MUST confirm BOTH category (residential/commercial) AND intent (sale/lease/rent) before moving forward.
 - If only one is known, explicitly ask for the missing one before calling `set_category_and_intent`.
-- Call `set_category_and_intent(category=..., intent=...)` as soon as either or both become known:
+- Call `set_category_and_intent(category=..., intent=...)` as soon as either or both become known from what the user said:
   - category: 'residential' or 'commercial'
   - intent: 'sale' or 'lease' (use 'lease' for rent)
+- After category and intent are established, the system speaks the next question itself:
+  * RESIDENTIAL: unit number and floor ("Could you share the unit number and which floor it's on?").
+  * COMMERCIAL: the unit type FIRST ("Is it an office space, retail shop, or another commercial unit?"), then unit number and floor. NEVER assume or skip the unit type; record only what the caller says.
+- Do NOT ask location or society. Jump directly to the next question above.
 - Do NOT jump to CLOSING or call any termination tool from this step. There is no reason to close here.
 - If customer says "commercial" but has NOT said sell or rent → ask "Are you looking to sell it or rent it out?"
 - If customer says "sell" but has NOT said residential or commercial → ask "Is it a residential or commercial property?"
+- If customer says "rent" but has NOT said residential or commercial → ask "Is it a residential or commercial property?"
 """
 
     if step in (

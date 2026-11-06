@@ -21,6 +21,17 @@ import { realEstateCallService } from './services/realEstateCallService.js';
 
 export const app = express();
 
+// Disable ETag generation to prevent 304 Not Modified caching on API responses
+app.set('etag', false);
+
+// Prevent browser/client-side caching on all API responses
+app.use((_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
+
 // Enable CORS for frontend Vite dev server and production
 app.use(cors());
 
@@ -30,6 +41,15 @@ app.use(
     logger,
     autoLogging: {
       ignore: (req) => req.url === '/health',
+    },
+    redact: {
+      paths: [
+        'req.headers.authorization',
+        'req.headers.cookie',
+        'req.headers["set-cookie"]',
+        'res.headers["set-cookie"]',
+      ],
+      censor: '[REDACTED]',
     },
   })
 );

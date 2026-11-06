@@ -89,6 +89,7 @@ const testCallSchema = {
     script: z.string().optional(),
     voice_pipeline: z.string().optional().default('HABot Pipeline'),
     address: z.string().optional().default('Delhi, 110011, burari, sant nagar'),
+    property_location: z.string().optional(),
     account_no: z.string().optional().default('20022941256'),
     subs_del_no: z.string().optional().default('01121344121_wifi'),
     service_end_date: z.string().optional().default('2026-08-27'),
@@ -107,6 +108,8 @@ callsRouter.post(
       const script = (req.body.script || '').toLowerCase();
       const company = (req.body.company_name || '').toLowerCase();
       const isRealEstateScript =
+        userPipeline === 'real_estate' ||
+        Boolean(req.body.property_location) ||
         script.includes('estate') ||
         script.includes('sagar') ||
         script.includes('property') ||
@@ -127,11 +130,20 @@ callsRouter.post(
       }
 
       if (isRealEstateScript) {
+        const rawLoc = (req.body.property_location || req.body.address || '').trim();
+        const propertyLocation = (rawLoc && rawLoc !== 'Delhi, 110011, burari, sant nagar')
+          ? rawLoc
+          : 'DLF Phase 5, Sector 54, Gurgaon';
+        const rawName = (req.body.customer_name || req.body.name || '').trim();
+        const ownerName = (rawName && rawName !== 'Test Subscriber') ? rawName : undefined;
+
         const { call, lead } = await realEstateCallService.initiateTestCall({
           phone: req.body.phone,
-          owner_name: req.body.customer_name || req.body.name,
+          owner_name: ownerName,
           language: req.body.language,
-          notes: `Test Call: ${req.body.script || 'My Estate Finder'}`,
+          property_location: propertyLocation,
+          address: propertyLocation,
+          notes: `Test Call: ${req.body.script || 'My Estate Finder'}${propertyLocation ? ` | Location: ${propertyLocation}` : ''}`,
         });
         return res.status(201).json({
           success: true,
@@ -146,7 +158,9 @@ callsRouter.post(
             companyName: (call as any).company_name || 'My Estate Finder',
             script: (call as any).script || 'My Estate Finder — Property Intake',
             voicePipeline: (call as any).voice_pipeline || 'Sarvam AI (Priya - hi/en)',
-            language: lead.preferred_language || 'hi',
+            language: (call as any).language || lead.preferred_language || 'hi',
+            initialLanguage: (call as any).initial_language || lead.preferred_language || 'hi',
+            languageSwitched: (call as any).language_switched || false,
             createdAt: call.created_at,
           },
           customer: lead,
@@ -167,7 +181,9 @@ callsRouter.post(
           companyName: (call as any).company_name || req.body.company_name || null,
           script: (call as any).script || req.body.script || null,
           voicePipeline: (call as any).voice_pipeline || req.body.voice_pipeline || 'HABot Pipeline',
-          language: customer.language || req.body.language || 'en',
+          language: (call as any).language || customer.language || 'hi',
+          initialLanguage: (call as any).initial_language || customer.language || 'hi',
+          languageSwitched: (call as any).language_switched || false,
           accountNo: customer.account_no,
           subsDelNo: customer.subs_del_no,
           serviceEndDate: customer.service_end_date,
