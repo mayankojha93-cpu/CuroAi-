@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { randomUUID } from 'crypto';
 import {
   SipClient,
@@ -20,6 +22,8 @@ import {
 } from '../utils/dispositions.js';
 import { matchRealEstateDisposition } from '../utils/realEstateDispositions.js';
 import { romanizeTranscript } from '../utils/transliteration.js';
+import { livekitEgressService } from './livekitEgressService.js';
+import { getRecordingsDir } from './recordingDownloader.js';
 
 export interface CallRecord {
   id: string;
@@ -749,6 +753,8 @@ export class CallService {
            median_latency_ms = $4,
            cost_estimate_inr = $5,
            recording_url = COALESCE($6, recording_url),
+           recording_download_status = CASE WHEN $6 IS NOT NULL THEN 'done' ELSE recording_download_status END,
+           recording_duration_seconds = COALESCE(recording_duration_seconds, $3),
            answered_at = COALESCE(answered_at, CASE WHEN $3 > 0 THEN NOW() - ($3 || ' seconds')::interval ELSE NOW() END),
            ended_at = COALESCE(ended_at, NOW()),
            language = COALESCE($8, language),
@@ -1097,6 +1103,12 @@ export class CallService {
     const event = await this.webhookReceiver.receive(bodyString, authHeader);
     logger.info({ event: event.event, room: event.room?.name }, 'Received verified LiveKit webhook');
 
+    // Handle LiveKit Egress webhooks
+    if (event.event === 'egress_ended' || event.event === 'egress_started' || event.event === 'egress_updated') {
+      await livekitEgressService.handleEgressWebhook((event as any).egressInfo);
+      return { handled: true, event: event.event };
+    }
+
     const roomName = event.room?.name;
     if (!roomName) {
       return { handled: false, reason: 'unrelated_room' };
@@ -1144,6 +1156,13 @@ export class CallService {
            WHERE id = $1 AND status IN ('initiated', 'dialing')`,
           [callId]
         );
+
+        // Start LiveKit Cloud Egress if S3 storage is configured
+        if (callId) {
+          livekitEgressService.startAudioRecording(roomName, callId).catch((err) => {
+            logger.warn({ callId, err: err?.message }, 'LiveKit egress auto-start error');
+          });
+        }
       }
     } else if ((event.event === 'participant_left' && sip) || event.event === 'room_finished') {
       // Only the phone leg ends the call (the agent leaving is not the customer hanging up)
@@ -1289,8 +1308,23 @@ export class CallService {
       ? matchRealEstateDisposition(row.final_disposition || row.call_status || row.status, row.duration_seconds, row.status)
       : matchCanonicalDisposition(row.final_disposition || row.call_status || row.status, row.duration_seconds, row.status);
 
+    let recUrl = row.recording_url;
+    if (!recUrl) {
+      const storageDir = getRecordingsDir();
+      const mp3Path = path.join(storageDir, `${row.id}.mp3`);
+      const wavPath = path.join(storageDir, `${row.id}.wav`);
+      const mp3Exists = fs.existsSync(mp3Path) && fs.statSync(mp3Path).size > 44;
+      const wavExists = fs.existsSync(wavPath) && fs.statSync(wavPath).size > 44;
+      if (mp3Exists || wavExists) {
+        recUrl = `/api/calls/${row.id}/audio`;
+        query(`UPDATE calls SET recording_url = $1, recording_download_status = 'done' WHERE id = $2`, [recUrl, row.id]).catch(() => {});
+      }
+    }
+
     return {
       ...row,
+      recording_url: recUrl,
+      recording_download_status: recUrl ? 'done' : row.recording_download_status,
       transcript: romanizeTranscript(row.transcript),
       final_disposition: finalDisp,
     };
@@ -1444,7 +1478,20 @@ export class CallService {
     params.push(limit);
 
     const res = await query(q, params);
+    const storageDir = getRecordingsDir();
     return res.rows.map((row: any) => {
+      let recUrl = row.recording_url;
+      if (!recUrl) {
+        const mp3Path = path.join(storageDir, `${row.id}.mp3`);
+        const wavPath = path.join(storageDir, `${row.id}.wav`);
+        const mp3Exists = fs.existsSync(mp3Path) && fs.statSync(mp3Path).size > 44;
+        const wavExists = fs.existsSync(wavPath) && fs.statSync(wavPath).size > 44;
+        if (mp3Exists || wavExists) {
+          recUrl = `/api/calls/${row.id}/audio`;
+          query(`UPDATE calls SET recording_url = $1, recording_download_status = 'done' WHERE id = $2`, [recUrl, row.id]).catch(() => {});
+        }
+      }
+
       const isRealEstate = Boolean(
         row.re_lead_id ||
         (row.script || '').toLowerCase().includes('estate') ||
@@ -1459,6 +1506,8 @@ export class CallService {
 
       return {
         ...row,
+        recording_url: recUrl,
+        recording_download_status: recUrl ? 'done' : row.recording_download_status,
         final_disposition: finalDisp,
       };
     });

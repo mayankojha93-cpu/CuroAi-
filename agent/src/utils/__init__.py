@@ -5,6 +5,7 @@ from .dates import (
     KOLKATA_TZ,
 )
 from .watchdog import silence_watchdog, clean_hangup
+from .audio_recorder import RoomAudioRecorder
 
 __all__ = [
     "get_current_ist_time",
@@ -13,4 +14,5 @@ __all__ = [
     "KOLKATA_TZ",
     "silence_watchdog",
     "clean_hangup",
+    "RoomAudioRecorder",
 ]

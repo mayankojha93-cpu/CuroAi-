@@ -529,14 +529,16 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
                 <span style={{
                   fontSize: '0.74rem',
                   fontWeight: 600,
-                  color: activeCall.recording_download_status === 'downloading' ? '#F59E0B' : '#60A5FA',
-                  background: activeCall.recording_download_status === 'downloading' ? 'rgba(245, 158, 11, 0.12)' : 'rgba(96, 165, 250, 0.12)',
+                  color: activeCall.recording_download_status === 'downloading' ? '#F59E0B' : '#64748B',
+                  background: activeCall.recording_download_status === 'downloading' ? 'rgba(245, 158, 11, 0.12)' : 'rgba(255, 255, 255, 0.05)',
                   padding: '2px 8px',
                   borderRadius: 4,
                 }}>
                   {activeCall.recording_download_status === 'downloading'
-                    ? 'Downloading from Exotel...'
-                    : 'Processing by Exotel (Ready in 1-5 mins)'}
+                    ? 'Processing recording...'
+                    : (activeCall.status === 'NO_ANSWER' || !activeCall.duration_seconds
+                        ? 'Call was not answered (No audio)'
+                        : 'No recording available for this call')}
                 </span>
               </div>
               <span style={{ fontSize: '0.72rem', color: '#64748B' }}>

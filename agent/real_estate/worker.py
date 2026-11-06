@@ -45,6 +45,7 @@ from .state import RealEstateState, RealEstateStep
 from .agent import RealEstateAgent
 from .tools import RealEstateTools
 from .prompts import _owner_call_name
+from .audio_recorder import RoomAudioRecorder
 from src.transliteration import romanize_hindi
 
 server = AgentServer()
@@ -211,6 +212,7 @@ def post_re_outcome_sync(state: RealEstateState) -> bool:
         "language": state.reply_lang,
         "initial_language": state.initial_language,
         "language_switched": state.language_switched,
+        "recording_url": getattr(state, "recording_url", None) or f"/api/calls/{state.call_id}/audio",
     }
 
     logger.info(f"📤 Posting RE outcome to {url} for call {state.call_id} (duration={duration}s, turns={len(state.transcript)}, disp={state.final_disposition})")
@@ -335,6 +337,8 @@ async def entrypoint(ctx: agents.JobContext):
         direction=direction,
         property_location=property_location,
     )
+
+    recorder = RoomAudioRecorder(call_id=call_id) if call_id else None
 
     conv_logger = ConversationFileLogger(
         call_id=call_id,
@@ -500,6 +504,13 @@ async def entrypoint(ctx: agents.JobContext):
             print_console_summary(state)
         except Exception as e:
             logger.debug(f"Error printing console summary: {e}")
+        if recorder:
+            try:
+                rec_url = await recorder.stop()
+                if rec_url:
+                    setattr(state, "recording_url", rec_url)
+            except Exception as e:
+                logger.warning(f"Error stopping audio recorder: {e}")
         if not state.outcome_posted and state.call_id:
             await asyncio.to_thread(post_re_outcome_sync, state)
             state.outcome_posted = True
@@ -636,6 +647,8 @@ async def entrypoint(ctx: agents.JobContext):
     # 2. Start session on the room immediately so audio pipeline & STT/VAD are active
     await session.start(room=ctx.room, agent=agent)
     logger.info("Real Estate agent session started in room.")
+    if recorder:
+        await recorder.start(ctx.room)
 
     # Warm provider connections while the greeting is generated/played, so the first real
     # customer turn doesn't pay cold-connection cost.

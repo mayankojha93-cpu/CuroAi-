@@ -8,7 +8,8 @@ import {
   RefreshCw, 
   ChevronDown,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  Volume2
 } from 'lucide-react';
 import type { CallRecord } from '../../types';
 import { initiateTestCall, fetchTestCallHistory } from '../../services/api.service';
@@ -1103,9 +1104,9 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                       borderRadius: 10,
                       padding: '16px 20px',
                       display: 'grid',
-                      gridTemplateColumns: '1.5fr 1.7fr 0.8fr 1fr 1.6fr 1.2fr',
+                      gridTemplateColumns: '1.4fr 1.6fr 0.7fr 1fr 1.5fr 1.8fr',
                       alignItems: 'center',
-                      gap: 16,
+                      gap: 14,
                       transition: 'background 0.15s ease',
                     }}
                     onMouseEnter={(e) => {
@@ -1156,8 +1157,60 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                       {rawDisp}
                     </div>
 
-                    {/* Col 6: Transcript button */}
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
+                    {/* Col 6: Actions (Recording & Transcript) */}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
+                      {call.recording_url ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedCallForModal(call);
+                            if (onSelectCall) onSelectCall(call);
+                          }}
+                          title="Listen to Call Recording"
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            background: 'rgba(16, 185, 129, 0.14)',
+                            border: '1px solid rgba(16, 185, 129, 0.35)',
+                            color: '#10B981',
+                            padding: '7px 12px',
+                            borderRadius: 8,
+                            fontSize: '0.82rem',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            transition: 'all 0.15s ease',
+                          }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.background = 'rgba(16, 185, 129, 0.22)';
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.background = 'rgba(16, 185, 129, 0.14)';
+                          }}
+                        >
+                          <Volume2 size={14} />
+                          <span>Recording</span>
+                        </button>
+                      ) : (
+                        <span
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            color: '#64748B',
+                            fontSize: '0.74rem',
+                            padding: '4px 8px',
+                            borderRadius: 6,
+                            background: 'rgba(255, 255, 255, 0.03)',
+                            border: '1px solid rgba(255, 255, 255, 0.05)',
+                          }}
+                          title={call.status === 'NO_ANSWER' ? 'Call was not answered — no audio' : 'No recording available for this call'}
+                        >
+                          <Volume2 size={12} color="#64748B" />
+                          <span>{call.status === 'NO_ANSWER' ? 'No Answer' : 'No Audio'}</span>
+                        </span>
+                      )}
+
                       <button
                         type="button"
                         onClick={() => {

@@ -416,8 +416,13 @@ callsRouter.get('/api/calls/:id/audio', async (req: Request<{ id: string }>, res
     let filePath: string | null = null;
     for (const f of possibleFiles) {
       if (fs.existsSync(f)) {
-        filePath = f;
-        break;
+        try {
+          const sz = fs.statSync(f).size;
+          if (sz > 44) {
+            filePath = f;
+            break;
+          }
+        } catch {}
       }
     }
 
@@ -441,6 +446,8 @@ callsRouter.get('/api/calls/:id/audio', async (req: Request<{ id: string }>, res
     const stat = fs.statSync(filePath);
     const fileSize = stat.size;
     const range = req.headers.range;
+    const isWav = filePath.toLowerCase().endsWith('.wav');
+    const contentType = isWav ? 'audio/wav' : 'audio/mpeg';
 
     // HTTP 206 Partial Content for seekable playback in browser audio players
     if (range) {
@@ -453,14 +460,14 @@ callsRouter.get('/api/calls/:id/audio', async (req: Request<{ id: string }>, res
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
         'Accept-Ranges': 'bytes',
         'Content-Length': chunksize,
-        'Content-Type': 'audio/mpeg',
+        'Content-Type': contentType,
       };
       res.writeHead(206, head);
       file.pipe(res);
     } else {
       const head = {
         'Content-Length': fileSize,
-        'Content-Type': 'audio/mpeg',
+        'Content-Type': contentType,
         'Accept-Ranges': 'bytes',
       };
       res.writeHead(200, head);

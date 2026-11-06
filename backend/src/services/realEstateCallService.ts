@@ -58,6 +58,7 @@ export interface SaveRealEstateOutcomeInput {
   language?: string | null;
   initial_language?: string | null;
   language_switched?: boolean | null;
+  recording_url?: string | null;
 }
 
 /**
@@ -832,7 +833,10 @@ ${dialogueText.slice(0, 4000)}`;
            ended_at = NOW(),
            language = COALESCE($6, language),
            initial_language = COALESCE($7, initial_language),
-           language_switched = COALESCE($8, language_switched)
+           language_switched = COALESCE($8, language_switched),
+           recording_url = COALESCE($9, recording_url),
+           recording_download_status = CASE WHEN $9 IS NOT NULL THEN 'done' ELSE recording_download_status END,
+           recording_duration_seconds = COALESCE(recording_duration_seconds, $3)
        WHERE id = $5`,
       [
         mappedStatus,
@@ -843,6 +847,7 @@ ${dialogueText.slice(0, 4000)}`;
         data.language || null,
         data.initial_language || null,
         data.language_switched ?? null,
+        data.recording_url || null,
       ]
     );
 
