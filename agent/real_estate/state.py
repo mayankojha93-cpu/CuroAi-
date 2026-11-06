@@ -101,6 +101,10 @@ class RealEstateState:
         self.direct_reply: Optional[str] = None
         # Caller asked "what price/rate will I get?" -> closing = valuation line + short thank-you
         self.valuation_requested: bool = False
+        # Raw text of the customer's latest turn (used by tools to reject hallucinated args)
+        self.last_user_text: str = ""
+        # The last question Priya actually spoke (for "repeat that" at any step)
+        self.last_agent_question: str = ""
         self.hangup_started: bool = False
         self.outcome_posted: bool = False
         self.silence_count: int = 0
@@ -289,19 +293,20 @@ class RealEstateState:
                     "question_en": "And which commercial project or building is it in?",
                     "question_hi": "Aur sir, kaun se project ya building mein hai?",
                 })
-            if not (self.unit_number and self.floor_number):
-                missing.append({
-                    "id": "unit_floor",
-                    "label": "Unit number and floor",
-                    "question_en": "Could you share the unit number and which floor it's on?",
-                    "question_hi": "Sir, main ye jaan sakti hoon unit number kya hai aur kaun se floor par hai ye?",
-                })
+            # Asked right after the category, BEFORE unit/floor (never skipped, never assumed)
             if not self.commercial_type:
                 missing.append({
                     "id": "commercial_type",
                     "label": "Office space, retail shop, or another commercial unit",
                     "question_en": "Is it an office space, retail shop, or another commercial unit?",
                     "question_hi": "Yeh office space hai, retail shop hai, ya koi doosra commercial unit hai?",
+                })
+            if not (self.unit_number and self.floor_number):
+                missing.append({
+                    "id": "unit_floor",
+                    "label": "Unit number and floor",
+                    "question_en": "Could you share the unit number and which floor it's on?",
+                    "question_hi": "Sir, main ye jaan sakti hoon unit number kya hai aur kaun se floor par hai ye?",
                 })
             if self.is_currently_leased is None:
                 missing.append({
@@ -355,19 +360,20 @@ class RealEstateState:
                     "question_en": "And which commercial project or building is it in?",
                     "question_hi": "Aur sir, kaun se project ya building mein hai?",
                 })
-            if not (self.unit_number and self.floor_number):
-                missing.append({
-                    "id": "unit_floor",
-                    "label": "Unit number and floor",
-                    "question_en": "Could you share the unit number and which floor it's on?",
-                    "question_hi": "Sir, main ye jaan sakti hoon unit number kya hai aur kaun se floor par hai ye?",
-                })
+            # Asked right after the category, BEFORE unit/floor (never skipped, never assumed)
             if not self.commercial_type:
                 missing.append({
                     "id": "commercial_type",
                     "label": "Office space, retail shop, or another commercial unit",
                     "question_en": "Is it an office space, retail shop, or another commercial unit?",
                     "question_hi": "Yeh office space hai, retail shop hai, ya koi doosra commercial unit hai?",
+                })
+            if not (self.unit_number and self.floor_number):
+                missing.append({
+                    "id": "unit_floor",
+                    "label": "Unit number and floor",
+                    "question_en": "Could you share the unit number and which floor it's on?",
+                    "question_hi": "Sir, main ye jaan sakti hoon unit number kya hai aur kaun se floor par hai ye?",
                 })
             if not self.approx_area_sqft:
                 missing.append({
