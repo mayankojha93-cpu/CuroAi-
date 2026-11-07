@@ -91,6 +91,10 @@ class RealEstateState:
         # Details the customer said they don't know / can't share (never re-asked)
         self.skipped_fields: set = set()
 
+        # Caller said the property is standalone / independent (own house, own building):
+        # there is no separate unit number or floor to ask for, so 'unit_floor' is skipped.
+        self.is_standalone: bool = False
+
         # Call outcome & tracking
         self.is_interested: Optional[bool] = None
         self.final_disposition: str = "Abruptly Disconnected Call"
@@ -404,7 +408,11 @@ class RealEstateState:
                     "question_hi": "Kya yeh property immediate occupancy ke liye available hai, ya notice period hai?",
                 })
 
-        return [m for m in missing if m["id"] not in self.skipped_fields]
+        return [
+            m for m in missing
+            if m["id"] not in self.skipped_fields
+            and not (self.is_standalone and m["id"] == "unit_floor")
+        ]
 
     def is_branch_complete(self) -> bool:
         """Check if all essential fields for the current branch have been collected."""
