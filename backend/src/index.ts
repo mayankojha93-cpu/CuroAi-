@@ -10,7 +10,8 @@ import { callsRouter } from './routes/calls.js';
 import { internalRouter } from './routes/internal.js';
 import { webhooksRouter } from './routes/webhooks.js';
 import { callService } from './services/callService.js';
-import { downloadPendingRecordings } from './services/recordingDownloader.js';
+import { downloadPendingRecordings, getRecordingsDir } from './services/recordingDownloader.js';
+import { s3Service } from './services/s3Service.js';
 import { authRouter } from './routes/auth.js';
 import { campaignsRouter } from './routes/campaigns.js';
 import { billingRouter } from './routes/billing.js';
@@ -35,21 +36,39 @@ app.use((_req, res, next) => {
 // Enable CORS for frontend Vite dev server and production
 app.use(cors());
 
-// Structured request logging with Pino
+// Structured request logging with Pino (filtered to suppress repetitive dashboard polling spam)
 app.use(
   pinoHttp({
     logger,
     autoLogging: {
-      ignore: (req) => req.url === '/health',
+      ignore: (req) => {
+        const url = req.url || '';
+        // Silence health checks, favicon, and routine frontend polling GET requests
+        return (
+          url === '/health' ||
+          url.startsWith('/favicon') ||
+          (req.method === 'GET' && (
+            url.startsWith('/api/calls') ||
+            url.startsWith('/api/retries') ||
+            url.startsWith('/api/campaigns') ||
+            url.startsWith('/api/billing') ||
+            url.startsWith('/api/auth/me') ||
+            url.startsWith('/api/leads') ||
+            url.startsWith('/api/real-estate')
+          ))
+        );
+      },
     },
-    redact: {
-      paths: [
-        'req.headers.authorization',
-        'req.headers.cookie',
-        'req.headers["set-cookie"]',
-        'res.headers["set-cookie"]',
-      ],
-      censor: '[REDACTED]',
+    customSuccessMessage: (req, res) => `${req.method} ${req.url} ${res.statusCode}`,
+    customErrorMessage: (req, res, err) => `${req.method} ${req.url} ${res.statusCode}: ${err.message}`,
+    serializers: {
+      req: (req) => ({
+        method: req.method,
+        url: req.url,
+      }),
+      res: (res) => ({
+        statusCode: res.statusCode,
+      }),
     },
   })
 );
@@ -104,10 +123,10 @@ if (process.env.NODE_ENV !== 'test') {
       logger.error({ err }, 'Error auto-backfilling real estate property details');
     });
 
-    // Start stuck calls sweeper every 30 seconds
+    // Start stuck calls reconciler every 30 seconds
     sweeperInterval = setInterval(() => {
-      callService.sweepStuckCalls().catch((err: any) => {
-        logger.error({ err }, 'Error running stuck calls sweeper');
+      callService.reconcileStuckCalls().catch((err: any) => {
+        logger.error({ err }, 'Error running stuck calls reconciler');
       });
     }, 30000);
 
@@ -120,6 +139,13 @@ if (process.env.NODE_ENV !== 'test') {
     }, 5 * 60 * 1000);
     // Run once on startup to catch any recordings missed during downtime
     downloadPendingRecordings().catch(() => {});
+
+    // Sync any local recordings to AWS S3 on startup
+    if (s3Service.isConfigured()) {
+      s3Service.syncLocalRecordings(getRecordingsDir()).catch((err) => {
+        logger.warn({ err: err?.message }, 'Error during startup S3 recording sync');
+      });
+    }
   });
 
   const gracefulShutdown = (signal: string) => {
