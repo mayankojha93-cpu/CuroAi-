@@ -109,6 +109,28 @@ def commercial_type_from_speech(text: Any) -> Optional[str]:
     return None
 
 
+# Standalone / independent property: no separate unit number or floor exists, so we never ask for them.
+# "independent floor" / "builder floor" are NOT standalone (one floor of a building -> floor matters).
+_STANDALONE_RE = re.compile(r"(?<![a-z])(stand[\s\-]?alone|independent)(?![a-z])")
+_STANDALONE_DEV = re.compile(r"(स्टैंड\s?अलोन|स्टैंडअलोन|इंडिपेंडेंट|इंडिपेंडेन्ट)")
+_STANDALONE_NEG_RE = re.compile(
+    r"(not\s+(a\s+|an\s+)?(stand[\s\-]?alone|independent)"
+    r"|(stand[\s\-]?alone|independent)\s+(nahi|nahin|nhi)"
+    r"|(stand[\s\-]?alone|independent)\s+(floor|builder))"
+)
+
+
+def is_standalone_from_speech(text: Any) -> bool:
+    """True when the caller said the property is standalone / independent (e.g. 'independent house',
+    'standalone building'). Used to skip the unit-number / floor question."""
+    low = str(text or "").lower().strip()
+    if not low:
+        return False
+    if _STANDALONE_NEG_RE.search(low):
+        return False
+    return bool(_STANDALONE_RE.search(low) or _STANDALONE_DEV.search(low))
+
+
 class RealEstateTools:
     def __init__(self, state: RealEstateState, post_outcome_func, hangup_func):
         self.state = state
@@ -226,6 +248,7 @@ class RealEstateTools:
             return await self.mark_not_interested()
 
         self.state.has_other_property = True
+        self.state.is_standalone = False  # new property: decide again from what the caller says
 
         if new_location:
             clean_loc = _clean_str(new_location)
@@ -548,6 +571,11 @@ class RealEstateTools:
             f"leased={self.state.is_currently_leased}, imm_occ={self.state.immediate_occupancy}"
         )
 
+        # Caller called it standalone / independent -> unit number & floor are not applicable.
+        if not self.state.is_standalone and is_standalone_from_speech(self.state.last_user_text):
+            self.state.is_standalone = True
+            logger.info("Standalone/independent property detected -> skipping unit number & floor")
+
         missing = self.state.get_missing_fields()
         if len(missing) == 0:
             # All details for this branch are captured!
@@ -594,6 +622,8 @@ class RealEstateTools:
         if self.state.project_or_society:
             loc = f", {self.state.sector_or_location}" if self.state.sector_or_location else ""
             details.append(f"{self.state.project_or_society}{loc}")
+        if self.state.is_standalone:
+            details.append("Standalone/Independent property")
         if self.state.unit_number or self.state.floor_number:
             details.append(f"Unit {self.state.unit_number or 'N/A'}, Floor {self.state.floor_number or 'N/A'}")
         if self.state.bhk_config:

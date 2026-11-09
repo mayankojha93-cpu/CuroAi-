@@ -54,7 +54,8 @@ export function isTerminalRealEstateDisposition(disposition?: string | null): bo
 export function matchRealEstateDisposition(
   rawInput?: string | null,
   durationSeconds?: number | null,
-  callStatus?: string | null
+  callStatus?: string | null,
+  isInterested?: boolean | null
 ): RealEstateCanonicalDisposition {
   const text = (rawInput || '').trim();
   const upper = text.toUpperCase().replace(/[-_]/g, ' ');
@@ -130,8 +131,9 @@ export function matchRealEstateDisposition(
     return 'Schedule Callback';
   }
 
-  // 6. Not Interested
+  // 6. Not Interested (Must take precedence over any partial property mentions)
   if (
+    isInterested === false ||
     upper.includes('NOT INTERESTED') ||
     upper.includes('DECLINED') ||
     upper.includes('REFUSED') ||
@@ -141,14 +143,12 @@ export function matchRealEstateDisposition(
     return 'Not Interested';
   }
 
-  // 7. Qualified Lead
+  // 7. Qualified Lead: requires positive interest and complete qualification
+  // NEVER classify as Qualified Lead simply because "residential" or "commercial" appeared in text
   if (
     upper.includes('QUALIFIED') ||
-    upper.includes('COMPLETED') ||
     upper.includes('INTAKE COMPLETE') ||
-    upper.includes('DETAILS CAPTURED') ||
-    upper.includes('RESIDENTIAL') ||
-    upper.includes('COMMERCIAL')
+    upper.includes('DETAILS CAPTURED')
   ) {
     return 'Qualified Lead';
   }
@@ -179,10 +179,8 @@ export function matchRealEstateDisposition(
     return 'Abruptly Disconnected Call';
   }
 
-  // Fallback based on call duration and status
-  if (duration >= 30 && (statusUpper === 'COMPLETED' || statusUpper === 'SUCCESSFUL')) {
-    return 'Qualified Lead';
-  }
+  // Safe fallback based on call duration:
+  // Calls that connect and disconnect without full qualification are Abruptly Disconnected
   if (duration >= 5) {
     return 'Abruptly Disconnected Call';
   }

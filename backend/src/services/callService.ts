@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { randomUUID } from 'crypto';
 import {
   SipClient,
@@ -20,6 +22,9 @@ import {
 } from '../utils/dispositions.js';
 import { matchRealEstateDisposition } from '../utils/realEstateDispositions.js';
 import { romanizeTranscript } from '../utils/transliteration.js';
+import { livekitEgressService } from './livekitEgressService.js';
+import { getRecordingsDir } from './recordingDownloader.js';
+import { realEstateCallService } from './realEstateCallService.js';
 
 export interface CallRecord {
   id: string;
@@ -749,6 +754,8 @@ export class CallService {
            median_latency_ms = $4,
            cost_estimate_inr = $5,
            recording_url = COALESCE($6, recording_url),
+           recording_download_status = CASE WHEN $6 IS NOT NULL THEN 'done' ELSE recording_download_status END,
+           recording_duration_seconds = COALESCE(recording_duration_seconds, $3),
            answered_at = COALESCE(answered_at, CASE WHEN $3 > 0 THEN NOW() - ($3 || ' seconds')::interval ELSE NOW() END),
            ended_at = COALESCE(ended_at, NOW()),
            language = COALESCE($8, language),
@@ -1097,6 +1104,12 @@ export class CallService {
     const event = await this.webhookReceiver.receive(bodyString, authHeader);
     logger.info({ event: event.event, room: event.room?.name }, 'Received verified LiveKit webhook');
 
+    // Handle LiveKit Egress webhooks
+    if (event.event === 'egress_ended' || event.event === 'egress_started' || event.event === 'egress_updated') {
+      await livekitEgressService.handleEgressWebhook((event as any).egressInfo);
+      return { handled: true, event: event.event };
+    }
+
     const roomName = event.room?.name;
     if (!roomName) {
       return { handled: false, reason: 'unrelated_room' };
@@ -1144,6 +1157,13 @@ export class CallService {
            WHERE id = $1 AND status IN ('initiated', 'dialing')`,
           [callId]
         );
+
+        // Start LiveKit Cloud Egress if S3 storage is configured
+        if (callId) {
+          livekitEgressService.startAudioRecording(roomName, callId).catch((err) => {
+            logger.warn({ callId, err: err?.message }, 'LiveKit egress auto-start error');
+          });
+        }
       }
     } else if ((event.event === 'participant_left' && sip) || event.event === 'room_finished') {
       // Only the phone leg ends the call (the agent leaving is not the customer hanging up)
@@ -1162,28 +1182,178 @@ export class CallService {
   }
 
   /**
-   * Sweeper: Resolves calls stuck in 'initiated' or 'dialing' older than 3 minutes.
+   * Reconciler: Inspects in-flight calls against real LiveKit rooms.
+   * - Queries LiveKit RoomService to get authoritative room and participant status.
+   * - Never blindly flips active calls to NO_ANSWER based on an arbitrary timer.
+   * - If a call's room is active with participants in LiveKit, it stays alive and is marked answered.
+   * - If the room has closed in LiveKit:
+   *   - If callee answered / transcript exists: computes real duration and completes the call.
+   *   - If callee never answered and timeout elapsed: marks as no_answer (canonical lowercase).
    */
-  async sweepStuckCalls() {
-    const res = await query(
-      `UPDATE calls
-       SET status = 'NO_ANSWER',
-           call_status = 'NO_ANSWER',
-           failure_reason = 'Dialing timeout: callee did not answer within timeout period',
-           ended_at = NOW()
-       WHERE status IN ('initiated', 'dialing')
-         AND COALESCE(direction, 'outbound') = 'outbound'
-         AND (duration_seconds IS NULL OR duration_seconds = 0)
-         AND created_at < NOW() - INTERVAL '5 minutes'
-       RETURNING id, customer_id, room_name, created_at`
+  async reconcileStuckCalls() {
+    // 1. Fetch all calls currently in progress older than 30 seconds
+    const inFlight = await query(
+      `SELECT c.id, c.status, c.call_status, c.room_name, c.created_at, c.answered_at,
+              c.duration_seconds, c.pipeline, c.re_lead_id, c.customer_id,
+              c.transcript as call_transcript,
+              ro.final_disposition as re_disposition,
+              ro.transcript as re_transcript
+       FROM calls c
+       LEFT JOIN real_estate_outcomes ro ON ro.call_id = c.id
+       WHERE c.status IN ('initiated', 'dialing', 'answered')
+         AND c.ended_at IS NULL
+         AND c.created_at < NOW() - INTERVAL '30 seconds'`
     );
 
-    if (res.rows.length > 0) {
-      logger.warn({ sweptCount: res.rows.length, sweptCalls: res.rows }, 'Sweeper resolved stuck calls to NO_ANSWER');
-      for (const row of res.rows) {
-        if (row.customer_id) await this.evaluateRetry(row.customer_id, 'NO_ANSWER', null);
+    if (inFlight.rows.length === 0) return;
+
+    // 2. Fetch active rooms from LiveKit RoomService
+    let activeRooms: any[] = [];
+    try {
+      activeRooms = await this.roomService.listRooms();
+    } catch (err: any) {
+      logger.warn({ err: err?.message }, 'Reconciler could not reach LiveKit roomService; skipping cycle');
+      return;
+    }
+
+    const liveRoomMap = new Map<string, any>();
+    for (const r of activeRooms) {
+      liveRoomMap.set(r.name, r);
+    }
+
+    for (const call of inFlight.rows) {
+      const room = liveRoomMap.get(call.room_name);
+
+      if (room) {
+        // Room is currently active on LiveKit!
+        // Check if phone participant is actually active (picked up)
+        try {
+          const participants = await this.roomService.listParticipants(call.room_name);
+          const isAnswered = participants.some((p: any) =>
+            p.attributes?.['sip.callStatus'] === 'active'
+          );
+
+          if (isAnswered && (call.status === 'dialing' || call.status === 'initiated')) {
+            await query(
+              `UPDATE calls
+               SET status = 'answered',
+                   call_status = 'answered',
+                   answered_at = COALESCE(answered_at, NOW())
+               WHERE id = $1`,
+              [call.id]
+            );
+            logger.info({ callId: call.id, room: call.room_name }, `📞 [CALL ANSWERED] Reconciler detected active phone call | Call ID: ${call.id}`);
+          }
+        } catch (e: any) {
+          logger.debug({ err: e?.message }, 'Reconciler participant check note');
+        }
+        // Active room: do NOT finalize
+        continue;
+      }
+
+      // Room is NO LONGER ACTIVE on LiveKit (call completed or ended)
+      let transcript = call.re_transcript || call.call_transcript || [];
+      // Self-healing check: check if conversation file exists on disk with dialogue
+      if (!Array.isArray(transcript) || transcript.length === 0) {
+        try {
+          const convDir = path.join(getRecordingsDir(), 'conversations');
+          if (fs.existsSync(convDir)) {
+            const files = fs.readdirSync(convDir);
+            const matched = files.find((f: string) => f.includes(call.id));
+            if (matched) {
+              const content = fs.readFileSync(path.join(convDir, matched), 'utf-8');
+              const parsedTurns: any[] = [];
+              for (const line of content.split('\n')) {
+                const turnM = line.match(/^\[\d{2}:\d{2}(?::\d{2})?\]\s*(🤖\s*Priya|🗣️\s*Customer)\s*:\s*(.+)$/);
+                if (turnM) {
+                  parsedTurns.push({
+                    role: turnM[1].includes('Priya') ? 'assistant' : 'customer',
+                    text: turnM[2].trim(),
+                  });
+                }
+              }
+              if (parsedTurns.length > 0) {
+                transcript = parsedTurns;
+              }
+            }
+          }
+        } catch {}
+      }
+
+      const hasCustomerTurns = Array.isArray(transcript) && transcript.some((t: any) => t.role === 'customer' || t.role === 'user');
+      const wasAnswered = Boolean(call.answered_at) || hasCustomerTurns;
+
+      if (wasAnswered) {
+        // Callee answered and spoke! Finalize as completed with actual duration
+        const startTime = call.answered_at ? new Date(call.answered_at).getTime() : new Date(call.created_at).getTime();
+        const durationSec = Math.max(1, Math.round((Date.now() - startTime) / 1000));
+
+        await query(
+          `UPDATE calls
+           SET status = 'completed',
+               call_status = CASE WHEN call_status IN ('initiated', 'dialing') THEN 'completed' ELSE call_status END,
+               duration_seconds = GREATEST($1, COALESCE(duration_seconds, 0)),
+               ended_at = NOW()
+           WHERE id = $2`,
+          [durationSec, call.id]
+        );
+
+        // If Real Estate call has no outcome record yet, synthesize outcome from the transcript
+        if (call.pipeline === 'real_estate' && !call.re_disposition) {
+          try {
+            const hasDialogue = Array.isArray(transcript) && transcript.length > 0;
+            const disp = hasDialogue ? 'Abruptly Disconnected Call' : 'Agent Not Connected (No Audio)';
+            await realEstateCallService.saveOutcome(call.id, {
+              final_disposition: disp,
+              duration_seconds: durationSec,
+              transcript: transcript,
+              failure_reason: hasDialogue ? undefined : 'Call answered but agent had not joined the room before disconnect',
+            });
+            logger.info({ callId: call.id, disposition: disp }, 'Reconciler finalized missing real estate outcome for ended call');
+          } catch (e: any) {
+            logger.warn({ callId: call.id, err: e?.message }, 'Reconciler saveOutcome warning');
+          }
+        }
+      } else {
+        // Callee never answered: only mark no_answer after at least 65 seconds (ringingTimeout)
+        const ageSeconds = Math.round((Date.now() - new Date(call.created_at).getTime()) / 1000);
+        if (ageSeconds >= 65) {
+          await query(
+            `UPDATE calls
+             SET status = 'no_answer',
+                 call_status = 'no_answer',
+                 failure_reason = 'Dialing timeout: callee did not answer within timeout period',
+                 ended_at = NOW()
+             WHERE id = $1`,
+            [call.id]
+          );
+
+          if (call.pipeline === 'real_estate' && !call.re_disposition) {
+            try {
+              await realEstateCallService.saveOutcome(call.id, {
+                final_disposition: 'Not Connected (No Answer)',
+                duration_seconds: 0,
+                transcript: [],
+              });
+            } catch (e: any) {
+              logger.warn({ callId: call.id, err: e?.message }, 'Reconciler saveOutcome no_answer warning');
+            }
+          }
+
+          if (call.customer_id) {
+            await this.evaluateRetry(call.customer_id, 'NO_ANSWER', null);
+          }
+          logger.info({ callId: call.id }, 'Reconciler resolved unanswered call to no_answer');
+        }
       }
     }
+  }
+
+  /**
+   * Sweeper alias for backwards compatibility
+   */
+  async sweepStuckCalls() {
+    return this.reconcileStuckCalls();
   }
 
   /**
@@ -1201,8 +1371,8 @@ export class CallService {
               COALESCE(co.final_disposition, ro.final_disposition) as final_disposition,
               co.pickup_date, co.confirmed_date,
               co.address_confirmed, co.new_address,
-              COALESCE(co.transcript, ro.transcript) as transcript,
-              COALESCE(co.customer_note, ro.agent_summary) as customer_note,
+              COALESCE(ro.transcript, co.transcript, c.transcript) as transcript,
+              COALESCE(ro.agent_summary, co.customer_note) as customer_note,
               CASE
                 WHEN (rp.commercial_type IS NOT NULL AND LOWER(rp.commercial_type) != 'residential')
                   OR LOWER(COALESCE(rp.category, '')) = 'commercial'
@@ -1217,7 +1387,17 @@ export class CallService {
                   OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%commercial%'
                   OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%office%'
                   THEN 'commercial'
-                ELSE 'residential'
+                WHEN rp.bhk_config IS NOT NULL
+                  OR LOWER(COALESCE(rp.category, '')) = 'residential'
+                  OR LOWER(COALESCE(rp.raw_notes, '')) LIKE '%bhk%'
+                  OR LOWER(COALESCE(rp.raw_notes, '')) LIKE '%flat%'
+                  OR LOWER(COALESCE(rp.raw_notes, '')) LIKE '%apartment%'
+                  OR LOWER(COALESCE(rp.raw_notes, '')) LIKE '%villa%'
+                  OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%bhk%'
+                  OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%flat%'
+                  OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%apartment%'
+                  THEN 'residential'
+                ELSE NULL
               END as re_category,
               rp.intent as re_intent,
               rp.project_or_society as re_project_or_society, rp.sector_or_location as re_sector_or_location,
@@ -1289,8 +1469,23 @@ export class CallService {
       ? matchRealEstateDisposition(row.final_disposition || row.call_status || row.status, row.duration_seconds, row.status)
       : matchCanonicalDisposition(row.final_disposition || row.call_status || row.status, row.duration_seconds, row.status);
 
+    let recUrl = row.recording_url;
+    if (!recUrl) {
+      const storageDir = getRecordingsDir();
+      const mp3Path = path.join(storageDir, `${row.id}.mp3`);
+      const wavPath = path.join(storageDir, `${row.id}.wav`);
+      const mp3Exists = fs.existsSync(mp3Path) && fs.statSync(mp3Path).size > 44;
+      const wavExists = fs.existsSync(wavPath) && fs.statSync(wavPath).size > 44;
+      if (mp3Exists || wavExists) {
+        recUrl = `/api/calls/${row.id}/audio`;
+        query(`UPDATE calls SET recording_url = $1, recording_download_status = 'done' WHERE id = $2`, [recUrl, row.id]).catch(() => {});
+      }
+    }
+
     return {
       ...row,
+      recording_url: recUrl,
+      recording_download_status: recUrl ? 'done' : row.recording_download_status,
       transcript: romanizeTranscript(row.transcript),
       final_disposition: finalDisp,
     };
@@ -1336,8 +1531,8 @@ export class CallService {
               camp.id as campaign_id, camp.name as campaign_name,
               COALESCE(co.final_disposition, ro.final_disposition) as final_disposition,
               co.confirmed_date, co.pickup_date,
-              COALESCE(co.transcript, ro.transcript) as transcript,
-              COALESCE(co.customer_note, ro.agent_summary) as customer_note,
+              COALESCE(ro.transcript, co.transcript, c.transcript) as transcript,
+              COALESCE(ro.agent_summary, co.customer_note) as customer_note,
               CASE
                 WHEN (rp.commercial_type IS NOT NULL AND LOWER(rp.commercial_type) != 'residential')
                   OR LOWER(COALESCE(rp.category, '')) = 'commercial'
@@ -1352,7 +1547,17 @@ export class CallService {
                   OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%commercial%'
                   OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%office%'
                   THEN 'commercial'
-                ELSE 'residential'
+                WHEN rp.bhk_config IS NOT NULL
+                  OR LOWER(COALESCE(rp.category, '')) = 'residential'
+                  OR LOWER(COALESCE(rp.raw_notes, '')) LIKE '%bhk%'
+                  OR LOWER(COALESCE(rp.raw_notes, '')) LIKE '%flat%'
+                  OR LOWER(COALESCE(rp.raw_notes, '')) LIKE '%apartment%'
+                  OR LOWER(COALESCE(rp.raw_notes, '')) LIKE '%villa%'
+                  OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%bhk%'
+                  OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%flat%'
+                  OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%apartment%'
+                  THEN 'residential'
+                ELSE NULL
               END as re_category,
               rp.intent as re_intent,
               rp.project_or_society as re_project_or_society, rp.sector_or_location as re_sector_or_location,
@@ -1444,7 +1649,20 @@ export class CallService {
     params.push(limit);
 
     const res = await query(q, params);
+    const storageDir = getRecordingsDir();
     return res.rows.map((row: any) => {
+      let recUrl = row.recording_url;
+      if (!recUrl) {
+        const mp3Path = path.join(storageDir, `${row.id}.mp3`);
+        const wavPath = path.join(storageDir, `${row.id}.wav`);
+        const mp3Exists = fs.existsSync(mp3Path) && fs.statSync(mp3Path).size > 44;
+        const wavExists = fs.existsSync(wavPath) && fs.statSync(wavPath).size > 44;
+        if (mp3Exists || wavExists) {
+          recUrl = `/api/calls/${row.id}/audio`;
+          query(`UPDATE calls SET recording_url = $1, recording_download_status = 'done' WHERE id = $2`, [recUrl, row.id]).catch(() => {});
+        }
+      }
+
       const isRealEstate = Boolean(
         row.re_lead_id ||
         (row.script || '').toLowerCase().includes('estate') ||
@@ -1459,6 +1677,8 @@ export class CallService {
 
       return {
         ...row,
+        recording_url: recUrl,
+        recording_download_status: recUrl ? 'done' : row.recording_download_status,
         final_disposition: finalDisp,
       };
     });

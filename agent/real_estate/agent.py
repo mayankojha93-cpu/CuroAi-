@@ -242,6 +242,24 @@ class RealEstateAgent(Agent):
         state.last_user_text = text
         low_text = text.lower()
 
+        # Caller says "standalone" / "independent" property -> no unit number or floor exists, so
+        # get_missing_fields() stops asking for them. Checked on every pre-closing intake turn.
+        from .tools import is_standalone_from_speech
+        from .state import RealEstateStep as _SS
+        standalone_changed = False
+        if (
+            not state.is_standalone
+            and state.step in (
+                _SS.CATEGORY_SELECT, _SS.ASK_NEW_LOCATION,
+                _SS.RESIDENTIAL_SALE, _SS.RESIDENTIAL_LEASE,
+                _SS.COMMERCIAL_SALE, _SS.COMMERCIAL_LEASE,
+            )
+            and is_standalone_from_speech(text)
+        ):
+            state.is_standalone = True
+            standalone_changed = True
+            logger.info(f"🏠 Standalone/independent property -> unit & floor will be skipped: '{text}'")
+
         # Caller asks us to repeat / says "what did you ask?" -> re-ask the open question (no LLM,
         # no tool call, nothing skipped). Runs BEFORE category detection because the caller's
         # words often quote the question itself ("residential hai ya commercial hai na?").
@@ -349,6 +367,13 @@ class RealEstateAgent(Agent):
             else:
                 state.step = RealEstateStep.RESIDENTIAL_LEASE if state.intent == "lease" else RealEstateStep.RESIDENTIAL_SALE
             step_changed = True
+
+        if standalone_changed and not step_changed:
+            # MUST be synchronous: otherwise the LLM could still see the old "ask unit & floor" instruction.
+            try:
+                await self.update_instructions(get_step_instructions(state))
+            except Exception as e:
+                logger.warning(f"Failed to refresh instructions after standalone detection: {e}")
 
         # Greetings / backchannels like "Hello." must not flip the reply language.
         lang_switched = False if _is_neutral_utterance(text) else state.update_reply_lang(text)

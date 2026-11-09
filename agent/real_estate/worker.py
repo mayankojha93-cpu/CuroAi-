@@ -3,6 +3,7 @@ import re
 import json
 import time
 import asyncio
+import statistics
 import requests
 from datetime import datetime
 from pathlib import Path
@@ -45,15 +46,14 @@ from .state import RealEstateState, RealEstateStep
 from .agent import RealEstateAgent
 from .tools import RealEstateTools
 from .prompts import _owner_call_name
+from .audio_recorder import RoomAudioRecorder
 from src.transliteration import romanize_hindi
 
 server = AgentServer()
 
+_UUID_RE = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I)
 
 # ── Conversation File Logger ───────────────────────────────────────────────────
-# Writes a human-readable .txt log per call under recordings/conversations/.
-# Format mirrors the console logs so it is easy to read and grep.
-
 _CONV_LOG_DIR = ROOT_DIR / "recordings" / "conversations"
 
 
@@ -66,8 +66,7 @@ class ConversationFileLogger:
         safe_id = (call_id or "unknown")[:36]
         self._path = _CONV_LOG_DIR / f"{ts}_{safe_id}.txt"
         self._call_id = call_id
-        self._fh = open(self._path, "w", encoding="utf-8", buffering=1)  # line-buffered
-        # Write header
+        self._fh = open(self._path, "w", encoding="utf-8", buffering=1)
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._fh.write(
             f"{'='*70}\n"
@@ -93,7 +92,6 @@ class ConversationFileLogger:
         self._fh.write(f"[{self._ts()}] ──  {text}\n")
 
     def finalize(self, state: "RealEstateState"):
-        """Write outcome summary and close the file."""
         try:
             duration_s = int(time.time() - state.start_time)
             mins, secs = divmod(duration_s, 60)
@@ -149,8 +147,129 @@ def prewarm(proc: agents.JobProcess):
 server.setup_fnc = prewarm
 
 
+# ── Helpers ────────────────────────────────────────────────────────────────────
+def _resolve_call_id(ctx, metadata: dict) -> str:
+    """callId from job/room metadata, else the UUID inside the room name (re-call-<uuid>)."""
+    cid = str(metadata.get("callId") or metadata.get("call_id") or "").strip()
+    if cid:
+        return cid
+    names = []
+    for getter in (
+        lambda: ctx.room.name,
+        lambda: ctx.job.room.name,
+    ):
+        try:
+            n = getter()
+            if n:
+                names.append(n)
+        except Exception:
+            pass
+    for n in names:
+        m = _UUID_RE.search(n)
+        if m:
+            return m.group(0)
+        if n.startswith("re-call-"):
+            return n[8:]
+        if n.startswith("call-"):
+            return n[5:]
+    return ""
+
+
+def _callee_status(p) -> Optional[str]:
+    try:
+        return (getattr(p, "attributes", None) or {}).get("sip.callStatus")
+    except Exception:
+        return None
+
+
+async def _wait_for_answer(ctx, state: RealEstateState, timeout: float) -> bool:
+    """Outbound SIP participants join the room when DIALING starts, not when the phone is answered.
+    Waits for the callee to answer (sip.callStatus == 'active').
+    Never returns True while the call is still ringing or dialing."""
+    is_outbound = getattr(state, "direction", "outbound") == "outbound"
+    if not is_outbound:
+        return True
+
+    answer_event = asyncio.Event()
+
+    def _check_participants() -> Optional[bool]:
+        # True = active/answered
+        # False = hung up / failed
+        # None = still waiting / ringing
+        participants = list(ctx.room.remote_participants.values())
+        for p in participants:
+            st = _callee_status(p)
+            if st == "active":
+                return True
+            if st == "hangup":
+                return False
+        return None
+
+    init_status = _check_participants()
+    if init_status is True:
+        return True
+    if init_status is False:
+        return False
+
+    def on_attrs(changed_attrs, participant):
+        attrs = changed_attrs or {}
+        st = attrs.get("sip.callStatus") or _callee_status(participant)
+        if st == "active":
+            logger.info("📞 [EVENT] Participant sip.callStatus transitioned to 'active'")
+            answer_event.set()
+
+    ctx.room.on("participant_attributes_changed", on_attrs)
+
+    end_time = time.time() + timeout
+    try:
+        while time.time() < end_time:
+            if state.hangup_started or not ctx.room.isconnected():
+                return False
+
+            st_val = _check_participants()
+            if st_val is True:
+                return True
+            if st_val is False:
+                return False
+
+            remaining = end_time - time.time()
+            if remaining <= 0:
+                break
+
+            try:
+                await asyncio.wait_for(answer_event.wait(), timeout=min(0.5, remaining))
+                if answer_event.is_set():
+                    return True
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        try:
+            ctx.room.off("participant_attributes_changed", on_attrs)
+        except Exception:
+            pass
+
+    return _check_participants() is True
+
+
+def _apply_disconnect_disposition(state: RealEstateState):
+    has_customer_speech = any(t.get("role") == "customer" for t in state.transcript)
+    if getattr(state, "answered_at", None) is None and not has_customer_speech:
+        state.final_disposition = "Not Connected (No Answer)"
+        state.agent_summary = state.agent_summary or "Call disconnected before the customer answered"
+        return
+    state.callee_connected = True
+    if state.final_disposition in ("Abruptly Disconnected Call", "Not Connected (No Answer)"):
+        if state.is_interested:
+            state.final_disposition = "Interested (Disconnected)"
+        elif state.project_or_society or state.category:
+            state.final_disposition = "Partial Details Captured (Disconnected)"
+        else:
+            state.final_disposition = "Abruptly Disconnected Call"
+
+
 def post_re_outcome_sync(state: RealEstateState) -> bool:
     if not state.call_id:
+        logger.error("post_re_outcome_sync: call_id is empty, nothing can be saved")
         return False
 
     url = f"{BACKEND_URL}/internal/real-estate/calls/{state.call_id}/outcome"
@@ -158,12 +277,15 @@ def post_re_outcome_sync(state: RealEstateState) -> bool:
         "X-Internal-Secret": INTERNAL_SECRET,
         "Content-Type": "application/json",
     }
-    has_turns = len(state.transcript) >= 1
     has_customer = any(t.get("role") == "customer" for t in state.transcript)
-    callee_was_connected = state.callee_connected or has_customer or has_turns or (time.time() - state.start_time >= 5.0)
-    duration = int(time.time() - state.start_time) if callee_was_connected else 0
-    if duration <= 0 and (has_customer or has_turns or state.callee_connected):
+
+    # Duration counts from the moment the phone was answered, never from ringing time.
+    if getattr(state, "answered_at", None):
+        duration = max(1, int(time.time() - state.answered_at))
+    elif has_customer:
         duration = max(5, int(time.time() - state.start_time))
+    else:
+        duration = 0
 
     is_comm = (
         state.category == "commercial"
@@ -183,6 +305,8 @@ def post_re_outcome_sync(state: RealEstateState) -> bool:
         category_val = state.category
         bhk_val = state.bhk_config
         comm_val = state.commercial_type
+
+    median_ms = int(statistics.median(state.latency_samples) * 1000) if state.latency_samples else None
 
     payload = {
         "lead_id": state.lead_id,
@@ -207,21 +331,28 @@ def post_re_outcome_sync(state: RealEstateState) -> bool:
         "agent_summary": state.agent_summary,
         "transcript": state.transcript,
         "duration_seconds": duration,
-        "median_latency_ms": int(sum(state.latency_samples) / len(state.latency_samples) * 1000) if state.latency_samples else None,
+        "median_latency_ms": median_ms,
         "language": state.reply_lang,
         "initial_language": state.initial_language,
         "language_switched": state.language_switched,
+        "failure_reason": (state.agent_summary or "Dialing timeout: callee did not answer within timeout period") if duration == 0 else None,
+        # Only send a recording URL when a real file was produced; the backend marks it 'done' otherwise.
+        "recording_url": getattr(state, "recording_url", None),
     }
 
-    logger.info(f"📤 Posting RE outcome to {url} for call {state.call_id} (duration={duration}s, turns={len(state.transcript)}, disp={state.final_disposition})")
-    try:
-        res = requests.post(url, json=payload, headers=headers, timeout=5.0)
-        if res.status_code in (200, 201):
-            logger.info(f"✅ Real estate outcome saved for call {state.call_id} (Disp: {state.final_disposition})")
-            return True
-        logger.error(f"❌ Failed to save RE outcome ({res.status_code}): {res.text}")
-    except Exception as e:
-        logger.error(f"❌ Exception posting RE outcome: {e}")
+    logger.info(f"📤 Posting RE outcome to {url} (call={state.call_id}, duration={duration}s, turns={len(state.transcript)}, disp={state.final_disposition})")
+    for attempt in range(1, 7):
+        try:
+            res = requests.post(url, json=payload, headers=headers, timeout=8.0)
+            if res.status_code in (200, 201):
+                logger.info(f"✅ Real estate outcome saved for call {state.call_id} (Disp: {state.final_disposition})")
+                return True
+            logger.error(f"❌ Failed to save RE outcome ({res.status_code}) attempt {attempt}: {res.text}")
+            if res.status_code in (400, 401, 403, 404):
+                break  # retrying will not help
+        except Exception as e:
+            logger.error(f"❌ Exception posting RE outcome (attempt {attempt}): {e}")
+        time.sleep(min(5.0, 1.5 * attempt))
     return False
 
 
@@ -238,17 +369,45 @@ async def entrypoint(ctx: agents.JobContext):
         except Exception as e:
             logger.warning(f"Could not parse job metadata: {e}")
 
-    call_id = metadata.get("callId", "")
-    if not call_id and ctx.room.name.startswith("re-call-"):
-        call_id = ctx.room.name[8:]
-    elif not call_id and ctx.room.name.startswith("call-"):
-        call_id = ctx.room.name[5:]
+    if not metadata and getattr(ctx.room, "metadata", None):
+        try:
+            metadata = json.loads(ctx.room.metadata)
+            logger.info(f"Loaded RE room metadata: {metadata}")
+        except Exception as e:
+            logger.warning(f"Could not parse room metadata: {e}")
+
+    call_id = _resolve_call_id(ctx, metadata)
+    if call_id:
+        logger.info(f"📌 Resolved call_id={call_id}")
+    else:
+        logger.error(f"❌ Could not resolve call_id (room={ctx.room.name}, metadata keys={list(metadata.keys())}). "
+                     "Outcome, answered-callback and recording will NOT work for this call.")
 
     phone = metadata.get("phone", "")
     owner_name = metadata.get("customerName") or metadata.get("ownerName", "")
+
+    if call_id and (not phone or not owner_name):
+        def _fetch_call_info():
+            try:
+                res = requests.get(
+                    f"{BACKEND_URL}/internal/calls/{call_id}",
+                    headers={"X-Internal-Secret": INTERNAL_SECRET},
+                    timeout=2.0,
+                )
+                if res.status_code == 200:
+                    return res.json().get("call") or {}
+            except Exception as e:
+                logger.debug(f"Backend call info lookup note: {e}")
+            return {}
+
+        c_data = await asyncio.to_thread(_fetch_call_info)
+        if c_data:
+            phone = phone or c_data.get("phone", "") or c_data.get("customer_phone", "")
+            owner_name = owner_name or c_data.get("customerName") or c_data.get("customer_name") or ""
+
     clean_owner = (owner_name or "").strip()
-    if not clean_owner or clean_owner in ("Property Owner", "Test Subscriber", "Test Customer", "None", "null"):
-        owner_name = "Raja Nayak"
+    if not clean_owner or clean_owner.lower() in ("property owner", "test subscriber", "test customer", "none", "null", "undefined", "customer"):
+        owner_name = None
     else:
         owner_name = clean_owner
 
@@ -257,8 +416,8 @@ async def entrypoint(ctx: agents.JobContext):
     lead_id = metadata.get("leadId")
     direction = metadata.get("direction", "outbound")
     raw_loc = (metadata.get("propertyLocation") or metadata.get("address") or metadata.get("location") or "").strip()
-    if not raw_loc or raw_loc in ("Delhi, 110011, burari, sant nagar", "None", "null"):
-        property_location = "DLF Phase 5, Sector 54, Gurgaon"
+    if not raw_loc or raw_loc.lower() in ("delhi, 110011, burari, sant nagar", "none", "null", "undefined"):
+        property_location = None
     else:
         property_location = raw_loc
 
@@ -275,7 +434,6 @@ async def entrypoint(ctx: agents.JobContext):
 
     llm_extra = {}
     if OPENROUTER_PROVIDER_ORDER:
-        # Pin fast providers (stable) but still allow OpenRouter to fall back if they are down.
         llm_extra["extra_body"] = {"provider": {"order": OPENROUTER_PROVIDER_ORDER, "allow_fallbacks": True}}
     elif OPENROUTER_PROVIDER_SORT:
         llm_extra["extra_body"] = {"provider": {"sort": OPENROUTER_PROVIDER_SORT}}
@@ -289,13 +447,12 @@ async def entrypoint(ctx: agents.JobContext):
         model=LLM_MODEL,
         base_url="https://openrouter.ai/api/v1",
         api_key=OPENROUTER_API_KEY,
-        temperature=0.05,       # Very low: scripted intake agent must not hallucinate or improvise
+        temperature=0.05,
         parallel_tool_calls=False,
-        max_completion_tokens=LLM_MAX_TOKENS,  # was 120: truncated multi-field tool calls -> dead air
+        max_completion_tokens=LLM_MAX_TOKENS,
         **llm_extra,
     )
 
-    # Initial TTS uses default Hindi + English (Hinglish/Hindi) voice: priya (bulbul:v3)
     initial_code = TTS_LANGUAGE_EN if preferred_language == "en" else TTS_LANGUAGE_HI
     initial_speaker = TTS_SPEAKER_EN if preferred_language == "en" else TTS_SPEAKER_HI
 
@@ -309,9 +466,6 @@ async def entrypoint(ctx: agents.JobContext):
     )
 
     def _set_tts_language(lang: str):
-        # Switch language code:
-        #   English        → en-IN (Priya / Simran female English voice)
-        #   Hindi/Hinglish → hi-IN (Priya / Simran female Hindi/Hinglish voice)
         code = TTS_LANGUAGE_EN if lang == "en" else TTS_LANGUAGE_HI
         speaker = TTS_SPEAKER_EN if lang == "en" else TTS_SPEAKER_HI
         try:
@@ -336,6 +490,8 @@ async def entrypoint(ctx: agents.JobContext):
         property_location=property_location,
     )
 
+    recorder = RoomAudioRecorder(call_id=call_id) if call_id else None
+
     conv_logger = ConversationFileLogger(
         call_id=call_id,
         owner_name=owner_name,
@@ -350,6 +506,12 @@ async def entrypoint(ctx: agents.JobContext):
 
     # ── Console & Transcript Logger ────────────────────────────────
     _last_logged = {"role": None, "text": None}
+
+    def _mark_answered():
+        if getattr(state, "answered_at", None) is None:
+            state.answered_at = time.time()
+        state.callee_connected = True
+        state.last_activity_time = time.time()
 
     def log_dialogue(role: str, text: str):
         clean = (text or "").strip()
@@ -381,11 +543,30 @@ async def entrypoint(ctx: agents.JobContext):
             banner = f"[{now_str}] 🗣️ [Customer]: {clean}"
             print(f"\n\033[1;32m{banner}\033[0m\n", flush=True)
             logger.info(banner)
+            _mark_answered()
             state.add_transcript("customer", clean)
             try:
                 conv_logger.log_customer(clean)
             except Exception:
                 pass
+
+        # Real-time incremental persistence to PostgreSQL
+        if call_id:
+            def _push_incremental():
+                try:
+                    requests.post(
+                        f"{BACKEND_URL}/internal/real-estate/calls/{call_id}/turn",
+                        headers={"X-Internal-Secret": INTERNAL_SECRET},
+                        json={
+                            "role": norm_role,
+                            "text": clean,
+                            "timestamp": datetime.now().isoformat(),
+                        },
+                        timeout=2.0,
+                    )
+                except Exception as ex:
+                    logger.debug(f"Incremental turn save note: {ex}")
+            asyncio.create_task(asyncio.to_thread(_push_incremental))
 
     tools_instance.log_dialogue_func = log_dialogue
 
@@ -434,54 +615,74 @@ async def entrypoint(ctx: agents.JobContext):
         turn_handling=TurnHandlingOptions(**turn_opts),
     )
 
-    # ── Per-turn latency breakdown ─────────────────────────────────────────────
-    # EOU  = user stopped speaking -> turn accepted (VAD silence + endpointing)
-    # LLM  = time-to-first-token (a tool turn shows 2 LLM lines unless FAST_REPLY skipped the 2nd)
-    # TTS  = time-to-first-audio-byte
-    # TURN ≈ EOU + sum(LLM ttft) + TTS ttfb  (excludes tool run time and network playout)
-    if LATENCY_LOG:
-        _lat = {"eou": None, "llm": [], "tts_done": False}
+    # ── Per-turn latency (also feeds state.latency_samples -> median_latency_ms) ──
+    _lat = {"eou": None, "llm": [], "tts_done": False}
 
-        @session.on("metrics_collected")
-        def _on_metrics(ev):
-            try:
-                m = ev.metrics
-                kind = type(m).__name__
-                if kind == "EOUMetrics":
-                    _lat["eou"] = getattr(m, "end_of_utterance_delay", None)
-                    _lat["llm"] = []
-                    _lat["tts_done"] = False
+    @session.on("metrics_collected")
+    def _on_metrics(ev):
+        try:
+            m = ev.metrics
+            kind = type(m).__name__
+            if kind == "EOUMetrics":
+                _lat["eou"] = getattr(m, "end_of_utterance_delay", None)
+                _lat["llm"] = []
+                _lat["tts_done"] = False
+                if LATENCY_LOG:
                     logger.info(f"⏱ EOU delay={(_lat['eou'] or 0):.2f}s")
-                elif kind == "LLMMetrics":
-                    ttft = getattr(m, "ttft", None)
-                    if ttft is not None and ttft >= 0:
-                        _lat["llm"].append(ttft)
+            elif kind == "LLMMetrics":
+                ttft = getattr(m, "ttft", None)
+                if ttft is not None and ttft >= 0:
+                    _lat["llm"].append(ttft)
+                    if LATENCY_LOG:
                         logger.info(f"⏱ LLM call #{len(_lat['llm'])} ttft={ttft:.2f}s step={state.step.value}")
-                elif kind == "TTSMetrics":
-                    ttfb = getattr(m, "ttfb", None)
-                    if ttfb is None or ttfb < 0:
-                        return
-                    if _lat["eou"] is not None and not _lat["tts_done"]:
-                        _lat["tts_done"] = True
-                        total = (_lat["eou"] or 0) + sum(_lat["llm"]) + ttfb
+            elif kind == "TTSMetrics":
+                ttfb = getattr(m, "ttfb", None)
+                if ttfb is None or ttfb < 0:
+                    return
+                if _lat["eou"] is not None and not _lat["tts_done"]:
+                    _lat["tts_done"] = True
+                    total = (_lat["eou"] or 0) + sum(_lat["llm"]) + ttfb
+                    state.latency_samples.append(total)
+                    if LATENCY_LOG:
                         logger.info(
                             f"⏱ TTS ttfb={ttfb:.2f}s | 🔔 TURN ≈ {total:.2f}s "
                             f"(eou {(_lat['eou'] or 0):.2f} + llm {sum(_lat['llm']):.2f} "
                             f"[{len(_lat['llm'])} call(s)] + tts {ttfb:.2f})"
                         )
-                    else:
-                        logger.info(f"⏱ TTS ttfb={ttfb:.2f}s (scripted line)")
-            except Exception as e:
-                logger.debug(f"metrics log error: {e}")
+                elif LATENCY_LOG:
+                    logger.info(f"⏱ TTS ttfb={ttfb:.2f}s (scripted line)")
+        except Exception as e:
+            logger.debug(f"metrics log error: {e}")
 
+    # ── Teardown ───────────────────────────────────────────────────────────────
     _room_deleted = False
-    _shutdown_in_progress = False
+    _shutdown_task: Optional[asyncio.Task] = None
 
     async def _end_room():
+        """Drop the phone leg: remove every remote participant (sends SIP BYE), delete room, disconnect."""
         nonlocal _room_deleted
         if _room_deleted:
             return
         _room_deleted = True
+
+        try:
+            for p in list(ctx.room.remote_participants.values()):
+                try:
+                    await ctx.api.room.remove_participant(
+                        api.RoomParticipantIdentity(room=ctx.room.name, identity=p.identity)
+                    )
+                    logger.info(f"Forcibly removed participant {p.identity} from room {ctx.room.name}")
+                except Exception as ex:
+                    logger.debug(f"remove_participant error ({p.identity}): {ex}")
+        except Exception as e:
+            logger.debug(f"Error enumerating remote participants: {e}")
+
+        try:
+            if hasattr(ctx, "delete_room"):
+                await ctx.delete_room()
+        except Exception:
+            pass
+
         try:
             await ctx.api.room.delete_room(api.DeleteRoomRequest(room=ctx.room.name))
             logger.info(f"Room {ctx.room.name} deleted: call terminated cleanly.")
@@ -491,18 +692,41 @@ async def entrypoint(ctx: agents.JobContext):
             else:
                 logger.warning(f"delete_room failed: {e}")
 
-    async def _save_and_shutdown():
-        nonlocal _shutdown_in_progress
-        if _shutdown_in_progress:
-            return
-        _shutdown_in_progress = True
+        try:
+            await ctx.room.disconnect()
+        except Exception:
+            pass
+
+    async def _do_shutdown():
         try:
             print_console_summary(state)
         except Exception as e:
             logger.debug(f"Error printing console summary: {e}")
+
+        # 1. Freeze audio capture, then HANG UP THE PHONE FIRST. Recording conversion / S3 upload /
+        #    backend POST used to run while the line was still open, so the caller heard dead air
+        #    for 10-20s after the closing line.
+        if recorder:
+            try:
+                await recorder.stop_capture()
+            except Exception as e:
+                logger.warning(f"Error stopping audio capture: {e}")
+        await _end_room()
+
+        # 2. Finalise the recording (ffmpeg + S3) now that the line is closed.
+        if recorder:
+            try:
+                rec_url = await recorder.finalize()
+                if rec_url:
+                    setattr(state, "recording_url", rec_url)
+            except Exception as e:
+                logger.warning(f"Error finalizing audio recording: {e}")
+
+        # 3. Save outcome (with retries). Only mark as posted on success.
         if not state.outcome_posted and state.call_id:
-            await asyncio.to_thread(post_re_outcome_sync, state)
-            state.outcome_posted = True
+            ok = await asyncio.to_thread(post_re_outcome_sync, state)
+            state.outcome_posted = bool(ok)
+
         try:
             conv_logger.finalize(state)
         except Exception as e:
@@ -511,13 +735,26 @@ async def entrypoint(ctx: agents.JobContext):
             await session.aclose()
         except Exception:
             pass
-        await _end_room()
         ctx.shutdown(reason="session closed")
+
+    async def _save_and_shutdown():
+        """Idempotent. Every caller (hangup, close event, participant_disconnected, framework shutdown
+        callback) awaits the SAME task, so the job is never torn down while the recording/outcome is
+        still being saved by the first caller."""
+        nonlocal _shutdown_task
+        if _shutdown_task is None:
+            _shutdown_task = asyncio.ensure_future(_do_shutdown())
+        elif asyncio.current_task() is _shutdown_task:
+            return
+        try:
+            await asyncio.shield(_shutdown_task)
+        except Exception as e:
+            logger.warning(f"Shutdown task error: {e}")
 
     async def hangup_session():
         if not state.hangup_started:
             state.hangup_started = True
-            await _save_and_shutdown()
+        await _save_and_shutdown()
 
     tools_instance.hangup_func = hangup_session
 
@@ -531,10 +768,7 @@ async def entrypoint(ctx: agents.JobContext):
         raw_text = getattr(ev, "transcript", None) or getattr(ev, "text", "")
         is_final = getattr(ev, "is_final", True)
         if is_final and raw_text and raw_text.strip():
-            clean_text = raw_text.strip()
-            romanized_text = romanize_hindi(clean_text)
-            state.callee_connected = True
-            state.last_activity_time = time.time()
+            romanized_text = romanize_hindi(raw_text.strip())
             log_dialogue("customer", romanized_text)
 
     @session.on("conversation_item_added")
@@ -561,84 +795,93 @@ async def entrypoint(ctx: agents.JobContext):
                     content_str = part_s
 
             if role in ("user", "customer") and content_str:
-                clean_user_text = content_str.strip()
-                romanized_text = romanize_hindi(clean_user_text)
-                state.callee_connected = True
-                state.last_activity_time = time.time()
-                log_dialogue("customer", romanized_text)
+                log_dialogue("customer", romanize_hindi(content_str.strip()))
 
             elif role == "assistant" and content_str:
-                # Clean any leaked function-call syntax like close_call{}
                 clean_agent_text = re.sub(r'\b[a-zA-Z_][a-zA-Z0-9_]*\s*\{[^}]*\}', '', content_str).strip()
                 if clean_agent_text:
                     log_dialogue("assistant", clean_agent_text)
 
                 if state.step == RealEstateStep.CLOSING or "close_call" in content_str:
-                    logger.info("Closing message spoken; initiating delayed hangup...")
+                    logger.info("Closing message spoken; initiating delayed hangup (no-op if already scheduled)...")
                     asyncio.create_task(tools_instance._delayed_hangup())
 
     @session.on("close")
     def on_session_close(ev):
-        if state.hangup_started:
-            return
-        state.hangup_started = True
-        logger.info("Session closed.")
-        has_customer_speech = any(t.get("role") == "customer" for t in state.transcript)
-        elapsed = time.time() - state.start_time
-        if not has_customer_speech and not state.callee_connected and elapsed < 8.0:
-            state.final_disposition = "Not Connected (No Answer)"
-            state.agent_summary = "Call disconnected before customer spoke"
-        else:
-            state.callee_connected = True
-            if state.final_disposition in ("Abruptly Disconnected Call", "Not Connected (No Answer)"):
-                if state.is_interested:
-                    state.final_disposition = "Interested (Disconnected)"
-                elif state.project_or_society or state.category:
-                    state.final_disposition = "Partial Details Captured (Disconnected)"
-                else:
-                    state.final_disposition = "Abruptly Disconnected Call"
+        if not state.hangup_started:
+            state.hangup_started = True
+            logger.info("Session closed.")
+            _apply_disconnect_disposition(state)
         asyncio.create_task(_save_and_shutdown())
 
     @ctx.room.on("participant_disconnected")
     def on_participant_disconnected(participant):
-        if state.hangup_started:
-            return
-        state.hangup_started = True
-        part_ident = getattr(participant, "identity", "unknown")
-        logger.info(f"Participant disconnected / hung up: {part_ident}")
-        has_customer_speech = any(t.get("role") == "customer" for t in state.transcript)
-        elapsed = time.time() - state.start_time
-        if not has_customer_speech and not state.callee_connected and elapsed < 8.0:
-            state.final_disposition = "Not Connected (No Answer)"
-            state.agent_summary = "Call disconnected before customer spoke"
-        else:
-            state.callee_connected = True
-            if state.final_disposition in ("Abruptly Disconnected Call", "Not Connected (No Answer)"):
-                if state.is_interested:
-                    state.final_disposition = "Interested (Disconnected)"
-                elif state.project_or_society or state.category:
-                    state.final_disposition = "Partial Details Captured (Disconnected)"
-                else:
-                    state.final_disposition = "Abruptly Disconnected Call"
+        logger.info(f"Participant disconnected / hung up: {getattr(participant, 'identity', 'unknown')}")
+        if not state.hangup_started:
+            state.hangup_started = True
+            _apply_disconnect_disposition(state)
+        # ALWAYS save (previously an early return could skip this when hangup_started was already set)
+        asyncio.create_task(_save_and_shutdown())
+
+    @ctx.room.on("disconnected")
+    def on_room_disconnected(*_args):
+        logger.info("Room disconnected")
+        if not state.hangup_started:
+            state.hangup_started = True
+            _apply_disconnect_disposition(state)
         asyncio.create_task(_save_and_shutdown())
 
     ctx.add_shutdown_callback(_save_and_shutdown)
 
-    # 1. For inbound calls, wait for remote participant; for outbound calls, start session immediately
-    if direction == "inbound":
+    # 1. Wait for the callee to actually ANSWER (not just for the SIP leg to appear while ringing)
+    ring_timeout = 65.0 if direction == "outbound" else 20.0
+    deadline = time.time() + ring_timeout
+    logger.info(f"⏳ Waiting for callee to answer (timeout {ring_timeout}s)...")
+    if not ctx.room.remote_participants:
         try:
-            if not ctx.room.remote_participants:
-                await asyncio.wait_for(ctx.wait_for_participant(), timeout=15.0)
-                logger.info("Remote participant joined room.")
+            await asyncio.wait_for(ctx.wait_for_participant(), timeout=ring_timeout)
+        except asyncio.TimeoutError:
+            logger.warning(f"❌ No participant joined within {ring_timeout}s.")
         except Exception as e:
-            logger.warning(f"Wait for participant completed or timed out: {e}")
+            logger.warning(f"Wait for participant error: {e}")
 
-    # 2. Start session on the room immediately so audio pipeline & STT/VAD are active
+    answered = await _wait_for_answer(ctx, state, max(1.0, deadline - time.time()))
+    if not answered:
+        if not state.hangup_started:
+            state.hangup_started = True
+            state.final_disposition = "Not Connected (No Answer)"
+            state.agent_summary = "Call unanswered by recipient within timeout period"
+            logger.warning("❌ Callee did not answer (timeout / rejected / hung up while ringing).")
+        await _save_and_shutdown()
+        return
+
+    logger.info("🎉 Callee answered (sip.callStatus=active)")
+    _mark_answered()
+    state.start_time = time.time()
+    state.answered_at = state.start_time
+
+    # Tell backend the call is answered right away so no sweeper marks it NO_ANSWER
+    def _notify_answered():
+        if not state.call_id:
+            logger.error("Cannot notify answered: call_id is empty")
+            return
+        try:
+            r = requests.post(
+                f"{BACKEND_URL}/internal/real-estate/calls/{state.call_id}/answered",
+                headers={"X-Internal-Secret": INTERNAL_SECRET},
+                timeout=3.0,
+            )
+            logger.info(f"Marked call {state.call_id} as answered in backend (HTTP {r.status_code})")
+        except Exception as ex:
+            logger.warning(f"Failed to notify answered: {ex}")
+    asyncio.create_task(asyncio.to_thread(_notify_answered))
+
+    # 2. Start session, then recorder (so the greeting is recorded too)
     await session.start(room=ctx.room, agent=agent)
     logger.info("Real Estate agent session started in room.")
+    if recorder:
+        await recorder.start(ctx.room)
 
-    # Warm provider connections while the greeting is generated/played, so the first real
-    # customer turn doesn't pay cold-connection cost.
     for _name, _comp in (("tts", tts), ("llm", llm)):
         _fn = getattr(_comp, "prewarm", None)
         if callable(_fn):
@@ -647,23 +890,8 @@ async def entrypoint(ctx: agents.JobContext):
                 logger.info(f"🔥 {_name} prewarm requested")
             except Exception as e:
                 logger.debug(f"{_name} prewarm failed: {e}")
-    state.start_time = time.time()
 
-    # Mark call as answered in backend immediately so sweeper never sweeps it to NO_ANSWER
-    def _notify_answered():
-        if state.call_id:
-            try:
-                requests.post(
-                    f"{BACKEND_URL}/internal/real-estate/calls/{state.call_id}/answered",
-                    headers={"X-Internal-Secret": INTERNAL_SECRET},
-                    timeout=3.0,
-                )
-                logger.info(f"Marked call {state.call_id} as answered in backend")
-            except Exception as ex:
-                logger.debug(f"Failed to notify answered: {ex}")
-    asyncio.create_task(asyncio.to_thread(_notify_answered))
-
-    # 3. Queue opening greeting
+    # 3. Opening greeting
     loc = state.initial_property_location
     name_call = _owner_call_name(state)
     salutation_en = f"Hello {name_call} Sir" if name_call != "Sir" else "Hello Sir"
@@ -686,7 +914,7 @@ async def entrypoint(ctx: agents.JobContext):
     opening_speech = session.say(greeting, allow_interruptions=False)
     log_dialogue("assistant", greeting)
 
-    # 4. Silence Watchdog loop (Friendly reprompts if caller is silent)
+    # 4. Silence watchdog
     async def silence_watchdog():
         consecutive_silence = 0
         while not state.hangup_started:
@@ -694,7 +922,7 @@ async def entrypoint(ctx: agents.JobContext):
             if state.hangup_started:
                 break
             idle = time.time() - state.last_activity_time
-            if idle > 18.0:
+            if idle > 22.0:
                 consecutive_silence += 1
                 state.last_activity_time = time.time()
                 if consecutive_silence == 1:
@@ -725,6 +953,7 @@ async def entrypoint(ctx: agents.JobContext):
                         state.final_disposition = "Not Connected (No Answer)"
                     elif state.final_disposition in ("Abruptly Disconnected Call", "Not Connected (No Answer)"):
                         state.final_disposition = "Abruptly Disconnected Call"
+                    state.hangup_started = True
                     await _save_and_shutdown()
                     break
             elif idle < 3.0:
@@ -732,19 +961,19 @@ async def entrypoint(ctx: agents.JobContext):
 
     asyncio.create_task(silence_watchdog())
 
-    # 5. Natural Conversation Lifecycle Watchdog
-    # The call is NOT cut by arbitrary short timers. It stays alive until the conversation completes naturally.
-    # An emergency safety backstop of 15 minutes (900s) prevents orphan sessions if the phone stays off-hook.
+    # 5. Safety ceiling
     async def call_duration_watchdog():
-        max_safety_seconds = float(os.getenv("CALL_MAX_DURATION_SECONDS", "900"))  # 15 minutes safety ceiling
+        max_safety_seconds = float(os.getenv("CALL_MAX_DURATION_SECONDS", "900"))
         while not state.hangup_started:
             await asyncio.sleep(5.0)
             if state.hangup_started:
                 break
             elapsed = time.time() - state.start_time
             if elapsed >= max_safety_seconds and state.step != RealEstateStep.CLOSING:
-                logger.info(f"⏳ Call reached maximum emergency safety ceiling ({int(elapsed)}s). Wrapping up cleanly.")
+                logger.info(f"⏳ Call reached maximum safety ceiling ({int(elapsed)}s). Wrapping up cleanly.")
                 state.step = RealEstateStep.CLOSING
+                state.closing_spoken = True
+                tools_instance._hangup_scheduled = True   # we own the hangup; stop _delayed_hangup cutting the line early
                 disp_lower = state.final_disposition.lower()
                 if not ("qualified" in disp_lower or "dnc" in disp_lower or "whatsapp" in disp_lower):
                     state.final_disposition = "Advisor Callback Booked"
@@ -761,6 +990,7 @@ async def entrypoint(ctx: agents.JobContext):
                     await asyncio.wait_for(speech.wait_for_playout(), timeout=7.0)
                 except Exception as e:
                     logger.warning(f"Safety ceiling wrapup playout error: {e}")
+                state.hangup_started = True
                 await _save_and_shutdown()
                 break
 

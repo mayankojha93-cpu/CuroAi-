@@ -39,19 +39,19 @@ class RealEstateState:
         self.preferred_language = preferred_language
         self.direction = direction
 
-        # Property location received from frontend data
+        # Property location received from frontend / metadata
         loc = (property_location or "").strip()
-        if not loc or loc in ("Delhi, 110011, burari, sant nagar", "None", "null"):
-            loc = "DLF Phase 5, Sector 54, Gurgaon"
+        if not loc or loc.lower() in ("delhi, 110011, burari, sant nagar", "none", "null", "undefined"):
+            loc = None
         self.initial_property_location: Optional[str] = loc
         self.sector_or_location: Optional[str] = loc
         self.project_or_society: Optional[str] = loc
 
-        # Pre-confirm owner name so agent NEVER asks for owner name again
+        # Genuine owner name if known; do NOT fake a default name
         clean_name = (owner_name or "").strip()
-        if not clean_name or clean_name in ("Property Owner", "Test Subscriber", "Test Customer", "None", "null"):
-            clean_name = "Raja Nayak"
-        self.owner_name = clean_name
+        if not clean_name or clean_name.lower() in ("property owner", "test subscriber", "test customer", "none", "null", "undefined", "customer"):
+            clean_name = None
+        self.owner_name: Optional[str] = clean_name
         self.owner_name_confirmed: Optional[str] = clean_name
 
         self.has_other_property: Optional[bool] = None
@@ -62,6 +62,7 @@ class RealEstateState:
         self.reply_lang: str = clean_pref
         self.language_switched: bool = False
         self.callee_connected: bool = False
+        self.answered_at: Optional[float] = None
         self.start_time: float = time.time()
         self.last_activity_time: float = time.time()
         self.latency_samples: List[float] = []
@@ -90,6 +91,10 @@ class RealEstateState:
 
         # Details the customer said they don't know / can't share (never re-asked)
         self.skipped_fields: set = set()
+
+        # Caller said the property is standalone / independent (own house, own building):
+        # there is no separate unit number or floor to ask for, so 'unit_floor' is skipped.
+        self.is_standalone: bool = False
 
         # Call outcome & tracking
         self.is_interested: Optional[bool] = None
@@ -404,7 +409,11 @@ class RealEstateState:
                     "question_hi": "Kya yeh property immediate occupancy ke liye available hai, ya notice period hai?",
                 })
 
-        return [m for m in missing if m["id"] not in self.skipped_fields]
+        return [
+            m for m in missing
+            if m["id"] not in self.skipped_fields
+            and not (self.is_standalone and m["id"] == "unit_floor")
+        ]
 
     def is_branch_complete(self) -> bool:
         """Check if all essential fields for the current branch have been collected."""

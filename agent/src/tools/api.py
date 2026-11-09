@@ -39,6 +39,7 @@ def post_outcome_to_backend(state: ConversationState) -> bool:
         "language": state.reply_lang,
         "initial_language": state.initial_language,
         "language_switched": state.language_switched,
+        "recording_url": getattr(state, "recording_url", None) or f"/api/calls/{state.call_id}/audio",
     }
 
     # Backend endpoint is an idempotent upsert, so retrying is safe.

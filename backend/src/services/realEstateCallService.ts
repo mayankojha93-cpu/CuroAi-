@@ -12,6 +12,7 @@ import { AppError } from '../middleware/errorHandler.js';
 import { normalizePhone } from '../utils/csvParser.js';
 import { matchRealEstateDisposition, RealEstateCanonicalDisposition } from '../utils/realEstateDispositions.js';
 import { romanizeTranscript } from '../utils/transliteration.js';
+import { complianceService } from './complianceService.js';
 
 export interface RealEstateLeadRecord {
   id: string;
@@ -58,6 +59,8 @@ export interface SaveRealEstateOutcomeInput {
   language?: string | null;
   initial_language?: string | null;
   language_switched?: boolean | null;
+  recording_url?: string | null;
+  failure_reason?: string | null;
 }
 
 /**
@@ -97,17 +100,34 @@ export class RealEstateCallService {
     notes?: string;
   }) {
     const normalizedPhone = normalizePhone(data.phone);
-    const isTestCustomerPhone =
-      normalizedPhone.includes('8658250208') ||
-      (Boolean(env.TEST_PHONE) && normalizePhone(env.TEST_PHONE) === normalizedPhone);
-    const defaultTestName = env.TEST_CUSTOMER_NAME || 'Raja Nayak';
+    if (!normalizedPhone || normalizedPhone.replace(/\D/g, '').length < 10) {
+      throw new AppError('A valid 10-digit phone number is required to place a call', 400);
+    }
+
+    // Production compliance check: TRAI Calling Hours (09:00 AM - 08:00 PM IST) and DND suppression
+    if (env.NODE_ENV === 'production') {
+      const hoursCheck = complianceService.isWithinCallingHours();
+      if (!hoursCheck.allowed) {
+        throw new AppError(hoursCheck.reason!, 403);
+      }
+      const dndCheck = await complianceService.isDndSuppressed(normalizedPhone);
+      if (dndCheck.suppressed) {
+        throw new AppError(dndCheck.reason!, 403);
+      }
+    }
+
     const rawPassedName = (data.owner_name || data.name || '').trim();
-    const passedName = (rawPassedName && rawPassedName !== 'Test Subscriber')
+    // Only accept genuine names; never default to fake identities
+    const ownerName = (rawPassedName && !['test subscriber', 'customer', 'property owner', 'none', 'null', 'undefined'].includes(rawPassedName.toLowerCase()))
       ? rawPassedName
-      : (isTestCustomerPhone ? defaultTestName : undefined);
-    const ownerName = passedName || (isTestCustomerPhone ? defaultTestName : 'Raja Nayak');
+      : null;
+
+    if (!ownerName && env.NODE_ENV === 'production') {
+      throw new AppError('A verified owner_name is required before placing outbound calls in production', 400);
+    }
+
     let propertyLocation = (data.property_location || data.address || '').trim() || null;
-    if (propertyLocation === 'Delhi, 110011, burari, sant nagar') {
+    if (propertyLocation && ['delhi, 110011, burari, sant nagar', 'none', 'null', 'undefined'].includes(propertyLocation.toLowerCase())) {
       propertyLocation = null;
     }
 
@@ -127,20 +147,11 @@ export class RealEstateCallService {
         propertyLocation = (propRes.rows[0].sector_or_location || propRes.rows[0].project_or_society || '').trim() || null;
       }
     }
-    if (!propertyLocation) {
-      propertyLocation = 'DLF Phase 5, Sector 54, Gurgaon';
-    }
 
     if (existingLead.rows.length > 0) {
-      const currentName = existingLead.rows[0].owner_name || '';
-      const nameToUpdate = passedName || (isTestCustomerPhone || currentName.toLowerCase().includes('radha') ? defaultTestName : null);
       const upd = await query(
         `UPDATE real_estate_leads
-         SET owner_name = CASE
-               WHEN $1::text IS NOT NULL THEN $1::text
-               WHEN LOWER(owner_name) LIKE '%radha%' THEN 'Raja Nayak'
-               ELSE owner_name
-             END,
+         SET owner_name = COALESCE($1, owner_name),
              preferred_language = $2,
              notes = COALESCE($3, notes),
              total_attempts = COALESCE(total_attempts, 0) + 1,
@@ -148,7 +159,7 @@ export class RealEstateCallService {
              updated_at = NOW()
          WHERE id = $4
          RETURNING *`,
-        [nameToUpdate, cleanLang, data.notes || 'Developer Test Call', existingLead.rows[0].id]
+        [ownerName, cleanLang, data.notes || 'Developer Test Call', existingLead.rows[0].id]
       );
       lead = upd.rows[0];
     } else {
@@ -156,7 +167,7 @@ export class RealEstateCallService {
         `INSERT INTO real_estate_leads (owner_name, phone, preferred_language, notes, total_attempts, max_attempts, last_called_at)
          VALUES ($1, $2, $3, $4, 1, 3, NOW())
          RETURNING *`,
-        [ownerName, normalizedPhone, cleanLang, data.notes || 'Developer Test Call']
+        [ownerName || 'Property Owner', normalizedPhone, cleanLang, data.notes || 'Developer Test Call']
       );
       lead = ins.rows[0];
     }
@@ -194,6 +205,27 @@ export class RealEstateCallService {
     }
     const lead = leadRes.rows[0];
 
+    if (!lead.phone) {
+      throw new AppError('Real estate lead phone number is required', 400);
+    }
+
+    // Production compliance check: TRAI Calling Hours (09:00 AM - 08:00 PM IST) and DND suppression
+    if (env.NODE_ENV === 'production') {
+      const hoursCheck = complianceService.isWithinCallingHours();
+      if (!hoursCheck.allowed) {
+        throw new AppError(hoursCheck.reason!, 403);
+      }
+      const dndCheck = await complianceService.isDndSuppressed(lead.phone);
+      if (dndCheck.suppressed) {
+        throw new AppError(dndCheck.reason!, 403);
+      }
+    }
+
+    const rawOwnerName = (lead.owner_name || '').trim();
+    if (env.NODE_ENV === 'production' && (!rawOwnerName || ['property owner', 'test subscriber', 'customer', 'none', 'null'].includes(rawOwnerName.toLowerCase()))) {
+      throw new AppError(`Lead ${leadId} requires a verified owner name before placing an outbound call`, 400);
+    }
+
     const callId = randomUUID();
     const roomName = `re-call-${callId}`;
 
@@ -224,12 +256,9 @@ export class RealEstateCallService {
       `SELECT sector_or_location, project_or_society FROM real_estate_properties WHERE lead_id = $1 ORDER BY created_at DESC LIMIT 1`,
       [leadId]
     );
-    let propertyLocation = propRes.rows.length > 0
+    const propertyLocation = propRes.rows.length > 0
       ? (propRes.rows[0].sector_or_location || propRes.rows[0].project_or_society || '').trim() || null
       : null;
-    if (!propertyLocation) {
-      propertyLocation = 'DLF Phase 5, Sector 54, Gurgaon';
-    }
 
     this.executeOutboundWorkflow(callId, lead, roomName, propertyLocation).catch((err) => {
       logger.error({ err, callId }, 'Unhandled error in real estate outbound call workflow');
@@ -243,28 +272,37 @@ export class RealEstateCallService {
    */
   private async executeOutboundWorkflow(callId: string, lead: any, roomName: string, propertyLocation?: string | null) {
     try {
-      await this.roomService.createRoom({ name: roomName, emptyTimeout: 300 });
+      const rawLeadName = (lead.owner_name || '').trim();
+      const safeLeadName = (rawLeadName && !['property owner', 'test subscriber', 'customer', 'none', 'null'].includes(rawLeadName.toLowerCase()))
+        ? rawLeadName
+        : null;
+
+      const effectiveLocation = (propertyLocation || '').trim() || null;
+
+      const metaPayload = JSON.stringify({
+        callId,
+        leadId: lead.id,
+        ownerName: safeLeadName,
+        phone: lead.phone,
+        preferredLanguage: lead.preferred_language || 'hi',
+        direction: 'outbound',
+        propertyLocation: effectiveLocation,
+      });
+
+      await this.roomService.createRoom({
+        name: roomName,
+        emptyTimeout: 300,
+        metadata: metaPayload,
+      });
 
       const agentName = env.REAL_ESTATE_AGENT_NAME || 'my-estate-finder-agent';
-      logger.info({ roomName, agentName }, 'Creating real estate agent dispatch');
-
-      const rawLeadName = lead.owner_name || '';
-      const safeLeadName = (lead.phone?.includes('8658250208') || rawLeadName.toLowerCase().includes('radha') || rawLeadName === 'Test Subscriber' || !rawLeadName)
-        ? 'Raja Nayak'
-        : (rawLeadName || 'Raja Nayak');
-
-      const effectiveLocation = (propertyLocation || '').trim() || 'DLF Phase 5, Sector 54, Gurgaon';
+      logger.info(
+        { callId, roomName, agentName, phone: lead.phone, owner: safeLeadName, location: effectiveLocation },
+        `📞 [CALL DISPATCH] Room: ${roomName} | Agent: ${agentName} | Lead: ${safeLeadName || 'Owner'} (${lead.phone})`
+      );
 
       await this.dispatchClient.createDispatch(roomName, agentName, {
-        metadata: JSON.stringify({
-          callId,
-          leadId: lead.id,
-          ownerName: safeLeadName,
-          phone: lead.phone,
-          preferredLanguage: lead.preferred_language || 'hi',
-          direction: 'outbound',
-          propertyLocation: effectiveLocation,
-        }),
+        metadata: metaPayload,
       });
 
       if (!env.SIP_OUTBOUND_TRUNK_ID) {
@@ -275,7 +313,7 @@ export class RealEstateCallService {
       const callerId = env.SIP_CALLER_ID || undefined;
 
       await query("UPDATE calls SET status = 'dialing', call_status = 'dialing' WHERE id = $1", [callId]);
-      logger.info({ callId, phone: dialablePhone }, 'Dispatching Exotel SIP call for Real Estate...');
+      logger.info({ callId, phone: dialablePhone, trunk: env.SIP_OUTBOUND_TRUNK_ID }, `📞 [DIALING CARRIER] Dials: ${dialablePhone} via Exotel trunk`);
 
       const participant = await this.sipClient.createSipParticipant(
         env.SIP_OUTBOUND_TRUNK_ID,
@@ -283,14 +321,16 @@ export class RealEstateCallService {
         roomName,
         {
           participantIdentity: `phone-${dialablePhone.replace(/[^0-9]/g, '')}`,
-          participantName: safeLeadName,
+          participantName: safeLeadName || undefined,
           fromNumber: callerId,
+          ringingTimeout: 65,      // Server-side SIP 65s ringing timeout enforced by LiveKit gateway
+          maxCallDuration: 900,    // Server-side SIP 15-minute max call duration
           waitUntilAnswered: false,
         } as any
       );
 
       await query('UPDATE calls SET sip_call_id = $1 WHERE id = $2', [participant.sipCallId || null, callId]);
-      logger.info({ callId, sipCallId: participant.sipCallId }, 'Real estate call placed to carrier!');
+      logger.info({ callId, sipCallId: participant.sipCallId, phone: dialablePhone }, `📞 [RINGING] Carrier accepted call leg | SIP ID: ${participant.sipCallId || 'N/A'}`);
     } catch (err: any) {
       let mappedStatus = 'failed';
       let failureReason = err.message || 'Call placement failed';
@@ -348,6 +388,7 @@ IMPORTANT RULES:
 - ONLY extract category ("residential" or "commercial") and intent ("sale" or "lease") if the CUSTOMER explicitly stated or confirmed them.
 - If the customer never stated or confirmed whether it is residential or commercial, set "category": null.
 - If the customer never stated or confirmed whether they want to sell or rent, set "intent": null.
+- If the customer says they are not interested, no, or refused ("Nahi", "nahi ji", "not interested"), set "intent": null, "category": null, "immediate_occupancy": null, "is_currently_leased": null.
 - DO NOT assume or guess based on what the agent asked.
 Return ONLY valid JSON matching this exact schema:
 {
@@ -422,6 +463,14 @@ ${dialogueText.slice(0, 4000)}`;
     // 2. Deterministic Rule-Based Fallback Parser (Ensures extraction even if LLM fails or is offline)
     const lowerText = dialogueText.toLowerCase();
 
+    // Isolate customer turns to avoid falsely matching keywords from agent greeting/questions
+    const customerTurns = turns.filter((t) => {
+      const r = (t.role || '').toLowerCase();
+      return r === 'customer' || r === 'user' || r === 'client' || r === 'speaker_1';
+    });
+    const customerText = customerTurns.map((t) => t.text || t.message || '').join(' ').toLowerCase();
+    const isCustomerRefused = /nahi|nahi ji|not interested|dont want|don't want|mana|wrong number|wrong person|no thanks|never/i.test(customerText);
+
     // Owner Name: "मेरा नाम मयंक ओझा है" or "naam Mayank"
     if (!result.owner_name_confirmed) {
       const nameMatch = dialogueText.match(/(?:मेरा नाम(?: है)?|नाम है|name is|i am)\s+([A-Za-z\u0900-\u097F\s]{2,30}?)(?=[।.,\n]|$)/i);
@@ -430,53 +479,70 @@ ${dialogueText.slice(0, 4000)}`;
       }
     }
 
-    // Commercial Type (Office Space, Retail Shop, Showroom, Warehouse, etc.)
-    if (!result.commercial_type) {
-      if (lowerText.includes('office space') || lowerText.includes('ऑफिस स्पेस') || lowerText.includes('office')) {
+    // Commercial Type (Office Space, Retail Shop, Showroom, Warehouse, etc.) - Only if stated by customer or explicit in dialogue
+    if (!result.commercial_type && !isCustomerRefused) {
+      if (customerText.includes('office space') || customerText.includes('ऑफिस स्पेस') || customerText.includes('office')) {
         result.commercial_type = 'office space';
         result.category = 'commercial';
-      } else if (lowerText.includes('retail shop') || lowerText.includes('shop') || lowerText.includes('दुकान')) {
+      } else if (customerText.includes('retail shop') || customerText.includes('shop') || customerText.includes('दुकान')) {
         result.commercial_type = 'retail shop';
         result.category = 'commercial';
-      } else if (lowerText.includes('showroom') || lowerText.includes('शोरूम')) {
+      } else if (customerText.includes('showroom') || customerText.includes('शोरूम')) {
         result.commercial_type = 'showroom';
         result.category = 'commercial';
-      } else if (lowerText.includes('warehouse') || lowerText.includes('godown') || lowerText.includes('गोदाम')) {
+      } else if (customerText.includes('warehouse') || customerText.includes('godown') || customerText.includes('गोदाम')) {
         result.commercial_type = 'warehouse';
         result.category = 'commercial';
       }
     }
 
-    // Category
-    if (!result.category) {
+    // Category - ONLY from customer speech if not refused
+    if (!result.category && !isCustomerRefused && customerText) {
       if (
-        lowerText.includes('कमर्शियल') ||
-        lowerText.includes('commercial') ||
-        lowerText.includes('office') ||
-        lowerText.includes('ऑफिस') ||
-        lowerText.includes('shop') ||
-        lowerText.includes('retail') ||
-        lowerText.includes('showroom') ||
+        customerText.includes('कमर्शियल') ||
+        customerText.includes('commercial') ||
+        customerText.includes('office') ||
+        customerText.includes('ऑफिस') ||
+        customerText.includes('shop') ||
+        customerText.includes('retail') ||
+        customerText.includes('showroom') ||
         result.commercial_type
       ) {
         result.category = 'commercial';
       } else if (
-        lowerText.includes('रेजिडेंशियल') ||
-        lowerText.includes('रेसिडेंशियल') ||
-        lowerText.includes('residential') ||
-        lowerText.includes('flat') ||
-        lowerText.includes('bhk') ||
-        lowerText.includes('apartment')
+        customerText.includes('रेजिडेंशियल') ||
+        customerText.includes('रेसिडेंशियल') ||
+        customerText.includes('residential') ||
+        customerText.includes('flat') ||
+        customerText.includes('bhk') ||
+        customerText.includes('apartment')
       ) {
         result.category = 'residential';
       }
     }
 
-    // Intent
-    if (!result.intent) {
-      if (lowerText.includes('रेंट') || lowerText.includes('rent') || lowerText.includes('किराए') || lowerText.includes('lease')) {
+    // Intent - ONLY if explicitly stated by customer (never inferred from agent's question)
+    if (!result.intent && !isCustomerRefused && customerText) {
+      if (
+        customerText.includes('रेंट पर') ||
+        customerText.includes('किराए पर') ||
+        customerText.includes('rent par') ||
+        customerText.includes('for rent') ||
+        customerText.includes('lease par') ||
+        customerText.includes('rent pe') ||
+        customerText.includes('kiraye pe') ||
+        customerText.includes('to rent') ||
+        customerText.includes('for lease')
+      ) {
         result.intent = 'lease';
-      } else if (lowerText.includes('सेल') || lowerText.includes('बेचना') || lowerText.includes('sell') || lowerText.includes('sale')) {
+      } else if (
+        customerText.includes('सेल करना') ||
+        customerText.includes('बेचना') ||
+        customerText.includes('bechna') ||
+        customerText.includes('sell karna') ||
+        customerText.includes('for sale') ||
+        customerText.includes('to sell')
+      ) {
         result.intent = 'sale';
       }
     }
@@ -533,6 +599,52 @@ ${dialogueText.slice(0, 4000)}`;
     }
 
     return result;
+  }
+
+  /**
+   * Incrementally appends a dialogue turn to PostgreSQL in real time.
+   * Eliminates data loss if the agent crashes, process is terminated, or network drops.
+   */
+  async appendTurn(callId: string, turn: { role: string; text: string; timestamp?: string }) {
+    const cleanText = (turn.text || '').trim();
+    if (!cleanText) return;
+    const role = turn.role === 'customer' || turn.role === 'user' ? 'customer' : 'assistant';
+    const turnObj = {
+      role,
+      text: cleanText,
+      timestamp: turn.timestamp || new Date().toISOString(),
+    };
+
+    logger.info(
+      { callId, role, text: cleanText },
+      `💬 [DIALOGUE] [${role === 'assistant' ? '🤖 Priya' : '🗣️ Customer'}]: "${cleanText}"`
+    );
+
+    // 1. Atomic JSONB append to calls table and mark answered
+    await query(
+      `UPDATE calls
+       SET transcript = COALESCE(transcript, '[]'::jsonb) || $1::jsonb,
+           status = CASE WHEN status IN ('initiated', 'dialing') THEN 'answered' ELSE status END,
+           call_status = CASE WHEN call_status IN ('initiated', 'dialing') THEN 'answered' ELSE call_status END,
+           answered_at = COALESCE(answered_at, NOW())
+       WHERE id = $2`,
+      [JSON.stringify([turnObj]), callId]
+    );
+
+    // 2. Also ensure real_estate_outcomes records the turn incrementally
+    const callRes = await query('SELECT re_lead_id FROM calls WHERE id = $1', [callId]);
+    const leadId = callRes.rows[0]?.re_lead_id || null;
+
+    await query(
+      `INSERT INTO real_estate_outcomes (
+         call_id, lead_id, final_disposition, transcript
+       )
+       VALUES ($1, $2, 'In Progress', $3::jsonb)
+       ON CONFLICT (call_id)
+       DO UPDATE SET
+         transcript = COALESCE(real_estate_outcomes.transcript, '[]'::jsonb) || $3::jsonb`,
+      [callId, leadId, JSON.stringify([turnObj])]
+    );
   }
 
   /**
@@ -612,12 +724,21 @@ ${dialogueText.slice(0, 4000)}`;
       cleanCategory = 'residential';
       data.commercial_type = undefined;
     } else if (data.category) {
-      cleanCategory = data.category.toLowerCase().includes('comm') ? 'commercial' : 'residential';
+      cleanCategory = data.category.toLowerCase().includes('comm') ? 'commercial' : (data.category.toLowerCase().includes('res') ? 'residential' : null);
     }
 
     let cleanIntent: string | null = null;
     if (data.intent) {
-      cleanIntent = (data.intent.toLowerCase().includes('rent') || data.intent.toLowerCase().includes('lease')) ? 'lease' : 'sale';
+      cleanIntent = (data.intent.toLowerCase().includes('rent') || data.intent.toLowerCase().includes('lease')) ? 'lease' : (data.intent.toLowerCase().includes('sell') || data.intent.toLowerCase().includes('sale') ? 'sale' : null);
+    }
+
+    // If caller explicitly declined / not interested, do NOT keep any hallucinated intent, category or fake defaults
+    const isCustomerNotInterested = data.is_interested === false || /not interested|do not call/i.test(data.final_disposition || '');
+    if (isCustomerNotInterested) {
+      if (!data.bhk_config && !data.commercial_type && !data.expected_sale_price && !data.expected_monthly_rent) {
+        cleanIntent = null;
+        cleanCategory = null;
+      }
     }
 
     // Defensive parsing for numeric area
@@ -741,9 +862,9 @@ ${dialogueText.slice(0, 4000)}`;
             safeFurnishing,
             safePrice,
             safeRent,
-            cleanIsLeased ?? false,
+            cleanIsLeased,
             safeCurrentRent,
-            cleanImmOcc ?? true,
+            cleanImmOcc,
             data.agent_summary || null,
           ]
         );
@@ -755,7 +876,8 @@ ${dialogueText.slice(0, 4000)}`;
     const canonicalDisp: RealEstateCanonicalDisposition = matchRealEstateDisposition(
       data.final_disposition,
       data.duration_seconds,
-      call.status
+      call.status,
+      data.is_interested
     );
 
     // 3. Save real_estate_outcomes (ensure customer dialogue is saved in clean Romanized Hindi)
@@ -816,23 +938,30 @@ ${dialogueText.slice(0, 4000)}`;
 
     // 4. Update call record status
     let mappedStatus = 'completed';
+    let failureReason = (data as any).failure_reason || null;
     if (canonicalDisp === 'Not Connected (No Answer)') {
       mappedStatus = 'no_answer';
+      failureReason = failureReason || 'Dialing timeout: callee did not answer within timeout period';
     } else if (canonicalDisp === 'Wrong Number') {
       mappedStatus = 'failed';
+      failureReason = failureReason || 'Wrong Number';
     }
 
     await query(
       `UPDATE calls
        SET status = $1,
            call_status = $2,
+           failure_reason = COALESCE($10, failure_reason),
            duration_seconds = GREATEST($3, COALESCE(duration_seconds, 0)),
            median_latency_ms = $4,
-           answered_at = COALESCE(answered_at, CASE WHEN $3 > 0 THEN NOW() - ($3 || ' seconds')::interval ELSE NOW() END),
+           answered_at = CASE WHEN $3 > 0 THEN COALESCE(answered_at, NOW() - ($3 || ' seconds')::interval) ELSE NULL END,
            ended_at = NOW(),
            language = COALESCE($6, language),
            initial_language = COALESCE($7, initial_language),
-           language_switched = COALESCE($8, language_switched)
+           language_switched = COALESCE($8, language_switched),
+           recording_url = COALESCE($9, recording_url),
+           recording_download_status = CASE WHEN $9 IS NOT NULL THEN 'done' ELSE recording_download_status END,
+           recording_duration_seconds = COALESCE(recording_duration_seconds, $3)
        WHERE id = $5`,
       [
         mappedStatus,
@@ -843,6 +972,8 @@ ${dialogueText.slice(0, 4000)}`;
         data.language || null,
         data.initial_language || null,
         data.language_switched ?? null,
+        data.recording_url || null,
+        failureReason,
       ]
     );
 
@@ -870,6 +1001,19 @@ ${dialogueText.slice(0, 4000)}`;
         [leadStatus, canonicalDisp, safeOwnerConfirmed || null, leadId]
       );
     }
+
+    logger.info(
+      {
+        callId,
+        owner: safeOwnerConfirmed || 'N/A',
+        disposition: canonicalDisp,
+        durationSeconds: data.duration_seconds || 0,
+        recordingUrl: data.recording_url || null,
+        propertyCategory: cleanCategory || 'N/A',
+        propertyIntent: cleanIntent || 'N/A',
+      },
+      `📞 [CALL COMPLETED] ID: ${callId} | Disposition: ${canonicalDisp} | Duration: ${data.duration_seconds || 0}s | Recording: ${data.recording_url ? 'Available' : 'None'}`
+    );
 
     return outcomeRes.rows[0];
   }

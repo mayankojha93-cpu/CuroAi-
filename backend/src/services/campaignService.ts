@@ -1,6 +1,8 @@
 import { pool } from '../db/index.js';
 import { logger } from '../config/logger.js';
+import { env } from '../config/env.js';
 import { callService } from './callService.js';
+import { complianceService } from './complianceService.js';
 import {
   CANONICAL_DISPOSITIONS,
   TERMINAL_DISPOSITIONS,
@@ -601,6 +603,15 @@ export class CampaignService {
     const campaign = await this.updateCampaignStatus(campaignId, 'RUNNING');
     const maxConcurrent = campaign.max_concurrent_calls || 5;
 
+    // Production compliance check: TRAI Calling Hours (09:00 AM - 08:00 PM IST)
+    if (env.NODE_ENV === 'production') {
+      const hoursCheck = complianceService.isWithinCallingHours();
+      if (!hoursCheck.allowed) {
+        logger.warn({ campaignId, reason: hoursCheck.reason }, 'Campaign dispatch paused outside TRAI calling hours');
+        return { campaign, dispatchedCount: 0 };
+      }
+    }
+
     // Check currently active calls for this campaign
     const activeRes = await pool.query(
       `SELECT COUNT(*)::int as active_count
@@ -627,6 +638,14 @@ export class CampaignService {
 
       for (const cust of pendingCustomers.rows) {
         try {
+          // Check DND suppression
+          const dnd = await complianceService.isDndSuppressed(cust.phone);
+          if (dnd.suppressed) {
+            logger.info({ customerId: cust.id, phone: cust.phone }, 'Skipping customer on DND suppression list');
+            await pool.query("UPDATE customers SET is_closed = TRUE, current_disposition = 'DO_NOT_CALL' WHERE id = $1", [cust.id]);
+            continue;
+          }
+
           await callService.initiateCall(cust.id);
           dispatchedCount++;
         } catch (err) {

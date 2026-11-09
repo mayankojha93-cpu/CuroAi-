@@ -30,7 +30,7 @@ from src.agent import AirtelAgent
 from src.carrier_filter import classify_carrier_message
 from src.transliteration import romanize_hindi
 from src.tools import AgentTools
-from src.utils import silence_watchdog, clean_hangup
+from src.utils import silence_watchdog, clean_hangup, RoomAudioRecorder
 from src.tools.api import post_outcome_to_backend, register_inbound_call_to_backend
 
 server = AgentServer()
@@ -228,6 +228,8 @@ async def entrypoint(ctx: agents.JobContext):
         direction=direction,
     )
 
+    recorder = RoomAudioRecorder(call_id=call_id) if call_id else None
+
     # Timing metrics and silence watchdog tracking
     timing_tracker = {
         "stt_final": 0.0,
@@ -283,6 +285,10 @@ async def entrypoint(ctx: agents.JobContext):
         if state.outcome_posted and not force:
             return
         try:
+            if recorder:
+                rec_url = await recorder.stop()
+                if rec_url:
+                    setattr(state, "recording_url", rec_url)
             if await asyncio.to_thread(post_outcome_to_backend, state):
                 state.outcome_posted = True
         except Exception as e:
@@ -642,6 +648,8 @@ async def entrypoint(ctx: agents.JobContext):
     #    pipeline is ready (no extra await between start and say, no work left to do before the first word).
     await session.start(room=ctx.room, agent=agent)
     logger.info("Agent session active in room.")
+    if recorder:
+        await recorder.start(ctx.room)
 
     logger.info(f"Speaking opening line ({direction}): {opening_line}")
     state.add_transcript("assistant", opening_line)

@@ -62,6 +62,14 @@ const envSchema = z.object({
   // Recording storage: local path for downloaded audio files (swap for S3/GCS bucket URL in prod)
   RECORDING_STORAGE_DIR: z.string().optional().default(''),
 
+  // S3 / Object Storage for LiveKit Cloud Egress
+  S3_BUCKET: z.string().optional().default(''),
+  S3_REGION: z.string().optional().default(''),
+  S3_ENDPOINT: z.string().optional().default(''),
+  AWS_ACCESS_KEY_ID: z.string().optional().default(''),
+  AWS_SECRET_ACCESS_KEY: z.string().optional().default(''),
+  LIVEKIT_EGRESS_ENABLED: z.string().optional().default('auto'),
+
   // AI Providers
   SARVAM_API_KEY: z.string().optional().default(''),
   GROQ_API_KEY: z.string().optional().default(''),

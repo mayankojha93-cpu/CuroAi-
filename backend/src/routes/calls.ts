@@ -11,7 +11,8 @@ import { callService } from '../services/callService.js';
 import { realEstateCallService } from '../services/realEstateCallService.js';
 import { validateRequest } from '../middleware/validate.js';
 import { parseCsvToLeads } from '../utils/csvParser.js';
-import { processCallRecording } from '../services/recordingDownloader.js';
+import { processCallRecording, getRecordingsDir } from '../services/recordingDownloader.js';
+import { s3Service } from '../services/s3Service.js';
 
 export const callsRouter = Router();
 
@@ -131,11 +132,11 @@ callsRouter.post(
 
       if (isRealEstateScript) {
         const rawLoc = (req.body.property_location || req.body.address || '').trim();
-        const propertyLocation = (rawLoc && rawLoc !== 'Delhi, 110011, burari, sant nagar')
+        const propertyLocation = (rawLoc && !['delhi, 110011, burari, sant nagar', 'none', 'null', 'undefined'].includes(rawLoc.toLowerCase()))
           ? rawLoc
-          : 'DLF Phase 5, Sector 54, Gurgaon';
+          : undefined;
         const rawName = (req.body.customer_name || req.body.name || '').trim();
-        const ownerName = (rawName && rawName !== 'Test Subscriber') ? rawName : undefined;
+        const ownerName = (rawName && !['test subscriber', 'property owner', 'customer', 'none', 'null', 'undefined'].includes(rawName.toLowerCase())) ? rawName : undefined;
 
         const { call, lead } = await realEstateCallService.initiateTestCall({
           phone: req.body.phone,
@@ -145,6 +146,12 @@ callsRouter.post(
           address: propertyLocation,
           notes: `Test Call: ${req.body.script || 'My Estate Finder'}${propertyLocation ? ` | Location: ${propertyLocation}` : ''}`,
         });
+
+        logger.info(
+          { callId: call.id, phone: lead.phone, owner: lead.owner_name, location: propertyLocation, room: call.room_name },
+          `📞 [TEST CALL INITIATED] ID: ${call.id} | Dialing: ${lead.phone} | Lead: ${lead.owner_name || 'Owner'} | Location: ${propertyLocation || 'Unspecified'}`
+        );
+
         return res.status(201).json({
           success: true,
           message: `Test call placed successfully to ${lead.phone} via My Estate Finder Agent`,
@@ -348,26 +355,7 @@ callsRouter.get(
   }
 );
 
-// Helper to locate recordings directory across root or backend cwd
-function getRecordingsDir(): string {
-  if (env.RECORDING_STORAGE_DIR && fs.existsSync(env.RECORDING_STORAGE_DIR)) {
-    return env.RECORDING_STORAGE_DIR;
-  }
-  const candidates = [
-    path.resolve(process.cwd(), 'recordings'),
-    path.resolve(process.cwd(), '../recordings'),
-    path.resolve(__dirname, '../../../recordings'),
-    path.resolve(__dirname, '../../recordings'),
-  ];
-  for (const dir of candidates) {
-    if (fs.existsSync(dir)) return dir;
-  }
-  const fallback = path.resolve(process.cwd(), 'recordings');
-  fs.mkdirSync(fallback, { recursive: true });
-  return fallback;
-}
-
-// GET /api/calls/:id/audio - Stream seekable audio recording for playback
+// GET /api/calls/:id/audio - Stream seekable audio recording or download from AWS S3 / local cache
 callsRouter.get('/api/calls/:id/audio', async (req: Request<{ id: string }>, res: Response, next: NextFunction) => {
   try {
     const { id: callId } = req.params;
@@ -407,6 +395,60 @@ callsRouter.get('/api/calls/:id/audio', async (req: Request<{ id: string }>, res
       }
     }
 
+    const isDownload = req.query.download === 'true' || req.query.download === '1';
+    const isProxy = req.query.stream === 'proxy' || req.query.proxy === 'true';
+
+    // 1. Check AWS S3 first if configured
+    if (s3Service.isConfigured()) {
+      try {
+        const s3Info = await s3Service.checkRecordingExists(callId);
+        if (s3Info.exists && s3Info.s3Key) {
+          // Auto-sync database record
+          if (call.recording_url !== `/api/calls/${callId}/audio` || call.recording_download_status !== 'done') {
+            await query(
+              `UPDATE calls SET recording_url = $1, recording_download_status = 'done' WHERE id = $2`,
+              [`/api/calls/${callId}/audio`, callId]
+            ).catch(() => {});
+          }
+
+          if (isDownload) {
+            if (isProxy) {
+              const s3StreamInfo = await s3Service.getS3Stream(s3Info.s3Key);
+              res.setHeader('Content-Type', s3Info.contentType || 'audio/mpeg');
+              res.setHeader('Content-Disposition', `attachment; filename="call-${callId}.mp3"`);
+              if (s3StreamInfo.contentLength) {
+                res.setHeader('Content-Length', s3StreamInfo.contentLength);
+              }
+              return s3StreamInfo.stream.pipe(res);
+            }
+            const downloadUrl = await s3Service.getPresignedDownloadUrl(s3Info.s3Key, `call-${callId}.mp3`);
+            return res.redirect(downloadUrl);
+          }
+
+          // Browser Audio Player (<audio> element)
+          if (isProxy) {
+            const s3StreamInfo = await s3Service.getS3Stream(s3Info.s3Key, req.headers.range);
+            res.status(s3StreamInfo.statusCode);
+            res.setHeader('Content-Type', s3StreamInfo.contentType);
+            res.setHeader('Accept-Ranges', 'bytes');
+            if (s3StreamInfo.contentRange) {
+              res.setHeader('Content-Range', s3StreamInfo.contentRange);
+            }
+            if (s3StreamInfo.contentLength) {
+              res.setHeader('Content-Length', s3StreamInfo.contentLength);
+            }
+            return s3StreamInfo.stream.pipe(res);
+          }
+
+          const playbackUrl = await s3Service.getPresignedPlaybackUrl(s3Info.s3Key);
+          return res.redirect(playbackUrl);
+        }
+      } catch (s3Err: any) {
+        logger.warn({ callId, err: s3Err.message }, 'Failed reading recording from S3, falling back to local storage');
+      }
+    }
+
+    // 2. Check local disk fallback
     const storageDir = getRecordingsDir();
     const possibleFiles = [
       path.join(storageDir, `${callId}.mp3`),
@@ -416,56 +458,81 @@ callsRouter.get('/api/calls/:id/audio', async (req: Request<{ id: string }>, res
     let filePath: string | null = null;
     for (const f of possibleFiles) {
       if (fs.existsSync(f)) {
-        filePath = f;
-        break;
+        try {
+          const sz = fs.statSync(f).size;
+          if (sz > 44) {
+            filePath = f;
+            break;
+          }
+        } catch {}
       }
     }
 
-    if (!filePath) {
-      const recUrl = callRes.rows[0].recording_url;
-      // If already a remote CDN URL, redirect to it
-      if (recUrl && (recUrl.startsWith('http://') || recUrl.startsWith('https://')) && !recUrl.includes('/api/calls/')) {
-        return res.redirect(recUrl);
+    if (filePath) {
+      const isWav = filePath.toLowerCase().endsWith('.wav');
+      const contentType = isWav ? 'audio/wav' : 'audio/mpeg';
+
+      // Auto-upload local recording to AWS S3 in background if S3 is configured
+      if (s3Service.isConfigured()) {
+        const s3Key = s3Service.getKeyForCall(callId, isWav ? 'wav' : 'mp3');
+        s3Service.uploadFile(filePath, s3Key, contentType, { 'call-id': callId }).catch((e) => {
+          logger.warn({ callId, err: e.message }, 'Background upload of local recording to S3 failed');
+        });
       }
-      return res.status(404).json({
-        error: 'Recording audio file is still being processed or unavailable',
-        status: callRes.rows[0].recording_download_status || 'pending',
-      });
+
+      // Auto-sync database record if audio exists
+      if (call.recording_url !== `/api/calls/${callId}/audio` || call.recording_download_status !== 'done') {
+        await query(`UPDATE calls SET recording_url = $1, recording_download_status = 'done' WHERE id = $2`, [`/api/calls/${callId}/audio`, callId]).catch(() => {});
+      }
+
+      const stat = fs.statSync(filePath);
+      const fileSize = stat.size;
+
+      if (isDownload) {
+        res.setHeader('Content-Disposition', `attachment; filename="call-${callId}.${isWav ? 'wav' : 'mp3'}"`);
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Length', fileSize);
+        return fs.createReadStream(filePath).pipe(res);
+      }
+
+      const range = req.headers.range;
+
+      // HTTP 206 Partial Content for seekable playback in browser audio players
+      if (range) {
+        const parts = range.replace(/bytes=/, '').split('-');
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+        const chunksize = end - start + 1;
+        const file = fs.createReadStream(filePath, { start, end });
+        const head = {
+          'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': chunksize,
+          'Content-Type': contentType,
+        };
+        res.writeHead(206, head);
+        return file.pipe(res);
+      } else {
+        const head = {
+          'Content-Length': fileSize,
+          'Content-Type': contentType,
+          'Accept-Ranges': 'bytes',
+        };
+        res.writeHead(200, head);
+        return fs.createReadStream(filePath).pipe(res);
+      }
     }
 
-    // Auto-sync database record if audio exists
-    if (callRes.rows[0].recording_url !== `/api/calls/${callId}/audio` || callRes.rows[0].recording_download_status !== 'done') {
-      await query(`UPDATE calls SET recording_url = $1, recording_download_status = 'done' WHERE id = $2`, [`/api/calls/${callId}/audio`, callId]).catch(() => {});
+    // 3. Fallback to external URL if recorded remotely (e.g. direct Exotel URL)
+    const recUrl = call.recording_url;
+    if (recUrl && (recUrl.startsWith('http://') || recUrl.startsWith('https://')) && !recUrl.includes('/api/calls/')) {
+      return res.redirect(recUrl);
     }
 
-    const stat = fs.statSync(filePath);
-    const fileSize = stat.size;
-    const range = req.headers.range;
-
-    // HTTP 206 Partial Content for seekable playback in browser audio players
-    if (range) {
-      const parts = range.replace(/bytes=/, '').split('-');
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-      const chunksize = end - start + 1;
-      const file = fs.createReadStream(filePath, { start, end });
-      const head = {
-        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-        'Accept-Ranges': 'bytes',
-        'Content-Length': chunksize,
-        'Content-Type': 'audio/mpeg',
-      };
-      res.writeHead(206, head);
-      file.pipe(res);
-    } else {
-      const head = {
-        'Content-Length': fileSize,
-        'Content-Type': 'audio/mpeg',
-        'Accept-Ranges': 'bytes',
-      };
-      res.writeHead(200, head);
-      fs.createReadStream(filePath).pipe(res);
-    }
+    return res.status(404).json({
+      error: 'Recording audio file is still being processed or unavailable',
+      status: call.recording_download_status || 'pending',
+    });
   } catch (err) {
     return next(err);
   }

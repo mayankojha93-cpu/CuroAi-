@@ -8,7 +8,8 @@ import {
   RefreshCw, 
   ChevronDown,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  Volume2
 } from 'lucide-react';
 import type { CallRecord } from '../../types';
 import { initiateTestCall, fetchTestCallHistory } from '../../services/api.service';
@@ -262,8 +263,8 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
     const s = (status || '').toUpperCase();
     const d = (disposition || '').toUpperCase();
 
-    // 1. Qualified Lead
-    if (d.includes('QUALIFIED')) {
+    // 1. Call Completed / Successful
+    if (s === 'COMPLETED' || s === 'SUCCESSFUL' || s === 'ANSWERED') {
       return (
         <span style={{
           display: 'inline-block',
@@ -272,130 +273,16 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
           fontSize: '0.68rem',
           fontWeight: 700,
           letterSpacing: '0.04em',
-          background: 'rgba(16, 185, 129, 0.15)',
-          border: '1px solid rgba(16, 185, 129, 0.35)',
+          background: 'rgba(16, 185, 129, 0.12)',
+          border: '1px solid rgba(16, 185, 129, 0.28)',
           color: '#10B981',
         }}>
-          QUALIFIED
+          COMPLETED
         </span>
       );
     }
 
-    // 2. Advisor Callback Booked
-    if (d.includes('ADVISOR')) {
-      return (
-        <span style={{
-          display: 'inline-block',
-          padding: '4px 10px',
-          borderRadius: 4,
-          fontSize: '0.68rem',
-          fontWeight: 700,
-          letterSpacing: '0.04em',
-          background: 'rgba(168, 85, 247, 0.15)',
-          border: '1px solid rgba(168, 85, 247, 0.35)',
-          color: '#C084FC',
-        }}>
-          ADVISOR
-        </span>
-      );
-    }
-
-    // 3. Schedule Callback
-    if (d.includes('CALLBACK')) {
-      return (
-        <span style={{
-          display: 'inline-block',
-          padding: '4px 10px',
-          borderRadius: 4,
-          fontSize: '0.68rem',
-          fontWeight: 700,
-          letterSpacing: '0.04em',
-          background: 'rgba(56, 189, 248, 0.15)',
-          border: '1px solid rgba(56, 189, 248, 0.35)',
-          color: '#38BDF8',
-        }}>
-          CALLBACK
-        </span>
-      );
-    }
-
-    // 4. WhatsApp Info Requested
-    if (d.includes('WHATSAPP')) {
-      return (
-        <span style={{
-          display: 'inline-block',
-          padding: '4px 10px',
-          borderRadius: 4,
-          fontSize: '0.68rem',
-          fontWeight: 700,
-          letterSpacing: '0.04em',
-          background: 'rgba(6, 182, 212, 0.15)',
-          border: '1px solid rgba(6, 182, 212, 0.35)',
-          color: '#22D3EE',
-        }}>
-          WHATSAPP
-        </span>
-      );
-    }
-
-    // 5. Not Interested
-    if (d.includes('NOT INTERESTED')) {
-      return (
-        <span style={{
-          display: 'inline-block',
-          padding: '4px 10px',
-          borderRadius: 4,
-          fontSize: '0.68rem',
-          fontWeight: 700,
-          letterSpacing: '0.04em',
-          background: 'rgba(148, 163, 184, 0.15)',
-          border: '1px solid rgba(148, 163, 184, 0.35)',
-          color: '#94A3B8',
-        }}>
-          NOT INTERESTED
-        </span>
-      );
-    }
-
-    // 6. Do Not Call
-    if (d.includes('DO NOT CALL') || d.includes('DNC')) {
-      return (
-        <span style={{
-          display: 'inline-block',
-          padding: '4px 10px',
-          borderRadius: 4,
-          fontSize: '0.68rem',
-          fontWeight: 700,
-          letterSpacing: '0.04em',
-          background: 'rgba(244, 63, 94, 0.15)',
-          border: '1px solid rgba(244, 63, 94, 0.35)',
-          color: '#FB7185',
-        }}>
-          DO NOT CALL
-        </span>
-      );
-    }
-
-    // 7. Wrong Number
-    if (d.includes('WRONG NUMBER')) {
-      return (
-        <span style={{
-          display: 'inline-block',
-          padding: '4px 10px',
-          borderRadius: 4,
-          fontSize: '0.68rem',
-          fontWeight: 700,
-          letterSpacing: '0.04em',
-          background: 'rgba(249, 115, 22, 0.15)',
-          border: '1px solid rgba(249, 115, 22, 0.35)',
-          color: '#FB923C',
-        }}>
-          WRONG NUMBER
-        </span>
-      );
-    }
-
-    // 8. No Answer
+    // 2. No Answer
     if (s === 'NO_ANSWER' || s === 'NO ANSWER' || d.includes('NO ANSWER')) {
       return (
         <span style={{
@@ -414,23 +301,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
       );
     }
 
-    if (s === 'COMPLETED' || s === 'SUCCESSFUL' || s === 'ANSWERED' || d.includes('GOAL') || d.includes('PICKUP')) {
-      return (
-        <span style={{
-          display: 'inline-block',
-          padding: '4px 10px',
-          borderRadius: 4,
-          fontSize: '0.68rem',
-          fontWeight: 700,
-          letterSpacing: '0.04em',
-          background: 'rgba(16, 185, 129, 0.12)',
-          border: '1px solid rgba(16, 185, 129, 0.28)',
-          color: '#10B981',
-        }}>
-          COMPLETED
-        </span>
-      );
-    }
+    // 3. Busy
     if (s === 'BUSY') {
       return (
         <span style={{
@@ -445,6 +316,44 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
           color: '#EF4444',
         }}>
           BUSY
+        </span>
+      );
+    }
+
+    // 4. Failed
+    if (s === 'FAILED') {
+      return (
+        <span style={{
+          display: 'inline-block',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.68rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          background: 'rgba(239, 68, 68, 0.12)',
+          border: '1px solid rgba(239, 68, 68, 0.28)',
+          color: '#EF4444',
+        }}>
+          FAILED
+        </span>
+      );
+    }
+
+    // 5. Dialing / Initiated
+    if (s === 'DIALING' || s === 'INITIATED') {
+      return (
+        <span style={{
+          display: 'inline-block',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.68rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          background: 'rgba(56, 189, 248, 0.12)',
+          border: '1px solid rgba(56, 189, 248, 0.28)',
+          color: '#38BDF8',
+        }}>
+          DIALING
         </span>
       );
     }
@@ -734,9 +643,8 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
 
               {/* Field: Property Location */}
               <div>
-                <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.82rem', color: isRealEstate ? '#38BDF8' : '#94A3B8', fontWeight: 600, marginBottom: 8 }}>
-                  <span>Property Location / Sector</span>
-                  {isRealEstate && <span style={{ color: '#10B981', fontSize: '0.72rem', fontWeight: 500 }}>Sent to Priya</span>}
+                <label style={{ display: 'block', fontSize: '0.82rem', color: isRealEstate ? '#38BDF8' : '#94A3B8', fontWeight: 600, marginBottom: 8 }}>
+                  Property Location / Sector
                 </label>
                 <input
                   type="text"
@@ -1103,9 +1011,9 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                       borderRadius: 10,
                       padding: '16px 20px',
                       display: 'grid',
-                      gridTemplateColumns: '1.5fr 1.7fr 0.8fr 1fr 1.6fr 1.2fr',
+                      gridTemplateColumns: '1.4fr 1.6fr 0.7fr 1fr 1.5fr 1.8fr',
                       alignItems: 'center',
-                      gap: 16,
+                      gap: 14,
                       transition: 'background 0.15s ease',
                     }}
                     onMouseEnter={(e) => {
@@ -1156,8 +1064,60 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                       {rawDisp}
                     </div>
 
-                    {/* Col 6: Transcript button */}
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
+                    {/* Col 6: Actions (Recording & Transcript) */}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
+                      {call.recording_url ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedCallForModal(call);
+                            if (onSelectCall) onSelectCall(call);
+                          }}
+                          title="Listen to Call Recording"
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            background: 'rgba(16, 185, 129, 0.14)',
+                            border: '1px solid rgba(16, 185, 129, 0.35)',
+                            color: '#10B981',
+                            padding: '7px 12px',
+                            borderRadius: 8,
+                            fontSize: '0.82rem',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            transition: 'all 0.15s ease',
+                          }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.background = 'rgba(16, 185, 129, 0.22)';
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.background = 'rgba(16, 185, 129, 0.14)';
+                          }}
+                        >
+                          <Volume2 size={14} />
+                          <span>Recording</span>
+                        </button>
+                      ) : (
+                        <span
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            color: '#64748B',
+                            fontSize: '0.74rem',
+                            padding: '4px 8px',
+                            borderRadius: 6,
+                            background: 'rgba(255, 255, 255, 0.03)',
+                            border: '1px solid rgba(255, 255, 255, 0.05)',
+                          }}
+                          title={call.status === 'NO_ANSWER' ? 'Call was not answered — no audio' : 'No recording available for this call'}
+                        >
+                          <Volume2 size={12} color="#64748B" />
+                          <span>{call.status === 'NO_ANSWER' ? 'No Answer' : 'No Audio'}</span>
+                        </span>
+                      )}
+
                       <button
                         type="button"
                         onClick={() => {
