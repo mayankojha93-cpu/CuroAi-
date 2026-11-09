@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { z } from 'zod';
 import { env } from '../config/env.js';
+import { logger } from '../config/logger.js';
 import { callService } from '../services/callService.js';
 import { realEstateCallService } from '../services/realEstateCallService.js';
 import { query } from '../db/index.js';
@@ -31,6 +32,7 @@ const outcomeSchema = {
     duration_seconds: z.number().nullable().optional(),
     median_latency_ms: z.number().nullable().optional(),
     cost_estimate_inr: z.number().nullable().optional(),
+    failure_reason: z.string().nullable().optional(),
     recording_url: z.string().nullable().optional(),
     language: z.string().nullable().optional(),
     initial_language: z.string().nullable().optional(),
@@ -76,9 +78,29 @@ internalRouter.post(
   }
 );
 
+// POST /internal/real-estate/calls/:callId/turn - Incrementally save turn
+// Also aliased at /internal/calls/:callId/turn
+internalRouter.post(
+  ['/internal/real-estate/calls/:callId/turn', '/internal/calls/:callId/turn'],
+  requireInternalSecret,
+  async (req: Request<{ callId: string }>, res: Response, next: NextFunction) => {
+    try {
+      const { callId } = req.params;
+      const { role, text, timestamp } = req.body;
+      if (!text) {
+        return res.status(400).json({ error: 'Turn text is required' });
+      }
+      await realEstateCallService.appendTurn(callId, { role, text, timestamp });
+      return res.status(200).json({ success: true, message: 'Turn appended' });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
 // POST /internal/real-estate/calls/:callId/answered - Mark call as active/answered
 internalRouter.post(
-  '/internal/real-estate/calls/:callId/answered',
+  ['/internal/real-estate/calls/:callId/answered', '/internal/calls/:callId/answered'],
   requireInternalSecret,
   async (req: Request<{ callId: string }>, res: Response, next: NextFunction) => {
     try {
@@ -91,6 +113,7 @@ internalRouter.post(
          WHERE id = $1 AND status IN ('initiated', 'dialing')`,
         [callId]
       );
+      logger.info({ callId }, `📞 [CALL ANSWERED] Telephony answered by customer | Call ID: ${callId}`);
       return res.status(200).json({ success: true, message: 'Real estate call marked as answered' });
     } catch (err) {
       return next(err);
