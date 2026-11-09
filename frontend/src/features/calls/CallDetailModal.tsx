@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { X, Phone, User, Bot, MessageSquare, Volume2, ShieldAlert } from 'lucide-react';
+import { X, Phone, User, Bot, MessageSquare, Volume2, ShieldAlert, Download } from 'lucide-react';
 import type { CallRecord } from '../../types';
 import { fetchCallDetail } from '../../services/api.service';
 import { cleanEnglishOnly, formatVoicePipelineLabel } from '../../utils/textUtils';
@@ -8,10 +8,14 @@ import { getStoredAuthToken } from '../../context/AuthContext';
 
 // <audio> and <a download> cannot send an Authorization header, so the (now login-protected)
 // recording endpoint receives the JWT as a query parameter.
-const withAuthToken = (url: string): string => {
+const withAuthToken = (url: string, isDownload = false): string => {
   const token = getStoredAuthToken();
-  if (!token) return url;
-  return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
+  const sep = url.includes('?') ? '&' : '?';
+  let res = token ? `${url}${sep}token=${encodeURIComponent(token)}` : url;
+  if (isDownload) {
+    res += `${res.includes('?') ? '&' : '?'}download=true`;
+  }
+  return res;
 };
 
 interface CallDetailModalProps {
@@ -86,17 +90,17 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
   const rawStatus = (activeCall.status || '').toLowerCase();
   const rawDisp = ((activeCall as any).final_disposition || (activeCall as any).call_result || activeCall.call_status || '').toLowerCase();
 
-  let canonicalStatus: 'SUCCESSFUL' | 'FAILED' | 'NO_ANSWER' = 'SUCCESSFUL';
+  let canonicalStatus: 'COMPLETED' | 'FAILED' | 'NO_ANSWER' = 'COMPLETED';
   if (rawStatus === 'no_answer' || rawStatus === 'no answer' || rawDisp.includes('no answer') || rawDisp.includes('timeout') || rawDisp.includes('ringing')) {
     canonicalStatus = 'NO_ANSWER';
-  } else if (rawStatus === 'failed' || rawDisp.includes('dropped') || rawDisp.includes('barrier') || rawDisp.includes('wrong number')) {
+  } else if (rawStatus === 'failed' || rawDisp.includes('dropped') || rawDisp.includes('barrier') || rawDisp.includes('wrong number') || rawDisp.includes('not connected')) {
     canonicalStatus = 'FAILED';
   } else {
-    canonicalStatus = 'SUCCESSFUL';
+    canonicalStatus = 'COMPLETED';
   }
 
   const getStatusBadge = () => {
-    if (canonicalStatus === 'SUCCESSFUL') {
+    if (canonicalStatus === 'COMPLETED') {
       return (
         <span style={{
           background: 'rgba(16, 185, 129, 0.15)',
@@ -108,7 +112,7 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
           fontWeight: 700,
           letterSpacing: '0.04em',
         }}>
-          SUCCESSFUL
+          COMPLETED
         </span>
       );
     }
@@ -322,18 +326,32 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
               /commercial|office|shop|retail|showroom|warehouse|godown/i.test(bhkStr) ||
               /commercial|office space|retail shop/i.test(notesStr)
             );
-            const effectiveCategory = isCommercial ? 'COMMERCIAL' : 'RESIDENTIAL';
+            const isResidential = Boolean(
+              (rawCategory && String(rawCategory).toLowerCase().includes('res')) ||
+              reBhk ||
+              /bhk|flat|apartment|villa|house|floor/i.test(notesStr) ||
+              /bhk|flat|apartment|villa|house|floor/i.test(bhkStr)
+            );
+            const effectiveCategory = isCommercial ? 'COMMERCIAL' : (isResidential ? 'RESIDENTIAL' : null);
 
             return (
               <div style={{
                 background: '#0F1524',
-                border: effectiveCategory === 'COMMERCIAL' ? '1px solid rgba(6, 182, 212, 0.3)' : '1px solid rgba(139, 92, 246, 0.25)',
+                border: effectiveCategory === 'COMMERCIAL'
+                  ? '1px solid rgba(6, 182, 212, 0.3)'
+                  : effectiveCategory === 'RESIDENTIAL'
+                    ? '1px solid rgba(139, 92, 246, 0.25)'
+                    : '1px solid rgba(255, 255, 255, 0.08)',
                 borderRadius: 12,
                 padding: 16,
-                boxShadow: effectiveCategory === 'COMMERCIAL' ? '0 0 25px -5px rgba(6, 182, 212, 0.1)' : '0 0 25px -5px rgba(139, 92, 246, 0.1)',
+                boxShadow: effectiveCategory === 'COMMERCIAL'
+                  ? '0 0 25px -5px rgba(6, 182, 212, 0.1)'
+                  : effectiveCategory === 'RESIDENTIAL'
+                    ? '0 0 25px -5px rgba(139, 92, 246, 0.1)'
+                    : 'none',
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-                  <h4 style={{ fontSize: '0.78rem', color: effectiveCategory === 'COMMERCIAL' ? '#22D3EE' : '#A78BFA', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.05em', margin: 0 }}>
+                  <h4 style={{ fontSize: '0.78rem', color: effectiveCategory === 'COMMERCIAL' ? '#22D3EE' : effectiveCategory === 'RESIDENTIAL' ? '#A78BFA' : '#94A3B8', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.05em', margin: 0 }}>
                     🏡 My Estate Finder — Property Intake Dossier
                   </h4>
                   <div style={{ display: 'flex', gap: 6 }}>
@@ -382,7 +400,9 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
                             || (/shop/i.test(societyStr) || /shop/i.test(notesStr) ? 'retail shop' : null)
                             || (/showroom/i.test(societyStr) ? 'showroom' : null)
                             || 'Commercial Unit')
-                        : (reBhk || 'Residential Property')}
+                        : isResidential
+                          ? (reBhk || 'Residential Property')
+                          : '—'}
                     </span>
                   </div>
                   <div>
@@ -405,16 +425,16 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
                       {(activeCall as any).re_immediate_occupancy === true ? 'Yes' : ((activeCall as any).re_immediate_occupancy === false ? 'No' : '—')}
                     </span>
                   </div>
-                  {(activeCall as any).re_is_currently_leased !== undefined && (activeCall as any).re_is_currently_leased !== null && (
-                    <div>
-                      <span style={{ color: '#94A3B8' }}>Current Lease Status: </span>
-                      <span style={{ color: '#E2E8F0' }}>
-                        {(activeCall as any).re_is_currently_leased
-                          ? `Leased out${(activeCall as any).re_current_rent_received ? ` (${(activeCall as any).re_current_rent_received})` : ''}`
-                          : 'Vacant'}
-                      </span>
-                    </div>
-                  )}
+                  <div>
+                    <span style={{ color: '#94A3B8' }}>Current Lease Status: </span>
+                    <span style={{ color: '#E2E8F0' }}>
+                      {(activeCall as any).re_is_currently_leased === true
+                        ? `Leased out${(activeCall as any).re_current_rent_received ? ` (${(activeCall as any).re_current_rent_received})` : ''}`
+                        : ((activeCall as any).re_is_currently_leased === false
+                          ? 'Vacant'
+                          : '—')}
+                    </span>
+                  </div>
                 </div>
               </div>
             );
@@ -485,7 +505,7 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
                   )}
                 </div>
                 <a
-                  href={withAuthToken(activeCall.recording_url)}
+                  href={withAuthToken(activeCall.recording_url, true)}
                   download={`call-${activeCall.id}.mp3`}
                   target="_blank"
                   rel="noreferrer"
@@ -495,13 +515,15 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
                     textDecoration: 'none',
                     display: 'flex',
                     alignItems: 'center',
-                    gap: 4,
+                    gap: 5,
                     padding: '4px 10px',
                     borderRadius: 6,
                     background: 'rgba(56, 189, 248, 0.1)',
                     border: '1px solid rgba(56, 189, 248, 0.25)',
+                    fontWeight: 600,
                   }}
                 >
+                  <Download size={13} />
                   Download Audio
                 </a>
               </div>
