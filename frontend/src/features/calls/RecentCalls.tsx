@@ -254,11 +254,17 @@ export const RecentCalls: React.FC<RecentCallsProps> = ({ calls, onSelectCall })
                   /commercial|office|shop|retail|showroom|warehouse|godown/i.test(bhkStr) ||
                   /commercial|office space|retail shop/i.test(notesStr)
                 );
-                const reCatDisplay = isComm ? 'Commercial' : 'Residential';
+                const isRes = Boolean(
+                  (rawCat && String(rawCat).toLowerCase().includes('res')) ||
+                  (call as any).re_bhk_config ||
+                  /bhk|flat|apartment|villa|house|floor/i.test(notesStr) ||
+                  /bhk|flat|apartment|villa|house|floor/i.test(bhkStr)
+                );
+                const reCatDisplay = isComm ? 'Commercial' : (isRes ? 'Residential' : null);
 
                 const contactHeader = isRealEstateCall && cleanCustomerName ? cleanCustomerName : (cleanCustomerName || phoneDisplay);
                 const contactSub = isRealEstateCall && cleanCustomerName
-                  ? `${phoneDisplay} • ${cleanProjectSociety || reCatDisplay}`
+                  ? [phoneDisplay, cleanProjectSociety || reCatDisplay].filter(Boolean).join(' • ')
                   : (call.subs_del_no || (call as any).contact_ref || '—');
 
                 const campName = (call as any).campaign_name || (isRealEstateCall ? 'My Estate Finder' : 'Direct Voice Outreach');
