@@ -15,6 +15,7 @@ import http from 'http';
 import { query } from '../db/index.js';
 import { logger } from '../config/logger.js';
 import { env } from '../config/env.js';
+import { s3Service } from './s3Service.js';
 
 interface ExotelCallDetails {
   Call?: {
@@ -129,19 +130,23 @@ export async function fetchExotelRecordingByPhone(phone: string): Promise<{ reco
 }
 
 export function getRecordingsDir(): string {
-  if (env.RECORDING_STORAGE_DIR && fs.existsSync(env.RECORDING_STORAGE_DIR)) {
-    return env.RECORDING_STORAGE_DIR;
+  const envDir = env.RECORDING_STORAGE_DIR;
+  if (envDir) {
+    const direct = path.resolve(process.cwd(), envDir);
+    if (fs.existsSync(direct) && direct !== path.resolve(process.cwd())) return direct;
+    const parent = path.resolve(process.cwd(), '..', envDir);
+    if (fs.existsSync(parent)) return parent;
   }
   const candidates = [
-    path.resolve(process.cwd(), 'recordings'),
     path.resolve(process.cwd(), '../recordings'),
+    path.resolve(process.cwd(), 'recordings'),
     path.resolve(__dirname, '../../../recordings'),
     path.resolve(__dirname, '../../recordings'),
   ];
   for (const dir of candidates) {
     if (fs.existsSync(dir)) return dir;
   }
-  const fallback = path.resolve(process.cwd(), 'recordings');
+  const fallback = path.resolve(process.cwd(), '../recordings');
   fs.mkdirSync(fallback, { recursive: true });
   return fallback;
 }
@@ -179,6 +184,18 @@ export async function saveRecordingLocally(url: string, callId: string): Promise
       file.on('finish', () => {
         file.close();
         logger.info({ callId, filePath }, 'Recording downloaded and saved to storage');
+
+        if (s3Service.isConfigured()) {
+          const s3Key = s3Service.getKeyForCall(callId, 'mp3');
+          s3Service.uploadFile(filePath, s3Key, 'audio/mpeg', { 'call-id': callId })
+            .then(() => {
+              logger.info({ callId, s3Key }, 'Exotel recording saved and uploaded to S3');
+            })
+            .catch((err) => {
+              logger.warn({ callId, err: err.message }, 'Failed to upload downloaded Exotel recording to S3; preserved locally');
+            });
+        }
+
         resolve(streamUrl);
       });
     });
