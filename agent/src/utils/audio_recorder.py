@@ -248,8 +248,56 @@ class RoomAudioRecorder:
         final_file = self.mp3_path if os.path.exists(self.mp3_path) else self.wav_path
         if os.path.exists(final_file) and os.path.getsize(final_file) > 44:
             logger.info(f"📁 Audio recording successfully preserved at {final_file} ({os.path.getsize(final_file)} bytes)")
+            # Asynchronously upload to AWS S3
+            try:
+                await self._upload_to_s3(final_file)
+            except Exception as e:
+                logger.warning(f"S3 upload attempt encountered error: {e}")
             return self.get_stream_url()
         return None
+
+    async def _upload_to_s3(self, file_path: str) -> Optional[str]:
+        """Uploads the finalized call recording to AWS S3 if credentials are configured."""
+        bucket = os.environ.get("S3_BUCKET")
+        access_key = os.environ.get("AWS_ACCESS_KEY_ID")
+        secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
+        region = os.environ.get("S3_REGION", "ap-south-1")
+
+        if not (bucket and access_key and secret_key):
+            return None
+
+        is_mp3 = file_path.endswith(".mp3")
+        content_type = "audio/mpeg" if is_mp3 else "audio/wav"
+        s3_key = f"recordings/{self.call_id}.{'mp3' if is_mp3 else 'wav'}"
+
+        def _sync_upload():
+            try:
+                import boto3
+                from botocore.config import Config
+                s3_client = boto3.client(
+                    "s3",
+                    region_name=region,
+                    aws_access_key_id=access_key,
+                    aws_secret_access_key=secret_key,
+                    config=Config(signature_version="s3v4"),
+                )
+                extra_args = {
+                    "ContentType": content_type,
+                    "Metadata": {"call-id": str(self.call_id)},
+                }
+                s3_client.upload_file(file_path, bucket, s3_key, ExtraArgs=extra_args)
+                return f"https://{bucket}.s3.{region}.amazonaws.com/{s3_key}"
+            except Exception as ex:
+                logger.error(f"boto3 upload_file error: {ex}")
+                raise ex
+
+        try:
+            s3_url = await asyncio.to_thread(_sync_upload)
+            logger.info(f"☁️ Audio recording successfully uploaded to AWS S3: {s3_url} ({s3_key})")
+            return s3_url
+        except Exception as e:
+            logger.warning(f"Failed to upload audio to S3 (preserved locally at {file_path}): {e}")
+            return None
 
     def get_stream_url(self) -> str:
         return f"/api/calls/{self.call_id}/audio"
