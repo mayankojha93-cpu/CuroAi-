@@ -643,9 +643,8 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
 
               {/* Field: Property Location */}
               <div>
-                <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.82rem', color: isRealEstate ? '#38BDF8' : '#94A3B8', fontWeight: 600, marginBottom: 8 }}>
-                  <span>Property Location / Sector</span>
-                  {isRealEstate && <span style={{ color: '#10B981', fontSize: '0.72rem', fontWeight: 500 }}>Sent to Priya</span>}
+                <label style={{ display: 'block', fontSize: '0.82rem', color: isRealEstate ? '#38BDF8' : '#94A3B8', fontWeight: 600, marginBottom: 8 }}>
+                  Property Location / Sector
                 </label>
                 <input
                   type="text"
