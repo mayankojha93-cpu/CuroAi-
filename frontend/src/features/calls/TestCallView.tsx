@@ -263,8 +263,8 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
     const s = (status || '').toUpperCase();
     const d = (disposition || '').toUpperCase();
 
-    // 1. Qualified Lead
-    if (d.includes('QUALIFIED')) {
+    // 1. Call Completed / Successful
+    if (s === 'COMPLETED' || s === 'SUCCESSFUL' || s === 'ANSWERED') {
       return (
         <span style={{
           display: 'inline-block',
@@ -273,130 +273,16 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
           fontSize: '0.68rem',
           fontWeight: 700,
           letterSpacing: '0.04em',
-          background: 'rgba(16, 185, 129, 0.15)',
-          border: '1px solid rgba(16, 185, 129, 0.35)',
+          background: 'rgba(16, 185, 129, 0.12)',
+          border: '1px solid rgba(16, 185, 129, 0.28)',
           color: '#10B981',
         }}>
-          QUALIFIED
+          COMPLETED
         </span>
       );
     }
 
-    // 2. Advisor Callback Booked
-    if (d.includes('ADVISOR')) {
-      return (
-        <span style={{
-          display: 'inline-block',
-          padding: '4px 10px',
-          borderRadius: 4,
-          fontSize: '0.68rem',
-          fontWeight: 700,
-          letterSpacing: '0.04em',
-          background: 'rgba(168, 85, 247, 0.15)',
-          border: '1px solid rgba(168, 85, 247, 0.35)',
-          color: '#C084FC',
-        }}>
-          ADVISOR
-        </span>
-      );
-    }
-
-    // 3. Schedule Callback
-    if (d.includes('CALLBACK')) {
-      return (
-        <span style={{
-          display: 'inline-block',
-          padding: '4px 10px',
-          borderRadius: 4,
-          fontSize: '0.68rem',
-          fontWeight: 700,
-          letterSpacing: '0.04em',
-          background: 'rgba(56, 189, 248, 0.15)',
-          border: '1px solid rgba(56, 189, 248, 0.35)',
-          color: '#38BDF8',
-        }}>
-          CALLBACK
-        </span>
-      );
-    }
-
-    // 4. WhatsApp Info Requested
-    if (d.includes('WHATSAPP')) {
-      return (
-        <span style={{
-          display: 'inline-block',
-          padding: '4px 10px',
-          borderRadius: 4,
-          fontSize: '0.68rem',
-          fontWeight: 700,
-          letterSpacing: '0.04em',
-          background: 'rgba(6, 182, 212, 0.15)',
-          border: '1px solid rgba(6, 182, 212, 0.35)',
-          color: '#22D3EE',
-        }}>
-          WHATSAPP
-        </span>
-      );
-    }
-
-    // 5. Not Interested
-    if (d.includes('NOT INTERESTED')) {
-      return (
-        <span style={{
-          display: 'inline-block',
-          padding: '4px 10px',
-          borderRadius: 4,
-          fontSize: '0.68rem',
-          fontWeight: 700,
-          letterSpacing: '0.04em',
-          background: 'rgba(148, 163, 184, 0.15)',
-          border: '1px solid rgba(148, 163, 184, 0.35)',
-          color: '#94A3B8',
-        }}>
-          NOT INTERESTED
-        </span>
-      );
-    }
-
-    // 6. Do Not Call
-    if (d.includes('DO NOT CALL') || d.includes('DNC')) {
-      return (
-        <span style={{
-          display: 'inline-block',
-          padding: '4px 10px',
-          borderRadius: 4,
-          fontSize: '0.68rem',
-          fontWeight: 700,
-          letterSpacing: '0.04em',
-          background: 'rgba(244, 63, 94, 0.15)',
-          border: '1px solid rgba(244, 63, 94, 0.35)',
-          color: '#FB7185',
-        }}>
-          DO NOT CALL
-        </span>
-      );
-    }
-
-    // 7. Wrong Number
-    if (d.includes('WRONG NUMBER')) {
-      return (
-        <span style={{
-          display: 'inline-block',
-          padding: '4px 10px',
-          borderRadius: 4,
-          fontSize: '0.68rem',
-          fontWeight: 700,
-          letterSpacing: '0.04em',
-          background: 'rgba(249, 115, 22, 0.15)',
-          border: '1px solid rgba(249, 115, 22, 0.35)',
-          color: '#FB923C',
-        }}>
-          WRONG NUMBER
-        </span>
-      );
-    }
-
-    // 8. No Answer
+    // 2. No Answer
     if (s === 'NO_ANSWER' || s === 'NO ANSWER' || d.includes('NO ANSWER')) {
       return (
         <span style={{
@@ -415,23 +301,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
       );
     }
 
-    if (s === 'COMPLETED' || s === 'SUCCESSFUL' || s === 'ANSWERED' || d.includes('GOAL') || d.includes('PICKUP')) {
-      return (
-        <span style={{
-          display: 'inline-block',
-          padding: '4px 10px',
-          borderRadius: 4,
-          fontSize: '0.68rem',
-          fontWeight: 700,
-          letterSpacing: '0.04em',
-          background: 'rgba(16, 185, 129, 0.12)',
-          border: '1px solid rgba(16, 185, 129, 0.28)',
-          color: '#10B981',
-        }}>
-          COMPLETED
-        </span>
-      );
-    }
+    // 3. Busy
     if (s === 'BUSY') {
       return (
         <span style={{
@@ -446,6 +316,44 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
           color: '#EF4444',
         }}>
           BUSY
+        </span>
+      );
+    }
+
+    // 4. Failed
+    if (s === 'FAILED') {
+      return (
+        <span style={{
+          display: 'inline-block',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.68rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          background: 'rgba(239, 68, 68, 0.12)',
+          border: '1px solid rgba(239, 68, 68, 0.28)',
+          color: '#EF4444',
+        }}>
+          FAILED
+        </span>
+      );
+    }
+
+    // 5. Dialing / Initiated
+    if (s === 'DIALING' || s === 'INITIATED') {
+      return (
+        <span style={{
+          display: 'inline-block',
+          padding: '4px 10px',
+          borderRadius: 4,
+          fontSize: '0.68rem',
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          background: 'rgba(56, 189, 248, 0.12)',
+          border: '1px solid rgba(56, 189, 248, 0.28)',
+          color: '#38BDF8',
+        }}>
+          DIALING
         </span>
       );
     }
