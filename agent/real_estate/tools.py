@@ -204,8 +204,13 @@ class RealEstateTools:
     # ── Tool Definitions ──────────────────────────────────────────
 
     @function_tool
-    async def customer_interested(self) -> str:
-        """Call when customer confirms they are interested in selling or renting their property."""
+    async def customer_interested(
+        self,
+        category: Optional[str] = None,
+        intent: Optional[str] = None,
+    ) -> str:
+        """Call when customer confirms they are interested in selling or renting their property.
+        Optionally accepts category ('residential'/'commercial') or intent ('sale'/'lease'/'rent') if mentioned."""
         self.state.is_interested = True
 
         # Both customer name and property location are already provided from data/records.
@@ -213,14 +218,60 @@ class RealEstateTools:
         if not self.state.owner_name_confirmed:
             self.state.owner_name_confirmed = (self.state.owner_name or "").strip() or "Sir"
 
-        # Transition to CATEGORY_SELECT: Ask BOTH category (residential/commercial) AND intent (sell/rent)
+        heard = (self.state.last_user_text or "").strip()
+        detected_cat = classify_category(category) or classify_category(heard)
+        detected_int = classify_intent(intent) or classify_intent(heard)
+
+        if detected_cat:
+            self.state.category = detected_cat
+        if detected_int:
+            self.state.intent = detected_int
+
+        # If both category and intent are already known from the utterance:
+        if self.state.category and self.state.intent:
+            cat = self.state.category
+            intn = self.state.intent
+            if cat == "residential" and intn == "sale":
+                next_step = RealEstateStep.RESIDENTIAL_SALE
+            elif cat == "residential" and intn == "lease":
+                next_step = RealEstateStep.RESIDENTIAL_LEASE
+            elif cat == "commercial" and intn == "sale":
+                next_step = RealEstateStep.COMMERCIAL_SALE
+            else:
+                next_step = RealEstateStep.COMMERCIAL_LEASE
+
+            await self._go(next_step)
+            missing = self.state.get_missing_fields()
+            first_q = missing[0]["question_en"] if self.state.reply_lang == "en" else missing[0]["question_hi"]
+            return self._fast(
+                first_q,
+                f"Customer confirmed interest ({cat.title()} {intn.title()}). Smoothly ask: '{first_q}'",
+                ack="auto",
+            )
+
+        # Transition to CATEGORY_SELECT
         await self._go(RealEstateStep.CATEGORY_SELECT)
-        cat_int_q = (
-            "Is it a residential or commercial property? And are you looking to sell or rent it out?"
-            if self.state.reply_lang == "en"
-            else "Yeh residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
-        )
-        return self._fast(cat_int_q, f"Ask category and intent: '{cat_int_q}'", ack="auto")
+        if self.state.intent:
+            cat_q = (
+                "Is it a residential or commercial property?"
+                if self.state.reply_lang == "en"
+                else "Yeh residential property hai ya commercial?"
+            )
+            return self._fast(cat_q, f"Ask category: '{cat_q}'", ack="auto")
+        elif self.state.category:
+            int_q = (
+                "Are you looking to sell or rent it out?"
+                if self.state.reply_lang == "en"
+                else "Aap ise sell karna chahte hain ya rent par dena chahte hain?"
+            )
+            return self._fast(int_q, f"Ask intent: '{int_q}'", ack="auto")
+        else:
+            cat_int_q = (
+                "Is it a residential or commercial property? And are you looking to sell or rent it out?"
+                if self.state.reply_lang == "en"
+                else "Yeh residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
+            )
+            return self._fast(cat_int_q, f"Ask category and intent: '{cat_int_q}'", ack="auto")
 
     @function_tool
     async def not_interested_in_this_location(self) -> str:
