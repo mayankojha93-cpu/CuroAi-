@@ -58,6 +58,9 @@ const envSchema = z.object({
   // Exotel v1 REST API credentials for recording download (call-details API)
   EXOTEL_SID: z.string().optional().default(''),    // Same as EXOTEL_ACCOUNT_SID or separate API SID
   EXOTEL_TOKEN: z.string().optional().default(''),  // API token for Basic Auth on call-details API
+  EXOTEL_USE_WSS: z.string().optional().default('true'),
+  EXOTEL_STREAM_URL: z.string().optional().default(''),
+  PUBLIC_WEBHOOK_URL: z.string().optional().default(''),
 
   // Recording storage: local path for downloaded audio files (swap for S3/GCS bucket URL in prod)
   RECORDING_STORAGE_DIR: z.string().optional().default(''),
