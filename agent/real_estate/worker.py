@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from livekit import agents, api
-from livekit.agents import AgentSession, AgentServer, TurnHandlingOptions
+from livekit.agents import AgentSession, AgentServer, TurnHandlingOptions, JobExecutorType
 from livekit.plugins import sarvam, silero, openai
 
 from .config import (
@@ -49,7 +49,7 @@ from .prompts import _owner_call_name
 from .audio_recorder import RoomAudioRecorder
 from src.transliteration import romanize_hindi
 
-server = AgentServer()
+server = AgentServer(job_executor_type=JobExecutorType.THREAD)
 
 _UUID_RE = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I)
 
@@ -177,7 +177,12 @@ def _resolve_call_id(ctx, metadata: dict) -> str:
 
 def _callee_status(p) -> Optional[str]:
     try:
-        return (getattr(p, "attributes", None) or {}).get("sip.callStatus")
+        attrs = getattr(p, "attributes", None) or {}
+        if attrs.get("carrier") == "exotel-wss":
+            return "active"
+        if getattr(p, "identity", "").startswith("phone-"):
+            return "active"
+        return attrs.get("sip.callStatus")
     except Exception:
         return None
 
@@ -385,8 +390,9 @@ async def entrypoint(ctx: agents.JobContext):
 
     phone = metadata.get("phone", "")
     owner_name = metadata.get("customerName") or metadata.get("ownerName", "")
+    raw_loc = (metadata.get("propertyLocation") or metadata.get("address") or metadata.get("location") or metadata.get("customerAddress") or "").strip()
 
-    if call_id and (not phone or not owner_name):
+    if call_id and (not phone or not owner_name or not raw_loc):
         def _fetch_call_info():
             try:
                 res = requests.get(
@@ -404,6 +410,9 @@ async def entrypoint(ctx: agents.JobContext):
         if c_data:
             phone = phone or c_data.get("phone", "") or c_data.get("customer_phone", "")
             owner_name = owner_name or c_data.get("customerName") or c_data.get("customer_name") or ""
+            backend_loc = (c_data.get("property_location") or c_data.get("propertyLocation") or c_data.get("customer_address") or c_data.get("address") or "").strip()
+            if backend_loc and not raw_loc:
+                raw_loc = backend_loc
 
     clean_owner = (owner_name or "").strip()
     if not clean_owner or clean_owner.lower() in ("property owner", "test subscriber", "test customer", "none", "null", "undefined", "customer"):
@@ -415,7 +424,6 @@ async def entrypoint(ctx: agents.JobContext):
     preferred_language = "en" if raw_pref in ("en", "english", "en-in") else "hi"
     lead_id = metadata.get("leadId")
     direction = metadata.get("direction", "outbound")
-    raw_loc = (metadata.get("propertyLocation") or metadata.get("address") or metadata.get("location") or "").strip()
     if not raw_loc or raw_loc.lower() in ("delhi, 110011, burari, sant nagar", "none", "null", "undefined"):
         property_location = None
     else:
@@ -703,26 +711,33 @@ async def entrypoint(ctx: agents.JobContext):
         except Exception as e:
             logger.debug(f"Error printing console summary: {e}")
 
-        # 1. Freeze audio capture, then HANG UP THE PHONE FIRST. Recording conversion / S3 upload /
-        #    backend POST used to run while the line was still open, so the caller heard dead air
-        #    for 10-20s after the closing line.
+        # 1. First drop the caller phone line immediately by removing remote participants.
+        # This sends SIP BYE or closes the Exotel WSS bridge leg instantly so caller hears NO dead air.
+        # Note: We do NOT delete the room or disconnect the agent yet!
+        try:
+            for p in list(ctx.room.remote_participants.values()):
+                try:
+                    await ctx.api.room.remove_participant(
+                        api.RoomParticipantIdentity(room=ctx.room.name, identity=p.identity)
+                    )
+                    logger.info(f"📞 Dropped caller telephony leg ({p.identity})")
+                except Exception as ex:
+                    logger.debug(f"remove_participant note ({p.identity}): {ex}")
+        except Exception as e:
+            logger.debug(f"Error enumerating remote participants: {e}")
+
+        # 2. Stop audio capture and finalise recording (ffmpeg WAV -> MP3 + S3 upload)
         if recorder:
             try:
                 await recorder.stop_capture()
-            except Exception as e:
-                logger.warning(f"Error stopping audio capture: {e}")
-        await _end_room()
-
-        # 2. Finalise the recording (ffmpeg + S3) now that the line is closed.
-        if recorder:
-            try:
                 rec_url = await recorder.finalize()
                 if rec_url:
                     setattr(state, "recording_url", rec_url)
             except Exception as e:
                 logger.warning(f"Error finalizing audio recording: {e}")
 
-        # 3. Save outcome (with retries). Only mark as posted on success.
+        # 3. Save outcome (with full transcript, property dossier, and recording URL) to backend
+        # We save BEFORE deleting the room so the backend reconciler never sees an empty room without an outcome!
         if not state.outcome_posted and state.call_id:
             ok = await asyncio.to_thread(post_re_outcome_sync, state)
             state.outcome_posted = bool(ok)
@@ -731,6 +746,10 @@ async def entrypoint(ctx: agents.JobContext):
             conv_logger.finalize(state)
         except Exception as e:
             logger.warning(f"Error finalizing conversation log: {e}")
+
+        # 4. Now that outcome is safely in DB and disk, delete room and tear down session
+        await _end_room()
+
         try:
             await session.aclose()
         except Exception:
@@ -905,9 +924,9 @@ async def entrypoint(ctx: agents.JobContext):
         )
     else:
         greeting = (
-            "Hello, I’m Priya, calling from My Estate Finder. Sir, we help property owners to sell or rent their properties. Are you also considering selling or renting a property of yours?"
+            f"{salutation_en}, I’m Priya, calling from My Estate Finder. Sir, we help property owners to sell or rent their properties. Are you also considering selling or renting a property of yours?"
             if state.reply_lang == "en"
-            else "Hello, main Priya bol rahi hoon My Estate Finder se. Sir, hum property owners ko unki property sell ya rent karne mein help karte hain. Kya aap bhi apni koi property sell ya rent karne ka soch rahe hain?"
+            else f"{salutation_hi}, main Priya bol rahi hoon My Estate Finder se. Sir, hum property owners ko unki property sell ya rent karne mein help karte hain. Kya aap bhi apni koi property sell ya rent karne ka soch rahe hain?"
         )
 
     state.last_activity_time = time.time()
