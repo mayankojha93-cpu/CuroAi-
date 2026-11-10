@@ -48,6 +48,40 @@ const inboundSchema = {
   }),
 };
 
+// GET /internal/calls/active-dialing
+internalRouter.get('/internal/calls/active-dialing', async (req: Request, res: Response) => {
+  const result = await query(
+    `SELECT c.id, c.room_name, c.exotel_call_sid, COALESCE(cust.phone, rl.phone) as phone
+     FROM calls c
+     LEFT JOIN customers cust ON c.customer_id = cust.id
+     LEFT JOIN real_estate_leads rl ON c.re_lead_id = rl.id
+     WHERE c.status = 'dialing'
+     ORDER BY c.created_at DESC LIMIT 1`
+  );
+  if (result.rows.length === 0) {
+    return res.status(404).json({ error: 'No dialing call found' });
+  }
+  return res.json(result.rows[0]);
+});
+
+// GET /internal/calls/by-sid/:sid
+internalRouter.get('/internal/calls/by-sid/:sid', async (req: Request, res: Response) => {
+  const { sid } = req.params;
+  const result = await query(
+    `SELECT c.id, c.room_name, c.exotel_call_sid, COALESCE(cust.phone, rl.phone) as phone
+     FROM calls c
+     LEFT JOIN customers cust ON c.customer_id = cust.id
+     LEFT JOIN real_estate_leads rl ON c.re_lead_id = rl.id
+     WHERE c.exotel_call_sid = $1 OR c.sip_call_id = $1
+     ORDER BY c.created_at DESC LIMIT 1`,
+    [sid]
+  );
+  if (result.rows.length === 0) {
+    return res.status(404).json({ error: 'Call not found' });
+  }
+  return res.json(result.rows[0]);
+});
+
 // Constant-time secret comparison
 const requireInternalSecret = (req: Request, _res: Response, next: NextFunction) => {
   const secretHeader = req.get('X-Internal-Secret') || '';
