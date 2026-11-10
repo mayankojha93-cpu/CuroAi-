@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS real_estate_leads (
     phone VARCHAR(32) NOT NULL,
     alternate_phone VARCHAR(32),
     email VARCHAR(255),
+    property_location VARCHAR(255),
     preferred_language VARCHAR(16) DEFAULT 'en',
     lead_status VARCHAR(64) DEFAULT 'NEW',  -- NEW, CONTACTED, QUALIFIED, NOT_INTERESTED, UNREACHABLE
     current_disposition VARCHAR(128),
