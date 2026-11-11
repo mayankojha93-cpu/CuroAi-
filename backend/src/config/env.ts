@@ -61,6 +61,8 @@ const envSchema = z.object({
   EXOTEL_USE_WSS: z.string().optional().default('true'),
   EXOTEL_STREAM_URL: z.string().optional().default(''),
   PUBLIC_WEBHOOK_URL: z.string().optional().default(''),
+  EXOTEL_BRIDGE_HOST: z.string().optional().default('127.0.0.1'),
+  EXOTEL_BRIDGE_PORT: z.string().optional().default('8088'),
 
   // Recording storage: local path for downloaded audio files (swap for S3/GCS bucket URL in prod)
   RECORDING_STORAGE_DIR: z.string().optional().default(''),
