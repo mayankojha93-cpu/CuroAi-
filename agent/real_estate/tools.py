@@ -132,8 +132,19 @@ def commercial_type_from_speech(text: Any) -> Optional[str]:
 
 # Standalone / independent property: no separate unit number or floor exists, so we never ask for them.
 # "independent floor" / "builder floor" are NOT standalone (one floor of a building -> floor matters).
-_STANDALONE_RE = re.compile(r"(?<![a-z])(stand[\s\-]?alone|free[\s\-]?standing|independent)(?![a-z])")
-_STANDALONE_DEV = re.compile(r"(स्टैंड\s?अलोन|स्टैंडअलोन|इंडिपेंडेंट|इंडिपेंडेन्ट|फ्री\s?स्टैंडिंग)")
+_STANDALONE_RE = re.compile(
+    r"(?<![a-z])("
+    r"stand[\s\-]?alone|standard[\s\-]?alone|standard[\s\-]?allen|standard[\s\-]?alan|"
+    r"free[\s\-]?standing|independent|"
+    r"no\s+(unit|flat|floor|door|house|even)\s*(number|no\.?|num)?|"
+    r"(there\s+is\s+)?no\s+unit|"
+    r"(unit|flat|floor)\s*(number)?\s*(nahi|nahin|not|nhi|hai\s*hi\s*nahi)|"
+    r"entire\s+(building|property|house|office)|"
+    r"whole\s+(building|property|house|office)"
+    r")(?![a-z])",
+    re.I
+)
+_STANDALONE_DEV = re.compile(r"(स्टैंड\s?अलोन|स्टैंडअलोन|स्टैंडर्ड\s?अलोन|इंडिपेंडेंट|इंडिपेंडेन्ट|फ्री\s?स्टैंडिंग)")
 _STANDALONE_NEG_RE = re.compile(
     r"(not\s+(a\s+|an\s+)?(stand[\s\-]?alone|free[\s\-]?standing|independent)"
     r"|(stand[\s\-]?alone|free[\s\-]?standing|independent)\s+(nahi|nahin|nhi)"

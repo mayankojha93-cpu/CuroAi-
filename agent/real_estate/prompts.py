@@ -234,7 +234,7 @@ Politely acknowledge their time, invoke `book_advisor_handoff(reason="Customer i
     if step == RealEstateStep.INTRODUCTION:
         loc = state.initial_property_location
         name_call = _owner_call_name(state)
-        salutation_en = f"Hello {name_call} Sir" if name_call != "Sir" else "Hello Sir"
+        salutation_en = f"Hello {name_call}" if name_call != "Sir" else "Hello Sir"
         salutation_hi = f"Hello {name_call} ji" if name_call != "Sir" else "Hello Sir"
 
         if loc:
@@ -473,7 +473,10 @@ CRITICAL MANDATORY INSTRUCTIONS:
      * unit_number  = the flat/unit/door number (e.g. "407", "702", "B-204")
    - NEVER confuse the floor number with the unit number. The larger or labelled number is typically the unit.
    - Save the floor and the unit as two separate fields, correctly split.
-   - STANDALONE / INDEPENDENT PROPERTY: if the customer says the property is standalone or independent (for example "independent house", "standalone building"), it has NO separate unit number or floor. NEVER ask for unit number or floor. Acknowledge in 2-4 words (for example "Independent property, noted Sir.") and ask only the next question below. Do not invent a unit or floor for it.
+   - STANDALONE / INDEPENDENT PROPERTY: if the customer says the property is standalone, independent, or has no unit number (including STT garbles like "standard alone", "standard allen", "standard alan", "no even number", "no unit number", "there is no unit number"):
+     * Call `save_property_details(unit_number="Standalone", floor_number="Ground")` immediately.
+     * It has NO separate unit number or floor. NEVER ask for unit number or floor again under ANY circumstances.
+     * Acknowledge in 2-4 words (for example "Standalone property, noted Sir.") and ask only the next question below. Do not invent a unit or floor for it.
 4. NATURAL CONVERSATIONAL TRANSITION:
    - Echo or acknowledge the caller's previous answer in 2-4 words (e.g., "1004 on 10th floor, perfect Sir." or "Signature Global, great.").
    - Smoothly follow up with:
@@ -488,6 +491,10 @@ CRITICAL MANDATORY INSTRUCTIONS:
    - "furnishing" question: "supar furnished" / "simi furnished" / "semi furnish" = semi-furnished; "phully furnished" / "fuli furnished" = fully furnished.
    - "available / occupancy" question: "right abhi" / "avelable" / "availeble" / "avlble" = available immediately.
    - If the caller's phonetic answer clearly maps to a known option, accept it. If truly ambiguous, ask ONCE more in different words. NEVER ask the same question a third time.
+9. PRICE / RENT ANSWER ACKNOWLEDGMENT (STRICT ANTI-REPETITION):
+   - When asking for expected price or rent, if the customer gives an amount (such as "40k", "40, 40k", "40 thousand", "1.5 crore", "50 lakh"), call `save_property_details(expected_sale_price=...)` or `save_property_details(expected_monthly_rent=...)` IMMEDIATELY.
+   - NEVER repeat "What price are you expecting for it?" or "What rent are you expecting?" if the customer just stated a number or price!
+   - If that was the last missing detail, acknowledge the price and transition cleanly into the closing.
 """
 
     if step == RealEstateStep.CLOSING:

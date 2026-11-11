@@ -396,8 +396,12 @@ class RealEstateAgent(Agent):
             and is_standalone_from_speech(text)
         ):
             state.is_standalone = True
+            if not state.unit_number:
+                state.unit_number = "Standalone"
+            if not state.floor_number:
+                state.floor_number = "Ground"
             standalone_changed = True
-            logger.info(f"🏠 Standalone/independent property -> unit & floor will be skipped: '{text}'")
+            logger.info(f"🏠 Standalone/independent property -> unit & floor set to Standalone: '{text}'")
 
         # Caller asks us to repeat / says "what did you ask?" -> re-ask the open question (no LLM,
         # no tool call, nothing skipped). Runs BEFORE category detection because the caller's

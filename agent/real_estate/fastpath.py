@@ -197,11 +197,15 @@ _RENT_FILL = {"rs", "rupees", "rupaye", "rupay", "inr", "approx", "around", "abo
 
 
 def _x_amount(v: str, open_field: str) -> Optional[str]:
-    if len(_NUM.findall(v)) != 1:          # ranges / "1 crore 20 lakh" -> LLM
-        return None
+    nums = _NUM.findall(v)
+    # Allow single number OR repeated number (e.g. "40, 40k" or "40k, 40k" said for emphasis)
+    if len(nums) > 1 and len(set(nums)) > 1:
+        return None  # genuine range / compound amount (e.g. "1 crore 20 lakh") -> LLM
     m = _AMT.search(v)
     if m:
-        return f"{m.group(1).replace(',', '')} {_UNIT_CANON[m.group(2)]}"
+        num_str = m.group(1).replace(',', '')
+        unit = _UNIT_CANON.get(m.group(2).lower(), m.group(2).lower())
+        return f"{num_str} {unit}"
     if open_field in ("monthly_rent", "current_rent"):
         raw = _bare_number(v, _RENT_FILL)
         val = _to_float(raw) if raw else None
@@ -260,6 +264,9 @@ _AMOUNT_PARAM = {"sale_price": "expected_sale_price", "monthly_rent": "expected_
 
 def _scan(v: str, open_field: str) -> Dict[str, Any]:
     found: Dict[str, Any] = {}
+    from .tools import is_standalone_from_speech
+    if open_field == "unit_floor" and is_standalone_from_speech(v):
+        return {"unit_floor": {"unit_number": "Standalone", "floor_number": "Ground"}}
     for key, res in (
         ("bhk_config", _x_bhk(v)),
         ("approx_area", _x_area(v, open_field)),
