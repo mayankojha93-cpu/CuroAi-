@@ -248,7 +248,7 @@ _INLINE_CALL_RE = re.compile(
     r'|\b[a-z]+(?:_[a-z0-9]+)+\s*[\(\{]'
 )
 
-_Q_LEAD_RE = re.compile(r"^(?:ji sir|sure sir|sorry sir|sir)\s*[,.]?\s+", re.I)
+_Q_LEAD_RE = re.compile(r"^(?:ji sir|sure sir|sorry sir|ji|sure|sorry|sir)\s*[,.]?\s+", re.I)
 
 
 def _extract_question(spoken: str) -> str:
@@ -398,21 +398,21 @@ class RealEstateAgent(Agent):
                 if _asks_repeat(text) or not (_cat or _int):
                     en = state.reply_lang == "en"
                     if state.category and not state.intent:
-                        _reask = "Are you looking to sell or rent it out?" if en else "Aap ise sell karna chahte hain ya rent par dena chahte hain?"
+                        _reask = "Are you looking to sell or rent it out?" if en else "Aap ise sell karna chahte hain, ya rent par dena?"
                     elif state.intent and not state.category:
-                        _reask = "Is it a residential or commercial property?" if en else "Yeh residential property hai ya commercial?"
+                        _reask = "Is it a residential or commercial property?" if en else "Ye residential property hai ya commercial?"
                     else:
                         _reask = (
                             "Is it a residential or commercial property? And are you looking to sell or rent it out?"
                             if en else
-                            "Yeh residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
+                            "Ye residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
                         )
             elif state.step in _intake and _asks_repeat(text):
                 _missing = state.get_missing_fields()
                 if _missing:
                     _reask = _missing[0]["question_en"] if state.reply_lang == "en" else _missing[0]["question_hi"]
             if _reask:
-                lead = "Sure Sir, " if state.reply_lang == "en" else "Ji Sir, "
+                lead = "Sure, " if state.reply_lang == "en" else "Ji, "
                 logger.info(f"🔁 Repeat/backchannel -> re-asking open question (no LLM): '{_reask}'")
                 try:
                     self.session.say(lead + _reask, allow_interruptions=True)
@@ -425,7 +425,7 @@ class RealEstateAgent(Agent):
         # we actually asked, verbatim. Repeating only happens when the caller asks for it.
         if state.step not in _intake and state.step != _S.CATEGORY_SELECT and state.step != _S.CLOSING \
                 and _asks_repeat(text) and state.last_agent_question:
-            lead = "Sure Sir, " if state.reply_lang == "en" else "Ji Sir, "
+            lead = "Sure, " if state.reply_lang == "en" else "Ji, "
             logger.info(f"🔁 Repeat requested -> re-asking last question (no LLM): '{state.last_agent_question}'")
             try:
                 self.session.say(lead + state.last_agent_question, allow_interruptions=True)
@@ -703,9 +703,9 @@ class RealEstateAgent(Agent):
         en = state.reply_lang == "en"
         if missing:
             q = missing[0]["question_en"] if en else missing[0]["question_hi"]
-            lead = "Sorry Sir, I missed that. " if en else "Sorry Sir, main sun nahi payi. "
+            lead = "Sorry, I missed that. " if en else "Sorry, main sun nahi payi. "
             return lead + q
-        return "Sorry Sir, could you please repeat that?" if en else "Sorry Sir, kya aap dobara bata sakte hain?"
+        return "Sorry, could you please repeat that?" if en else "Sorry, kya aap dobara bata sakte hain?"
 
     def tts_node(self, text, model_settings):
         """Safety net. LLM output arrives as tiny token fragments, so we buffer until a full
