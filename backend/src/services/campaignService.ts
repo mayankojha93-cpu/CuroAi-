@@ -415,6 +415,14 @@ export class CampaignService {
               ]
             );
           }
+
+          // Clear any stale non-DNC suppression (such as past wrong numbers) for contacts imported into this campaign
+          await pool.query(
+            `DELETE FROM suppressed_contacts 
+             WHERE phone = $1 
+               AND LOWER(COALESCE(reason, '')) NOT IN ('dnc', 'do not call', 'do_not_call')`,
+            [item.phone]
+          );
         } catch (err) {
           logger.warn({ phone: item.phone, err }, 'Failed to insert customer lead for campaign');
         }
