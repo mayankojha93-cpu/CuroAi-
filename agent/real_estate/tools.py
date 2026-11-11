@@ -150,6 +150,32 @@ def ask_new_location_question(lang: str) -> str:
     )
 
 
+async def _replay(frames):
+    for f in frames:
+        yield f
+
+
+def say_cached(session, state, text: str, allow_interruptions: bool = True):
+    """session.say(), but plays pre-rendered audio when this exact line was synthesised during the ring."""
+    frames = getattr(state, "audio_cache", {}).get(text)
+    if frames:
+        try:
+            return session.say(text, audio=_replay(frames), allow_interruptions=allow_interruptions)
+        except Exception as e:
+            logger.debug(f"cached audio failed, synthesising normally: {e}")
+    return session.say(text, allow_interruptions=allow_interruptions)
+
+
+def _grounded(category, intent, heard):
+    """Category / intent from the LLM are accepted ONLY if the caller's latest words support them.
+    A bare "haan ji" must never become residential + sale (the LLM invents that). When the caller really
+    said it, it is read from their own words; with no transcript at all the LLM value is the only source."""
+    heard = (heard or "").strip()
+    if heard:
+        return classify_category(heard), classify_intent(heard)
+    return classify_category(category), classify_intent(intent)
+
+
 class RealEstateTools:
     def __init__(self, state: RealEstateState, post_outcome_func, hangup_func):
         self.state = state
@@ -289,7 +315,7 @@ class RealEstateTools:
 
         async def _run():
             try:
-                handle = self.agent.session.say(text, allow_interruptions=False)
+                handle = say_cached(self.agent.session, self.state, text, allow_interruptions=False)
                 await handle.wait_for_playout()
             except Exception as e:
                 logger.warning(f"Closing speech failed: {e}")
@@ -318,9 +344,7 @@ class RealEstateTools:
         if not self.state.owner_name_confirmed:
             self.state.owner_name_confirmed = (self.state.owner_name or "").strip() or "Sir"
 
-        heard = (self.state.last_user_text or "").strip()
-        detected_cat = classify_category(category) or classify_category(heard)
-        detected_int = classify_intent(intent) or classify_intent(heard)
+        detected_cat, detected_int = _grounded(category, intent, self.state.last_user_text)
 
         if detected_cat:
             self.state.category = detected_cat
@@ -412,11 +436,9 @@ class RealEstateTools:
                 self.state.sector_or_location = clean_loc
                 self.state.project_or_society = clean_loc
 
-        classified_cat = classify_category(category)
+        classified_cat, classified_int = _grounded(category, intent, self.state.last_user_text)
         if classified_cat:
             self.state.category = classified_cat
-
-        classified_int = classify_intent(intent)
         if classified_int:
             self.state.intent = classified_int
 
@@ -473,11 +495,9 @@ class RealEstateTools:
             self.state.sector_or_location = clean_loc
             self.state.project_or_society = clean_loc
 
-        classified_cat = classify_category(category)
+        classified_cat, classified_int = _grounded(category, intent, self.state.last_user_text)
         if classified_cat:
             self.state.category = classified_cat
-
-        classified_int = classify_intent(intent)
         if classified_int:
             self.state.intent = classified_int
 
