@@ -47,6 +47,7 @@ from .config import (
     LLM_FALLBACK,
     LLM_ATTEMPT_TIMEOUT,
     PRERENDER_GREETING,
+    PRERENDER_COMMON,
 )
 from .state import RealEstateState, RealEstateStep
 from .agent import RealEstateAgent
@@ -951,9 +952,36 @@ async def entrypoint(ctx: agents.JobContext):
     if PRERENDER_GREETING:
         prerender_task = asyncio.create_task(_prerender_tts(tts, greeting))
 
+    common_task: Optional[asyncio.Task] = None
+    if PRERENDER_GREETING and PRERENDER_COMMON:
+        async def _prerender_common():
+            # sequential and after the greeting, so the TTS service is never hit with parallel streams
+            from types import SimpleNamespace
+            from .prompts import get_closing_text
+            from .tools import other_property_question, ask_new_location_question
+            try:
+                if prerender_task is not None:
+                    await asyncio.wait_for(asyncio.shield(prerender_task), timeout=12.0)
+            except Exception:
+                pass
+            lang = state.reply_lang
+            lines = [other_property_question(lang), ask_new_location_question(lang)]
+            for disp in ('Not Interested', 'Qualified Lead', 'Advisor Callback Booked'):
+                lines.append(get_closing_text(SimpleNamespace(
+                    final_disposition=disp, reply_lang=lang, valuation_requested=False, intent=None)))
+            for t in lines:
+                try:
+                    state.audio_cache[t] = await _prerender_tts(tts, t)
+                except Exception as e:
+                    logger.debug(f'common prerender skipped: {e}')
+            logger.info(f'🔥 pre-rendered {len(state.audio_cache)} fixed lines during ring')
+        common_task = asyncio.create_task(_prerender_common())
+
     def _cancel_prerender():
         if prerender_task is not None and not prerender_task.done():
             prerender_task.cancel()
+        if common_task is not None and not common_task.done():
+            common_task.cancel()
 
     # 1. Wait for the callee to actually ANSWER (not just for the SIP leg to appear while ringing)
     ring_timeout = 65.0 if direction == "outbound" else 20.0
