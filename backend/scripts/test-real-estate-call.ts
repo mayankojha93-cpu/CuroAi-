@@ -11,7 +11,7 @@ async function main() {
   let phone = env.TEST_PHONE || '+918658250208';
   let name = env.TEST_CUSTOMER_NAME || 'Raja Nayak';
   let location = 'DLF Phase 5, Sector 54, Gurgaon';
-  let language = 'hi';
+  let language = 'en';
   let notes = 'Manual CLI test call for Real Estate Pipeline';
 
   for (let i = 0; i < args.length; i++) {
