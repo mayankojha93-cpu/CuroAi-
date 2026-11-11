@@ -26,6 +26,16 @@ LIVEKIT_URL = os.getenv("LIVEKIT_URL", "wss://ai-calling-agent-ztoubtgz.livekit.
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY", "")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET", "")
 BRIDGE_PORT = int(os.getenv("EXOTEL_BRIDGE_PORT", "8088"))
+BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:3000").rstrip("/")
+
+
+def _http_sync(url: str, method: str = "GET", headers: dict = None, timeout: float = 2.0):
+    """Blocking HTTP call. ALWAYS run through asyncio.to_thread(): urllib inside the event loop froze audio
+    for every concurrent call for up to `timeout` seconds."""
+    import urllib.request
+    req = urllib.request.Request(url, headers=headers or {}, method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.status, resp.read().decode()
 
 
 class ExotelSession:
@@ -44,6 +54,7 @@ class ExotelSession:
         self.ratecv_state_in = None
         self.ratecv_state_out = None
         self.out_task = None
+        self.start_task = None
         self.in_frames_count = 0
         self.in_bytes_count = 0
         self.out_frames_count = 0
@@ -77,7 +88,13 @@ class ExotelSession:
                 if event == "connected":
                     logger.info("[STEP 2a] 🤝 Exotel handshake event: 'connected'")
                 elif event == "start":
-                    await self._handle_start(data)
+                    # Run in a task: the receive loop keeps draining Exotel frames (stale pre-connect audio is
+                    # dropped by _handle_media instead of queueing up and arriving later as a burst).
+                    self.start_task = asyncio.create_task(self._handle_start(data))
+                    self.start_task.add_done_callback(
+                        lambda t: (not t.cancelled()) and t.exception()
+                        and logger.error(f"Error in _handle_start: {t.exception()!r}", exc_info=t.exception())
+                    )
                 elif event == "media":
                     await self._handle_media(data)
                 elif event == "stop":
@@ -117,28 +134,26 @@ class ExotelSession:
         # Fallback 1: Query backend by call_sid
         if not self.call_id and self.call_sid:
             try:
-                import urllib.request
-                req = urllib.request.Request(f"http://127.0.0.1:3000/internal/calls/by-sid/{self.call_sid}")
-                with urllib.request.urlopen(req, timeout=2.0) as resp:
-                    cdata = json.loads(resp.read().decode())
-                    self.call_id = cdata.get("id")
-                    if not self.phone:
-                        self.phone = cdata.get("phone")
-                    logger.info(f"✅ Resolved callId from backend by Call SID {self.call_sid}: {self.call_id}")
+                _st, _body = await asyncio.to_thread(
+                    _http_sync, f"{BACKEND_URL}/internal/calls/by-sid/{self.call_sid}", "GET", None, 2.0)
+                cdata = json.loads(_body)
+                self.call_id = cdata.get("id")
+                if not self.phone:
+                    self.phone = cdata.get("phone")
+                logger.info(f"✅ Resolved callId from backend by Call SID {self.call_sid}: {self.call_id}")
             except Exception as e:
                 logger.debug(f"Could not resolve call by SID: {e}")
 
         # Fallback 2: Query backend for most recent active dialing call
         if not self.call_id:
             try:
-                import urllib.request
-                req = urllib.request.Request("http://127.0.0.1:3000/internal/calls/active-dialing")
-                with urllib.request.urlopen(req, timeout=2.0) as resp:
-                    cdata = json.loads(resp.read().decode())
-                    self.call_id = cdata.get("id")
-                    if not self.phone:
-                        self.phone = cdata.get("phone")
-                    logger.info(f"✅ Resolved callId from backend latest active-dialing: {self.call_id}")
+                _st, _body = await asyncio.to_thread(
+                    _http_sync, f"{BACKEND_URL}/internal/calls/active-dialing", "GET", None, 2.0)
+                cdata = json.loads(_body)
+                self.call_id = cdata.get("id")
+                if not self.phone:
+                    self.phone = cdata.get("phone")
+                logger.info(f"✅ Resolved callId from backend latest active-dialing: {self.call_id}")
             except Exception as e:
                 logger.debug(f"Could not resolve active dialing call: {e}")
 
@@ -167,18 +182,20 @@ class ExotelSession:
             logger.error("❌ [STEP 2 Error] No callId found in connection! Cannot map to LiveKit room.")
             return
 
-        # Notify backend immediately that telephony is answered
-        try:
-            import urllib.request
-            req = urllib.request.Request(
-                f"http://127.0.0.1:3000/internal/real-estate/calls/{self.call_id}/answered",
-                headers={"X-Internal-Secret": os.getenv("INTERNAL_SECRET", "internal-agent-secret")},
-                method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=2.0) as resp:
-                logger.info(f"✅ Marked call {self.call_id} as answered in backend (HTTP {resp.status})")
-        except Exception as ex:
-            logger.debug(f"Could not notify backend answered: {ex}")
+        # Notify backend that telephony is answered - in the background, it must not delay joining the room
+        async def _notify_answered(cid=self.call_id):
+            try:
+                st, _ = await asyncio.to_thread(
+                    _http_sync,
+                    f"{BACKEND_URL}/internal/real-estate/calls/{cid}/answered",
+                    "POST",
+                    {"X-Internal-Secret": os.getenv("INTERNAL_SECRET", "internal-agent-secret")},
+                    2.0,
+                )
+                logger.info(f"✅ Marked call {cid} as answered in backend (HTTP {st})")
+            except Exception as ex:
+                logger.debug(f"Could not notify backend answered: {ex}")
+        asyncio.create_task(_notify_answered())
 
         room_name = f"re-call-{self.call_id}"
         participant_identity = f"phone-{str(self.phone or self.call_id).replace('+', '').replace(' ', '')}"
@@ -407,6 +424,8 @@ class ExotelSession:
 
     async def cleanup(self):
         self.is_running = False
+        if self.start_task and not self.start_task.done():
+            self.start_task.cancel()
         if self.out_task and not self.out_task.done():
             self.out_task.cancel()
         if self.room:
@@ -444,3 +463,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Bridge stopped by user.")
+        
