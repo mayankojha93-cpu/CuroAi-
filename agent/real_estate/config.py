@@ -58,8 +58,30 @@ TTS_SPEAKER_EN = os.getenv("REAL_ESTATE_TTS_SPEAKER_EN", TTS_SPEAKER)
 DEFAULT_LANGUAGE = os.getenv("REAL_ESTATE_DEFAULT_LANGUAGE", "hi")
 
 # TTS Delivery Dynamics
-TTS_PACE = float(os.getenv("REAL_ESTATE_TTS_PACE", "1.1"))
+# 1.0 = natural conversational speed. 1.1 made the voice rush and sound like an IVR; tune with REAL_ESTATE_TTS_PACE.
+TTS_PACE = float(os.getenv("REAL_ESTATE_TTS_PACE", "1.0"))
 TTS_TEMPERATURE = float(os.getenv("REAL_ESTATE_TTS_TEMPERATURE", "0.7"))
+
+# ── LLM provider ──────────────────────────────────────────────────────────────
+# LLM TTFT is the biggest part of a turn. OpenRouter adds a routing hop and its TTFT swings 0.7-2.4s.
+# Groq's own endpoint serves the same llama-3.3-70b with ~0.2-0.5s TTFT.
+#   LLM_PROVIDER = auto (default: groq when GROQ_API_KEY is set, else openrouter) | groq | openrouter
+#   LLM_FALLBACK = 1 : if Groq errors / times out (it sometimes rejects a tool call with HTTP 400), the same
+#                      request is retried on OpenRouter automatically, so a call never goes silent.
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto").strip().lower() or "auto"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+LLM_FALLBACK = os.getenv("LLM_FALLBACK", "1") == "1"
+LLM_ATTEMPT_TIMEOUT = float(os.getenv("LLM_ATTEMPT_TIMEOUT", "4.0"))
+
+# FASTPATH_ENABLED=1 : clean answers to the open intake question (BHK, area, furnishing, unit/floor, price,
+#                      leased/vacant, occupancy, commercial type) are parsed with regex and the LLM call is
+#                      skipped entirely (turn = EOU + TTS only). Anything unclear still goes to the LLM.
+FASTPATH_ENABLED = os.getenv("FASTPATH_ENABLED", "1") == "1"
+# PRERENDER_GREETING=1 : while the phone is still ringing the opening line is synthesised in advance and
+#                        played from memory the moment the callee answers (no TTS wait on "Hello?").
+#                        Costs one greeting's worth of TTS characters for calls that are never answered.
+PRERENDER_GREETING = os.getenv("PRERENDER_GREETING", "1") == "1"
 
 OPENROUTER_PROVIDER_SORT = os.getenv("OPENROUTER_PROVIDER_SORT", "latency").strip()
 PREEMPTIVE_GENERATION = os.getenv("PREEMPTIVE_GENERATION", "1") == "1"
