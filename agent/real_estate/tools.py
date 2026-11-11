@@ -135,18 +135,18 @@ def is_standalone_from_speech(text: Any) -> bool:
 def other_property_question(lang: str) -> str:
     """Scenario B: asked right after the caller refuses the property at the given location."""
     return (
-        "Understood, Sir. Do you have any other property location that you would like to sell or rent?"
+        "Understood. Do you have any other property you would like to sell or rent?"
         if lang == "en"
-        else "Ji Sir, samajh gayi. Kya aapki koi doosri property hai jise aap sell ya rent karna chahte hain?"
+        else "Ji, samajh gayi. Kya aapki koi doosri property hai, jise aap sell ya rent karna chahte hain?"
     )
 
 
 def ask_new_location_question(lang: str) -> str:
     """Scenario B2: asked when the caller says they have another property."""
     return (
-        "Great, Sir! Which location or sector is that property in?"
+        "Great! Which area or sector is that property in?"
         if lang == "en"
-        else "Achha Sir, wo property kis location ya sector mein hai?"
+        else "Achha, wo property kis area ya sector mein hai?"
     )
 
 
@@ -163,8 +163,8 @@ class RealEstateTools:
 
     # ── Fast reply helper (skips the 2nd LLM call after a tool) ─────────────
     # Human feel: a wider pool, picked at random but never the same word twice in a row.
-    _ACK_HI = ("Achha.", "Theek hai.", "Okay.", "Haan ji.", "Perfect.", "Samajh gayi.", "Got it.", "Ji, noted.", "Bilkul.")
-    _ACK_EN = ("Got it.", "Sure.", "Okay.", "Alright.", "Perfect.", "Understood.", "Great.", "Okay, noted.", "Right.")
+    _ACK_HI = ("Achha.", "Theek hai.", "Okay.", "Haan ji.", "Samajh gayi.", "Got it.", "Ji, noted.", "Bilkul.", "Achha, theek hai.")
+    _ACK_EN = ("Got it.", "Sure.", "Okay.", "Alright.", "Understood.", "Great.", "Okay, noted.", "Right.", "Thanks.")
     _SHORT_ACK_HI = ("achha", "theek hai", "perfect", "noted", "great", "bilkul")
     _SHORT_ACK_EN = ("got it", "perfect", "noted", "great", "okay", "alright")
 
@@ -355,21 +355,21 @@ class RealEstateTools:
             cat_q = (
                 "Is it a residential or commercial property?"
                 if self.state.reply_lang == "en"
-                else "Yeh residential property hai ya commercial?"
+                else "Ye residential property hai ya commercial?"
             )
             return self._fast(cat_q, f"Ask category: '{cat_q}'", ack="auto")
         elif self.state.category:
             int_q = (
                 "Are you looking to sell or rent it out?"
                 if self.state.reply_lang == "en"
-                else "Aap ise sell karna chahte hain ya rent par dena chahte hain?"
+                else "Aap ise sell karna chahte hain, ya rent par dena?"
             )
             return self._fast(int_q, f"Ask intent: '{int_q}'", ack="auto")
         else:
             cat_int_q = (
                 "Is it a residential or commercial property? And are you looking to sell or rent it out?"
                 if self.state.reply_lang == "en"
-                else "Yeh residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
+                else "Ye residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
             )
             return self._fast(cat_int_q, f"Ask category and intent: '{cat_int_q}'", ack="auto")
 
@@ -424,9 +424,9 @@ class RealEstateTools:
         if not self.state.sector_or_location or self.state.sector_or_location == getattr(self.state, "initial_property_location", None):
             await self._go(RealEstateStep.ASK_NEW_LOCATION)
             q = (
-                "Great, Sir! Which location or sector is that property in?"
+                "Great! Which area or sector is that property in?"
                 if self.state.reply_lang == "en"
-                else "Achha Sir, wo property kis location ya sector mein hai?"
+                else "Achha, wo property kis area ya sector mein hai?"
             )
             return self._fast(q, f"Ask for new property location: '{q}'", ack=None)
 
@@ -436,7 +436,7 @@ class RealEstateTools:
             q = (
                 "Is it a residential or commercial property? And are you looking to sell or rent it out?"
                 if self.state.reply_lang == "en"
-                else "Yeh residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
+                else "Ye residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
             )
             return self._fast(q, f"Ask category and intent: '{q}'", ack=None)
 
@@ -503,19 +503,19 @@ class RealEstateTools:
             q = (
                 "Is it a residential or commercial property?"
                 if self.state.reply_lang == "en"
-                else "Yeh residential property hai ya commercial?"
+                else "Ye residential property hai ya commercial?"
             )
         elif self.state.category:
             q = (
                 "Are you looking to sell or rent it out?"
                 if self.state.reply_lang == "en"
-                else "Aap ise sell karna chahte hain ya rent par dena chahte hain?"
+                else "Aap ise sell karna chahte hain, ya rent par dena?"
             )
         else:
             q = (
                 "Is it a residential or commercial property? And are you looking to sell or rent it out?"
                 if self.state.reply_lang == "en"
-                else "Yeh residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
+                else "Ye residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
             )
         return self._fast(q, f"Ask category and intent: '{q}'", ack="auto")
 
@@ -590,14 +590,14 @@ class RealEstateTools:
             q = (
                 "Is it a residential or commercial property?"
                 if self.state.reply_lang == "en"
-                else "Yeh residential property hai ya commercial?"
+                else "Ye residential property hai ya commercial?"
             )
             return self._fast(q, f"Ask category: '{q}'", ack=None)
 
         q = (
             "Are you looking to sell or rent it out?"
             if self.state.reply_lang == "en"
-            else "Aap ise sell karna chahte hain ya rent par dena chahte hain?"
+            else "Aap ise sell karna chahte hain, ya rent par dena?"
         )
         return self._fast(q, f"Ask intent: '{q}'", ack=None)
 
