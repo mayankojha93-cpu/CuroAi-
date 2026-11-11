@@ -394,7 +394,7 @@ export async function fetchCampaignContacts(campaignId: string): Promise<Campaig
   return data.contacts || [];
 }
 
-export interface CampaignReportRow {
+export interface AirtelCampaignReportRow {
   sno: number;
   lead_id: string;
   subs_del_no: string;
@@ -424,6 +424,43 @@ export interface CampaignReportRow {
   conclusion_date: string;
   recording: string;
 }
+
+export interface RealEstateCampaignReportRow {
+  sno: number;
+  lead_id: string;
+  customer_name: string;
+  mobile: string;
+  email?: string;
+  address: string;
+  category?: string;
+  intent?: string;
+  society?: string;
+  unit_number?: string;
+  floor_number?: string;
+  bhk_config?: string;
+  approx_area_sqft?: string;
+  furnishing_status?: string;
+  expected_price?: string;
+  status: string;
+  attempts_count: number;
+  connected_attempts_count: number;
+  first_call_time?: string;
+  last_call_time: string;
+  attempt_1_disposition: string;
+  attempt_2_disposition: string;
+  attempt_3_disposition: string;
+  attempt_4_disposition: string;
+  attempt_5_disposition: string;
+  attempt_6_disposition: string;
+  attempt_7_disposition: string;
+  attempt_8_disposition: string;
+  final_disposition: string;
+  conclusion_date: string;
+  recording: string;
+  agent_summary?: string;
+}
+
+export type CampaignReportRow = AirtelCampaignReportRow | RealEstateCampaignReportRow;
 
 /**
  * Fetches per-lead report data for a campaign (used for CSV download)

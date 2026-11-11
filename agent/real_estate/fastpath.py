@@ -117,9 +117,15 @@ def _x_area(v: str, open_field: str) -> Optional[Dict[str, Any]]:
 
 
 # ── Furnishing ───────────────────────────────────────────────────────────────
-_SEMI = re.compile(r"semi[\s\-]*furnish|\bsemi\b|half[\s\-]*furnish")
+# STT phonetic variants observed on phone lines (Sarvam saaras:v4 / saaras:v3):
+#   "semi-furnished"  -> "supar furnished", "simi furnished", "semi furnish"
+#   "unfurnished"     -> "un furnishd", "berfurnish", "bare shell"
+#   "fully furnished" -> "phully furnished", "fuli furnished", "fully furnishd"
+#   "semi"            -> "sami", "seme", "semee"
+#   "available"       -> "avlble", "avelable", "availeble" (in occupancy)
+_SEMI = re.compile(r"semi[\s\-]*furnish|s[ae]mi[\s\-]*furnish|\bsemi\b|\bs[ae]mi\b|half[\s\-]*furnish")
 _UNF = re.compile(r"un[\s\-]*furnish|bare[\s\-]*shell|\bbare\b|furnish\w*\s*(nahi|nhi|not)|not\s*furnish")
-_FULL = re.compile(r"fully[\s\-]*furnish|full[\s\-]*furnish|\bfully\b|\bfurnished\b")
+_FULL = re.compile(r"fully[\s\-]*furnish|full[\s\-]*furnish|ph+ul+[yi][\s\-]*furnish|\bfully\b|\bfurnished\b")
 
 
 def _x_furnishing(v: str) -> Optional[Dict[str, Any]]:
@@ -227,7 +233,13 @@ def _x_leased(v: str) -> Optional[Dict[str, Any]]:
 
 def _x_occupancy(v: str) -> Optional[Dict[str, Any]]:
     neg = _NEG.search(v)
-    imm = re.search(r"immediate|turant|\babhi\b|ready\s*to\s*move|right\s*now|available\s*now|any\s*time|jab\s*bhi", v)
+    # "available" STT variants on phone lines: "avelable", "availeble", "avlble", "avalabl" etc.
+    _avail_phonetic = re.compile(r"\bav[ae]?[il]+[ae]?b?l?[ae]?\b", re.I)
+    imm = re.search(
+        r"immediate|turant|\babhi\b|right\s*(?:abhi|now)|ready\s*to\s*move"
+        r"|available\s*now|any\s*time|jab\s*bhi",
+        v,
+    ) or _avail_phonetic.search(v)
     notice = re.search(r"notice|\d+\s*(month|months|mahine|mahina|din|days|day|week)|(one|two|three)\s*months?", v)
     if imm and not notice:
         return {"immediate_occupancy": not neg}

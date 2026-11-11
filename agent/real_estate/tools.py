@@ -16,6 +16,25 @@ COMMERCIAL_KEYWORDS = (
     "industrial", "business park", "it park", "tech park", "office space",
     "commercial space", "commercial project", "commercial building", "sco", "booth", "workstation"
 )
+# STT phonetic aliases for "residential" — Sarvam often returns these garbled forms over phone lines.
+# Examples heard in real calls: "ritenshiyal", "rejidenshiyal", "rezidential", "rejidential",
+# "reziential", "resiential", "aavasiy", "aavasiiy", "aavasiya" (Hindi transliteration of आवासीय).
+_RESIDENTIAL_PHONETIC = re.compile(
+    r"\b("
+    # -nshiyal / -nshi?y?a?l ending (phone garble of 'resi-den-tial'):
+    # ritenshiyal, rezenshiyal, rejenshiyal, ritenshial
+    r"r[a-z]*nshi?y?a?l"
+    # -idenshiyal (with 'id' syllable): rejidenshiyal, rezidenshiyal
+    r"|r[a-z]+idenshiyal?"
+    # -idential: rejidential, rezidential, rezidental
+    r"|r[ae][jz]id[ae]nti[ae]?l"
+    # Standard spelling (already in RESIDENTIAL_KEYWORDS, harmless here): rezidential
+    r"|r[ei][sz]id[ae]nti[ae]?l"
+    # Hindi STT: aavasiy, aavasiiy, aavasiya (आवासीय)
+    r"|aav?[aá]s[iy]+[yaá]?"
+    r")\b",
+    re.I,
+)
 RESIDENTIAL_KEYWORDS = (
     "residential", "रेजिडेंशियल", "रेसिडेंशियल", "flat", "फ्लैट", "apartment", "अपार्टमेंट",
     "house", "makaan", "makan", "मकान", "ghar", "घर", "villa", "विला", "plot", "प्लॉट",
@@ -40,7 +59,8 @@ def classify_category(val: Any) -> Optional[str]:
         return None
     val_low = str(val).lower().strip()
     has_comm = _kw_in(val_low, COMMERCIAL_KEYWORDS)
-    has_res = _kw_in(val_low, RESIDENTIAL_KEYWORDS)
+    # Also check phonetic STT variants of "residential" (phone-line garbling by Sarvam STT)
+    has_res = _kw_in(val_low, RESIDENTIAL_KEYWORDS) or bool(_RESIDENTIAL_PHONETIC.search(val_low))
     if has_comm and not has_res:
         return "commercial"
     if has_res and not has_comm:

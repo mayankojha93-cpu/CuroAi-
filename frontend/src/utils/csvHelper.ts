@@ -594,11 +594,119 @@ export function downloadCampaignAudienceSampleCsv(isRealEstate?: boolean): void 
 }
 
 /**
+ * Generates the audited report CSV for Real Estate (My Estate Finder) campaigns,
+ * including lead contact details, qualified property attributes, and call attempt outcomes.
+ */
+export function generateRealEstateCampaignReportCsv(reportData: any[]): string {
+  const uniqueContacts = reportData.length;
+  const totalAttempts = reportData.reduce((sum, r) => sum + (Number(r.attempts_count) || 0), 0);
+  const connectedCalls = reportData.reduce((sum, r) => sum + (Number(r.connected_attempts_count) || 0), 0);
+
+  const headers = [
+    'S.No.',
+    'Lead Id',
+    'Customer Name',
+    'Mobile',
+    'Email',
+    'Address',
+    'Category',
+    'Intent',
+    'Society / Project',
+    'Unit Number',
+    'Floor Number',
+    'BHK Configuration',
+    'Approx Area',
+    'Furnishing Status',
+    'Expected Price / Rent',
+    'Status',
+    'Attempts Count',
+    'Connected Attempts Count',
+    'First Call Time',
+    'Last Call Time',
+    'Attempt 1 Disposition',
+    'Attempt 2 Disposition',
+    'Attempt 3 Disposition',
+    'Attempt 4 Disposition',
+    'Attempt 5 Disposition',
+    'Attempt 6 Disposition',
+    'Attempt 7 Disposition',
+    'Attempt 8 Disposition',
+    'Final Disposition',
+    'Conclusion Date',
+    'Recording',
+    'Agent Summary',
+  ];
+
+  const escapeCsv = (val: any): string => {
+    const s = String(val ?? '');
+    if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+      return `"${s.replace(/"/g, '""')}"`;
+    }
+    return s;
+  };
+
+  const trailingCommas = ','.repeat(headers.length - 1);
+
+  const lines: string[] = [
+    `Estate Finder Final Audited Calling Report${trailingCommas}`,
+    `${uniqueContacts} unique contacts · ${totalAttempts} total attempts · ${connectedCalls} connected calls${trailingCommas}`,
+    trailingCommas,
+    headers.join(','),
+  ];
+
+  for (const row of reportData) {
+    lines.push([
+      escapeCsv(row.sno || row.s_no),
+      escapeCsv(row.lead_id),
+      escapeCsv(row.customer_name),
+      escapeCsv(row.mobile),
+      escapeCsv(row.email || '-'),
+      escapeCsv(row.address),
+      escapeCsv(row.category || '-'),
+      escapeCsv(row.intent || '-'),
+      escapeCsv(row.society || '-'),
+      escapeCsv(row.unit_number || '-'),
+      escapeCsv(row.floor_number || '-'),
+      escapeCsv(row.bhk_config || '-'),
+      escapeCsv(row.approx_area_sqft || '-'),
+      escapeCsv(row.furnishing_status || '-'),
+      escapeCsv(row.expected_price || '-'),
+      escapeCsv(row.status),
+      escapeCsv(row.attempts_count),
+      escapeCsv(row.connected_attempts_count),
+      escapeCsv(row.first_call_time || '-'),
+      escapeCsv(row.last_call_time || '-'),
+      escapeCsv(row.attempt_1_disposition || row.attempt_1 || ''),
+      escapeCsv(row.attempt_2_disposition || row.attempt_2 || ''),
+      escapeCsv(row.attempt_3_disposition || row.attempt_3 || ''),
+      escapeCsv(row.attempt_4_disposition || row.attempt_4 || ''),
+      escapeCsv(row.attempt_5_disposition || row.attempt_5 || ''),
+      escapeCsv(row.attempt_6_disposition || row.attempt_6 || ''),
+      escapeCsv(row.attempt_7_disposition || row.attempt_7 || ''),
+      escapeCsv(row.attempt_8_disposition || row.attempt_8 || ''),
+      escapeCsv(row.final_disposition),
+      escapeCsv(row.conclusion_date),
+      escapeCsv(row.recording),
+      escapeCsv(row.agent_summary || '-'),
+    ].join(','));
+  }
+
+  return lines.join('\n');
+}
+
+/**
  * Generates the audited 28-column CSV report with summary headers:
  * Airtel IP TV Final Audited Calling Report
  * <count> unique contacts · <count> total attempts · <count> connected calls
  */
-export function generateCampaignAuditedReportCsv(reportData: any[]): string {
+export function generateCampaignAuditedReportCsv(reportData: any[], pipeline?: string): string {
+  if (
+    pipeline === 'real_estate' ||
+    (!pipeline && reportData.length > 0 && ('bhk_config' in reportData[0] || 'email' in reportData[0] || 'society' in reportData[0]))
+  ) {
+    return generateRealEstateCampaignReportCsv(reportData);
+  }
+
   const uniqueContacts = reportData.length;
   const totalAttempts = reportData.reduce((sum, r) => sum + (Number(r.attempts_count) || 0), 0);
   const connectedCalls = reportData.reduce((sum, r) => sum + (Number(r.connected_attempts_count) || 0), 0);

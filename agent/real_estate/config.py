@@ -43,6 +43,11 @@ SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
 
 # STT: default hi-IN for Hindi + English (Hinglish) conversations
 STT_LANGUAGE = os.getenv("RE_STT_LANGUAGE", os.getenv("STT_LANGUAGE", "hi-IN")).strip() or "hi-IN"
+# STT mode: "codemix" is best for Hinglish (mixes Hindi/English words naturally),
+# "transcribe" for pure Hindi, "translit" for romanized output.
+# "codemix" on saaras:v4 significantly reduces garbling of English domain words like
+# "residential", "semi-furnished", "available" in a Hindi sentence.
+STT_MODE = os.getenv("RE_STT_MODE", "codemix").strip() or "codemix"
 
 TTS_LANGUAGE_HI = os.getenv("TTS_LANGUAGE_HI", "hi-IN")
 TTS_LANGUAGE_EN = os.getenv("TTS_LANGUAGE_EN", "en-IN")
@@ -55,7 +60,7 @@ TTS_SPEAKER    = os.getenv("REAL_ESTATE_TTS_SPEAKER",    "priya")
 TTS_SPEAKER_HI = os.getenv("REAL_ESTATE_TTS_SPEAKER_HI", TTS_SPEAKER)
 TTS_SPEAKER_EN = os.getenv("REAL_ESTATE_TTS_SPEAKER_EN", TTS_SPEAKER)
 
-DEFAULT_LANGUAGE = os.getenv("REAL_ESTATE_DEFAULT_LANGUAGE", "hi")
+DEFAULT_LANGUAGE = os.getenv("REAL_ESTATE_DEFAULT_LANGUAGE", "en")
 
 # TTS Delivery Dynamics
 # 1.0 sounded a bit slow/flat; 1.1 rushed like an IVR. 1.05 = relaxed but not sluggish. Tune with REAL_ESTATE_TTS_PACE.

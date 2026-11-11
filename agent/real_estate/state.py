@@ -28,7 +28,7 @@ class RealEstateState:
         lead_id: Optional[str] = None,
         owner_name: str = "Property Owner",
         phone: str = "",
-        preferred_language: str = "hi",
+        preferred_language: str = "en",
         direction: str = "outbound",
         property_location: str = "",
     ):
@@ -56,8 +56,8 @@ class RealEstateState:
 
         self.has_other_property: Optional[bool] = None
 
-        # Selected language flow: English ('en') or Hinglish ('hi')
-        clean_pref = "en" if str(preferred_language or "").strip().lower() in ("en", "english", "en-in") else "hi"
+        # Selected language flow: English ('en') default, or Hinglish ('hi')
+        clean_pref = "hi" if str(preferred_language or "").strip().lower() in ("hi", "hindi", "hi-in", "hinglish") else "en"
         self.initial_language: str = clean_pref
         self.reply_lang: str = clean_pref
         self.language_switched: bool = False

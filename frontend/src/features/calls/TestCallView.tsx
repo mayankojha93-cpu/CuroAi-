@@ -71,7 +71,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
   const [selectedScript, setSelectedScript] = useState(() =>
     isRealEstate ? 'My Estate Finder — Property Intake (Priya)' : 'Airtel Wi-Fi Router Return'
   );
-  const [selectedLanguage, setSelectedLanguage] = useState(() => 'Hinglish');
+  const [selectedLanguage, setSelectedLanguage] = useState(() => 'English');
   const [selectedPipeline, setSelectedPipeline] = useState(() =>
     'Sarvam AI (Priya - hi-IN)'
   );
@@ -81,13 +81,13 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
       setSelectedScript('My Estate Finder — Property Intake (Priya)');
       setCompanyName('My Estate Finder');
       setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
-      setSelectedLanguage('Hinglish');
+      setSelectedLanguage('English');
       setPropertyLocation('DLF Phase 5, Sector 54, Gurgaon');
     } else {
       setSelectedScript('Airtel Wi-Fi Router Return');
       setCompanyName('Airtel Telecom');
       setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
-      setSelectedLanguage('Hinglish');
+      setSelectedLanguage('English');
       setPropertyLocation('');
     }
   }, [isRealEstate]);
@@ -102,7 +102,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
       setCompanyName(found.defaultOrg);
       if (found.id === 'my_estate_finder') {
         setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
-        setSelectedLanguage('Hinglish');
+        setSelectedLanguage('English');
         setPropertyLocation('DLF Phase 5, Sector 54, Gurgaon');
       } else if (found.id === 'airtel_return') {
         setSelectedPipeline('Sarvam AI (Priya - hi-IN)');
@@ -110,7 +110,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
     }
   };
 
-  const applyPreset = (preset: { phone: string; name: string; script: string; pipeline: string; company: string; location?: string }) => {
+  const applyPreset = (preset: { phone: string; name: string; script: string; pipeline: string; company: string; location?: string; language?: string }) => {
     setPhone(preset.phone);
     setCustomerName(preset.name);
     setSelectedScript(preset.script);
@@ -118,6 +118,9 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
     setCompanyName(preset.company);
     if (preset.location !== undefined) {
       setPropertyLocation(preset.location);
+    }
+    if (preset.language !== undefined) {
+      setSelectedLanguage(preset.language);
     }
     setFeedback(null);
   };
@@ -177,7 +180,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
     const formattedPhone = cleanPhone.startsWith('+') ? cleanPhone : `+91${cleanPhone.replace(/\D/g, '')}`;
 
     try {
-      const langCode = selectedLanguage === 'English' ? 'en' : 'hi';
+      const langCode = (selectedLanguage === 'hi' || selectedLanguage === 'Hinglish') ? 'hi' : 'en';
       const res = await initiateTestCall({
         phone: formattedPhone,
         customer_name: customerName.trim() || undefined,

@@ -24,6 +24,7 @@ from .config import (
     ENDPOINT_MIN_DELAY,
     ENDPOINT_MAX_DELAY,
     STT_LANGUAGE,
+    STT_MODE,
     TTS_LANGUAGE_HI,
     TTS_LANGUAGE_EN,
     TTS_MODEL,
@@ -500,7 +501,7 @@ async def entrypoint(ctx: agents.JobContext):
         owner_name = clean_owner
 
     raw_pref = (metadata.get("preferredLanguage") or metadata.get("language") or DEFAULT_LANGUAGE).strip().lower()
-    preferred_language = "en" if raw_pref in ("en", "english", "en-in") else "hi"
+    preferred_language = "hi" if raw_pref in ("hi", "hindi", "hi-in", "hinglish") else "en"
     lead_id = metadata.get("leadId")
     direction = metadata.get("direction", "outbound")
     if not raw_loc or raw_loc.lower() in ("delhi, 110011, burari, sant nagar", "none", "null", "undefined"):
@@ -509,11 +510,72 @@ async def entrypoint(ctx: agents.JobContext):
         property_location = raw_loc
 
     # Audio & speech pipeline
-    stt = sarvam.STT(
+    # ── Sarvam STT Keyterms: biases the ASR engine toward domain vocabulary ──────────────────────
+    # Sarvam saaras:v4 "keyterm prompting" corrects garbled phone-line transcription of these words
+    # at the STT level (zero latency, runs inside the ASR engine). Max 50 keyterms, 64 chars each.
+    # This is far more reliable than post-processing regex because the model understands phonetics.
+    # "codemix" mode is best for Hinglish: keeps English words in Latin script inside a Hindi sentence,
+    # so "residential", "semi-furnished", "available" are transcribed correctly even when spoken
+    # with a Hindi accent or in a Hinglish sentence.
+    _STT_KEYTERMS = [
+        # Property category (most commonly garbled)
+        "residential", "commercial",
+        # Furnishing status
+        "semi-furnished", "unfurnished", "fully furnished",
+        # Availability
+        "available", "immediate", "notice period",
+        # Configuration
+        "BHK", "RK", "studio", "penthouse", "duplex",
+        # Area units
+        "square feet", "sqft",
+        # Transaction type
+        "sell", "rent", "lease",
+        # Property types
+        "apartment", "flat", "villa", "independent house",
+        # Common society/project names from active campaigns (extend via env if needed)
+        "Mapsko Casabella",
+    ]
+    # Allow adding extra keyterms per deployment via env (comma-separated)
+    _extra_kw = [k.strip() for k in (
+        __import__("os").getenv("RE_STT_EXTRA_KEYTERMS", "")).split(",") if k.strip()]
+    if _extra_kw:
+        _STT_KEYTERMS = list(dict.fromkeys(_STT_KEYTERMS + _extra_kw))  # dedup, preserve order
+
+    _stt_kwargs: dict = dict(
         language=STT_LANGUAGE,
         model="saaras:v4",
         api_key=SARVAM_API_KEY,
     )
+    # Add keyterms & mode if the plugin supports them (saaras:v4 feature; guarded so older plugin
+    # versions don't crash with an unexpected keyword argument).
+    try:
+        import inspect as _inspect
+        _stt_sig = _inspect.signature(sarvam.STT.__init__)
+        if "keyterms" in _stt_sig.parameters:
+            _stt_kwargs["keyterms"] = _STT_KEYTERMS
+            logger.info(f"🎯 STT keyterms enabled ({len(_STT_KEYTERMS)} terms)")
+        else:
+            logger.info("ℹ️  STT plugin does not support keyterms (update livekit-plugins-sarvam)")
+        if "mode" in _stt_sig.parameters:
+            _stt_kwargs["mode"] = STT_MODE
+            logger.info(f"🎯 STT mode: {STT_MODE}")
+    except Exception as _e:
+        logger.debug(f"STT capability check skipped: {_e}")
+
+    stt = sarvam.STT(**_stt_kwargs)
+
+    # Inject the property location from call metadata as an additional keyterm (dynamic per-call).
+    # e.g. "Mapsko Casabella sec 82" — prevents the society name from being garbled by STT.
+    if property_location and "keyterms" in _stt_kwargs:
+        _loc_terms = [t.strip() for t in property_location.split(",") if len(t.strip()) > 3]
+        if _loc_terms:
+            try:
+                current_kw = list(_stt_kwargs.get("keyterms", []))
+                new_kw = list(dict.fromkeys(current_kw + _loc_terms))[:50]  # Sarvam max=50
+                stt.update_options(keyterms=new_kw)
+                logger.info(f"🎯 Injected property location into STT keyterms: {_loc_terms}")
+            except Exception as _ke:
+                logger.debug(f"Could not inject location keyterms: {_ke}")
 
     vad = ctx.proc.userdata.get("vad") if getattr(ctx, "proc", None) else None
     if vad is None:

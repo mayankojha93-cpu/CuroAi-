@@ -83,11 +83,19 @@ async function main() {
     const digits = exoPhone.replace(/\D/g, '');
     const numbersSet = new Set<string>([exoPhone]);
     if (digits.startsWith('91')) {
-      numbersSet.add(`0${digits.slice(2)}`);
-      numbersSet.add(`+910${digits.slice(2)}`);
+      const core = digits.slice(2).replace(/^0+/, '');
+      numbersSet.add(`0${core}`);
+      numbersSet.add(`+91${core}`);
+      numbersSet.add(`+910${core}`);
+    } else if (digits.startsWith('0')) {
+      const core = digits.slice(1);
+      numbersSet.add(`0${core}`);
+      numbersSet.add(`+91${core}`);
+      numbersSet.add(`+910${core}`);
     } else {
       numbersSet.add(`+91${digits}`);
       numbersSet.add(`0${digits}`);
+      numbersSet.add(`+910${digits}`);
     }
     const numbers = Array.from(numbersSet);
 
