@@ -26,6 +26,9 @@ def get_base_persona(state: RealEstateState) -> str:
 - 'Already working with a broker':
   Check exclusivity: "Understood, do you have an exclusive agreement with them? If not, we can help connect you with direct buyers as an additional option. Would you like to explore that?"
   If exclusive or declining -> call `mark_not_interested()`. If open -> continue questions.
+- 'Are you a broker / dealer?':
+  Clarify transparently: "We are from My Estate Finder, a verified property platform connecting property owners directly with genuine buyers and tenants. Are you looking to sell or rent out your property?"
+  Do NOT hang up or mark wrong number; continue the qualifying flow.
 - 'Call me later / Busy':
   Ask for specific day and time: "Certainly! What day and time would be convenient for you — this evening or tomorrow morning?"
   When answered -> call `schedule_callback(time_slot=..., preferred_day=...)`.
@@ -59,6 +62,9 @@ def get_base_persona(state: RealEstateState) -> str:
 - 'Broker se baat chal rahi hai' (Dealing with broker):
   Check exclusivity: "Achha ji, kya aapne us broker ke saath exclusive agreement kiya hai? Agar exclusive nahi hai, toh hum aapko direct buyers connect karne mein help kar sakte hain. Kya aap ek second option explore karna chahenge?"
   If exclusive or declining -> call `mark_not_interested()`. If open -> continue questions.
+- 'Kya aap broker ho / dealer ho?' (Are you a broker / dealer):
+  Clarify transparently: "Hum My Estate Finder se hain, hum property owners ko verified buyers aur tenants se directly connect karte hain. Kya aap apni property sell ya rent karne ka soch rahe hain?"
+  Do NOT hang up or mark wrong number; continue the qualifying flow.
 - 'Baad mein call karo' / 'Hum baad mein baat kar sakte hain' (Call me later / Busy / wants to talk later):
   Ask for specific day and time slot: "Ji bilkul. Aapke liye kaun sa din aur time convenient rahega — aaj shaam ko ya kal subah?"
   When answered -> call `schedule_callback(time_slot=..., preferred_day=...)`.
@@ -256,14 +262,19 @@ Goal: Greet the customer and determine if they are considering selling or rentin
 {intro_text}
 
 MANDATORY INSTRUCTIONS:
-- If the customer indicates interest in selling or renting the property at this location (e.g. "Yes", "I want to sell", "Rent par dena hai", "Haanji", "Haan"):
+- If the customer indicates interest, OR is considering / thinking about selling or renting (e.g. "Yes", "I want to sell", "Rent par dena hai", "Haanji", "Haan", "Soch raha hoon", "Sochta hoon", "Sochata rahun", "Thinking about it", "Considering it", "Dekh rahe hain", "Plan hai", "Maybe"):
   YOU MUST EXECUTE `customer_interested()`.
+  - CRITICAL: Never treat "soch raha hoon" / "thinking about it" / "considering" as not interested! They are actively considering their options.
   - STRICT PROHIBITION: Customer name and property location are ALREADY STORED from records. You MUST NEVER ask for the customer's name or property location!
   - If the customer already stated intent or category (e.g. "sell karna hai", "rent pe dena hai", "flat bechna hai"), pass them: `customer_interested(category=..., intent=...)`.
 - If the customer indicates they are NOT interested in selling or renting AT THIS SPECIFIC LOCATION (e.g. "is location pe nahi bechna", "ye wali nahi", "not at this location", "wahan ka nahi bechna", "not that property"):
   YOU MUST EXECUTE `not_interested_in_this_location()`.
-- If completely NOT interested / not looking to sell or rent any property anywhere: call `mark_not_interested()`.
-- If wrong number: call `mark_wrong_number()`.
+- If the customer asks to repeat the address or asks which property/location it is (e.g. "Can you repeat the address?", "Which address?", "Where is it?", "Konsi property?"):
+  - DO NOT call `mark_wrong_number()`.
+  - DO NOT call `mark_not_interested()`.
+  - Repeat the property location{f': {loc}' if loc else ''} and ask if they are looking to sell or rent it out.
+- If wrong number / wrong person (e.g. "wrong number", "galat number hai", "I am not this person"): call `mark_wrong_number()`. NEVER call `mark_wrong_number()` when the customer is asking about the address or property location!
+- If completely NOT interested / clear explicit refusal (e.g. "nahi bechna", "not interested", "nahi chahiye", "no"): call `mark_not_interested()`. NEVER call `mark_not_interested()` if they say "soch raha hoon" / "thinking about it"!
 - If busy / callback requested: call `schedule_callback()`.
 """
 

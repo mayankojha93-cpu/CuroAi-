@@ -241,6 +241,80 @@ def _asks_repeat(text: str) -> bool:
     return any(_REPEAT_LATIN.search((c or "").lower()) for c in cands)
 
 
+_LOC_CLARIFY_LATIN = re.compile(
+    r"(which\s+(property|location|address|place|flat)|where\s+is\s+it|what\s+address|kahan\s+(pe|par|per|hai)|konsi\s+(property|jagah|location|address)|kaunsi\s+(property|jagah|location|address))",
+    re.I,
+)
+_LOC_CLARIFY_DEV = re.compile(
+    r"(कौनसी|कौन\s*सी|कहाँ|कहां|किस\s*(जगह|लोकेशन|एड्रेस|प्रॉपर्टी))"
+)
+
+
+def _asks_location_clarification(text: str) -> bool:
+    if not text:
+        return False
+    if _LOC_CLARIFY_DEV.search(text):
+        return True
+    cands = [text]
+    try:
+        from src.transliteration import romanize_hindi
+        cands.append(romanize_hindi(text))
+    except Exception:
+        pass
+    return any(_LOC_CLARIFY_LATIN.search((c or "").lower()) for c in cands)
+
+
+_BROKER_Q_LATIN = re.compile(
+    r"(are\s+you\s+(a\s+)?(broker|dealer|agent|property\s+dealer)"
+    r"|(broker|dealer|agent|property\s+dealer)\s+(ho|hai|hain|kya)"
+    r"|kya\s+aap\s+(broker|dealer|agent|property\s+dealer)"
+    r"|aap\s+(broker|dealer|agent|property\s+dealer)"
+    r"|broker\s+ho\s+ya"
+    r"|are\s+you\s+(direct\s+)?buyers?\s+or\s+brokers?)",
+    re.I,
+)
+_BROKER_Q_DEV = re.compile(
+    r"(क्या\s*आप\s*(ब्रोकर|दलाल|डीलर|एजेंट)|(ब्रोकर|दलाल|डीलर|एजेंट)\s*(हो|हैं|है|क्या))"
+)
+
+
+def _asks_if_broker(text: str) -> bool:
+    if not text:
+        return False
+    if _BROKER_Q_DEV.search(text):
+        return True
+    cands = [text]
+    try:
+        from src.transliteration import romanize_hindi
+        cands.append(romanize_hindi(text))
+    except Exception:
+        pass
+    return any(_BROKER_Q_LATIN.search((c or "").lower()) for c in cands)
+
+
+_CONSIDERING_LATIN = re.compile(
+    r"\b(soch\s*(raha|rahe|rahi|ta|te|ti|at[ae]|na|un)|thinking|considering|plan\s*(hai|kar)|dekh\s*(raha|rahe|te))\b",
+    re.I,
+)
+_CONSIDERING_DEV = re.compile(
+    r"(सोच\s*(रहा|रहे|रही|ता|ते|ना)|प्लान|देख\s*(रहे|रहा))"
+)
+
+
+def _is_considering(text: str) -> bool:
+    if not text:
+        return False
+    if _CONSIDERING_DEV.search(text):
+        return True
+    cands = [text]
+    try:
+        from src.transliteration import romanize_hindi
+        cands.append(romanize_hindi(text))
+    except Exception:
+        pass
+    return any(_CONSIDERING_LATIN.search((c or "").lower()) for c in cands)
+
+
 def _chunk_text(chunk):
     """Text carried by an llm_node chunk (str or ChatChunk); None for tool-call/empty chunks."""
     if isinstance(chunk, str):
@@ -446,9 +520,53 @@ class RealEstateAgent(Agent):
                 else:
                     raise StopResponse()
 
-        # "Repeat" at ANY other step (intro, other-property, new location, name): say the last question
+        # Caller asks to repeat or clarify location at INTRODUCTION step
+        if state.step == _S.INTRODUCTION and (_asks_repeat(text) or _asks_location_clarification(text)):
+            loc = state.initial_property_location or state.sector_or_location
+            en = state.reply_lang == "en"
+            if loc:
+                _rep = f"The property is at {loc}. Are you considering selling or renting it out?" if en else f"{loc} par jo aapki property hai. Kya aap use sell ya rent karne ka soch rahe hain?"
+            else:
+                _rep = "Are you considering selling or renting out a property?" if en else "Kya aap apni koi property sell ya rent karne ka soch rahe hain?"
+            lead = "Sure, " if en else "Ji, "
+            logger.info(f"🔁 Repeat / location clarification at intro -> repeating property details: '{_rep}'")
+            try:
+                self.session.say(lead + _rep, allow_interruptions=True)
+            except Exception as e:
+                logger.warning(f"Intro repeat failed: {e}")
+            else:
+                raise StopResponse()
+
+        # Caller indicates they are thinking/considering at INTRODUCTION step (e.g. "Sochata rahun", "Soch raha hoon")
+        if state.step == _S.INTRODUCTION and _is_considering(text):
+            state.is_interested = True
+            from .tools import classify_category, classify_intent
+            _cat = classify_category(text)
+            _int = classify_intent(text)
+            if _cat:
+                state.category = _cat
+            if _int:
+                state.intent = _int
+            en = state.reply_lang == "en"
+            state.step = _S.CATEGORY_SELECT
+            if state.intent and not state.category:
+                _rep = "Got it! Is it a residential or commercial property?" if en else "Ji samajh gayi. Ye residential property hai ya commercial?"
+            elif state.category and not state.intent:
+                _rep = "Understood! Are you looking to sell or rent it out?" if en else "Ji samajh gayi. Aap ise sell karne ka soch rahe hain ya rent par dene ka?"
+            else:
+                _rep = "Understood! Are you looking to sell or rent it out?" if en else "Ji samajh gayi. Aap ise sell karne ka soch rahe hain ya rent par dene ka?"
+            state.last_agent_question = _rep
+            logger.info(f"🤔 Considering/thinking at intro -> moving to category/intent: '{_rep}'")
+            try:
+                self.session.say(_rep, allow_interruptions=True)
+            except Exception as e:
+                logger.warning(f"Intro considering reply failed: {e}")
+            else:
+                raise StopResponse()
+
+        # "Repeat" at ANY other step (other-property, new location, name): say the last question
         # we actually asked, verbatim. Repeating only happens when the caller asks for it.
-        if state.step not in _intake and state.step != _S.CATEGORY_SELECT and state.step != _S.CLOSING \
+        if state.step not in _intake and state.step != _S.CATEGORY_SELECT and state.step != _S.INTRODUCTION and state.step != _S.CLOSING \
                 and _asks_repeat(text) and state.last_agent_question:
             lead = "Sure, " if state.reply_lang == "en" else "Ji, "
             logger.info(f"🔁 Repeat requested -> re-asking last question (no LLM): '{state.last_agent_question}'")
@@ -456,6 +574,31 @@ class RealEstateAgent(Agent):
                 self.session.say(lead + state.last_agent_question, allow_interruptions=True)
             except Exception as e:
                 logger.warning(f"Re-ask failed, falling back to LLM: {e}")
+            else:
+                raise StopResponse()
+
+        # Caller asks "Are you a broker?" / "Kya aap broker ho?"
+        if _asks_if_broker(text) and state.step != _S.CLOSING:
+            en = state.reply_lang == "en"
+            if state.step in _intake:
+                _missing = state.get_missing_fields()
+                _follow = (" " + (_missing[0]["question_en"] if en else _missing[0]["question_hi"])) if _missing else ""
+                _rep = (
+                    f"We are from My Estate Finder. We connect property owners directly with verified buyers and tenants.{_follow}"
+                    if en else
+                    f"Ji, hum My Estate Finder se hain. Hum property owners ko verified buyers aur tenants se directly connect karte hain.{_follow}"
+                )
+            else:
+                _rep = (
+                    "We are from My Estate Finder, a verified property platform connecting property owners directly with genuine buyers and tenants. Are you looking to sell or rent out your property?"
+                    if en else
+                    "Ji, hum My Estate Finder se hain. Hum property owners ko direct verified buyers aur tenants se connect karte hain. Kya aap apni property sell ya rent karne ka soch rahe hain?"
+                )
+            logger.info(f"🏢 'Are you a broker?' query -> explaining platform: '{_rep}'")
+            try:
+                self.session.say(_rep, allow_interruptions=True)
+            except Exception as e:
+                logger.warning(f"Broker query reply failed: {e}")
             else:
                 raise StopResponse()
 

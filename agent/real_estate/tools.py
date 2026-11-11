@@ -365,7 +365,7 @@ class RealEstateTools:
         category: Optional[str] = None,
         intent: Optional[str] = None,
     ) -> str:
-        """Call when customer confirms they are interested in selling or renting their property.
+        """Call when customer confirms interest OR indicates they are thinking about / considering selling or renting (e.g. 'soch raha hoon', 'sochata rahun', 'thinking about it', 'considering it', 'plan hai').
         Optionally accepts category ('residential'/'commercial') or intent ('sale'/'lease'/'rent') if mentioned."""
         self.state.is_interested = True
         self._apply_standalone()
@@ -863,7 +863,7 @@ class RealEstateTools:
 
     @function_tool
     async def mark_not_interested(self) -> str:
-        """Call when customer is not interested in selling or renting."""
+        """Call ONLY when customer clearly and explicitly confirms they are NOT interested (e.g. 'nahi bechna', 'no', 'not interested', 'nahi chahiye'). NEVER call this if the customer says they are thinking about it, considering, or undecided (e.g. 'soch raha hoon', 'thinking about it', 'maybe')."""
         self.state.is_interested = False
         self.state.final_disposition = "Not Interested"
         if not self.state.agent_summary:
@@ -929,7 +929,7 @@ class RealEstateTools:
 
     @function_tool
     async def mark_wrong_number(self) -> str:
-        """Call when the customer says this is the wrong number."""
+        """Call ONLY when the customer explicitly states this is a wrong number, wrong person, or that they are not the named person. NEVER call this when the customer asks to repeat the address or asks which property/location."""
         self.state.final_disposition = "Wrong Number"
         if not self.state.agent_summary:
             self.state.agent_summary = "Wrong number identified by caller"
