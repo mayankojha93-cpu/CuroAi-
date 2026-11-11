@@ -124,6 +124,9 @@ class RealEstateState:
         # Transcript tracking
         self.transcript: List[Dict[str, Any]] = []
 
+        # Pre-synthesised audio frames for fixed lines, keyed by the exact text (see worker.py / tools.say_cached)
+        self.audio_cache: Dict[str, list] = {}
+
     def add_transcript(self, role: str, text: str):
         if text and text.strip():
             self.transcript.append({"role": role, "text": text.strip(), "time": time.time()})
@@ -183,50 +186,50 @@ class RealEstateState:
                     missing.append({
                         "id": "location",
                         "label": "Location or sector",
-                        "question_en": "Which area or sector is the property located in?",
-                        "question_hi": "Sir, ye property kis location ya sector mein hai?",
+                        "question_en": "Which area or sector is the property in?",
+                        "question_hi": "Ye property kis area ya sector mein hai?",
                     })
                 if not self.project_or_society:
                     missing.append({
                         "id": "society_sector",
                         "label": "Society or project name",
                         "question_en": "And which society or project is it?",
-                        "question_hi": "Aur sir, society ya project ka naam kya hai?",
+                        "question_hi": "Aur society ya project ka naam kya hai?",
                     })
             if not (self.unit_number and self.floor_number):
                 missing.append({
                     "id": "unit_floor",
                     "label": "Unit number and floor",
-                    "question_en": "Could you share the unit number and which floor it's on?",
-                    "question_hi": "Sir, main ye jaan sakti hoon unit number kya hai aur kaun se floor par hai ye?",
+                    "question_en": "What's the unit number, and which floor is it on?",
+                    "question_hi": "Ye kaun sa unit number hai, aur kaun se floor par hai?",
                 })
             if not self.bhk_config:
                 missing.append({
                     "id": "bhk_config",
                     "label": "2, 3 BHK, or another configuration",
                     "question_en": "Is it a 2 BHK, 3 BHK, or another configuration?",
-                    "question_hi": "Sir, ye 2 BHK hai, 3 BHK hai, kuch configuration bata sakte hain aap?",
+                    "question_hi": "Ye 2 BHK hai, 3 BHK, ya kuch aur?",
                 })
             if not self.approx_area_sqft:
                 missing.append({
                     "id": "approx_area",
                     "label": "Approximate area in square feet",
-                    "question_en": "And roughly how much total area in square feet would that be?",
-                    "question_hi": "Aur total square feet mein sir kitna area hoga ye?",
+                    "question_en": "And roughly how much area is it, in square feet?",
+                    "question_hi": "Aur lagbhag kitna area hoga, square feet mein?",
                 })
             if not self.furnishing_status:
                 missing.append({
                     "id": "furnishing",
                     "label": "Unfurnished, semi-furnished, or fully furnished",
                     "question_en": "Is the property unfurnished, semi-furnished, or fully furnished?",
-                    "question_hi": "Property unfurnished, semi-furnished, ya fully furnished hai?",
+                    "question_hi": "Furnishing kaisi hai, unfurnished, semi-furnished, ya fully furnished?",
                 })
             if not self.expected_sale_price:
                 missing.append({
                     "id": "sale_price",
                     "label": "Expected sale price",
-                    "question_en": "And what kind of price or rate are you expecting for it?",
-                    "question_hi": "Aur sir kya expect kar rahe hain? Kitna price aap expect kar rahe hain?",
+                    "question_en": "And what price are you expecting for it?",
+                    "question_hi": "Aur price ke baare mein, aap kitna expect kar rahe hain?",
                 })
 
         elif self.step == RealEstateStep.RESIDENTIAL_LEASE:
@@ -236,57 +239,57 @@ class RealEstateState:
                     missing.append({
                         "id": "location",
                         "label": "Location or sector",
-                        "question_en": "Which area or sector is the property located in?",
-                        "question_hi": "Sir, ye property kis location ya sector mein hai?",
+                        "question_en": "Which area or sector is the property in?",
+                        "question_hi": "Ye property kis area ya sector mein hai?",
                     })
                 if not self.project_or_society:
                     missing.append({
                         "id": "society_sector",
                         "label": "Society or project name",
                         "question_en": "And which society or project is it?",
-                        "question_hi": "Aur sir, society ya project ka naam kya hai?",
+                        "question_hi": "Aur society ya project ka naam kya hai?",
                     })
             if not (self.unit_number and self.floor_number):
                 missing.append({
                     "id": "unit_floor",
                     "label": "Unit number and floor",
-                    "question_en": "Could you share the unit number and which floor it's on?",
-                    "question_hi": "Sir, main ye jaan sakti hoon unit number kya hai aur kaun se floor par hai ye?",
+                    "question_en": "What's the unit number, and which floor is it on?",
+                    "question_hi": "Ye kaun sa unit number hai, aur kaun se floor par hai?",
                 })
             if not self.bhk_config:
                 missing.append({
                     "id": "bhk_config",
                     "label": "2, 3 BHK, or another configuration",
                     "question_en": "Is it a 2 BHK, 3 BHK, or another configuration?",
-                    "question_hi": "Sir, ye 2 BHK hai, 3 BHK hai, kuch configuration bata sakte hain aap?",
+                    "question_hi": "Ye 2 BHK hai, 3 BHK, ya kuch aur?",
                 })
             if not self.approx_area_sqft:
                 missing.append({
                     "id": "approx_area",
                     "label": "Approximate area in square feet",
-                    "question_en": "And roughly how much total area in square feet would that be?",
-                    "question_hi": "Aur total square feet mein sir kitna area hoga ye?",
+                    "question_en": "And roughly how much area is it, in square feet?",
+                    "question_hi": "Aur lagbhag kitna area hoga, square feet mein?",
                 })
             if not self.furnishing_status:
                 missing.append({
                     "id": "furnishing",
                     "label": "Unfurnished, semi-furnished, or fully furnished",
                     "question_en": "Is the property unfurnished, semi-furnished, or fully furnished?",
-                    "question_hi": "Property unfurnished, semi-furnished, ya fully furnished hai?",
+                    "question_hi": "Furnishing kaisi hai, unfurnished, semi-furnished, ya fully furnished?",
                 })
             if not self.expected_monthly_rent:
                 missing.append({
                     "id": "monthly_rent",
                     "label": "Expected monthly rent",
                     "question_en": "And what monthly rent are you expecting for it?",
-                    "question_hi": "Aur sir kitna monthly rent expect kar rahe hain aap iske liye?",
+                    "question_hi": "Aur monthly rent kitna expect kar rahe hain?",
                 })
             if self.immediate_occupancy is None:
                 missing.append({
                     "id": "immediate_occupancy",
                     "label": "Available for immediate occupancy",
-                    "question_en": "Is the property available for immediate occupancy, or is there a notice period?",
-                    "question_hi": "Kya yeh property immediate occupancy ke liye available hai, ya notice period hai?",
+                    "question_en": "Is it available right away, or is there a notice period?",
+                    "question_hi": "Property turant available hai, ya notice period rahega?",
                 })
 
         elif self.step == RealEstateStep.COMMERCIAL_SALE:
@@ -296,15 +299,15 @@ class RealEstateState:
                     missing.append({
                         "id": "location",
                         "label": "Location or sector",
-                        "question_en": "Which area or sector is the property located in?",
-                        "question_hi": "Sir, ye property kis location ya sector mein hai?",
+                        "question_en": "Which area or sector is the property in?",
+                        "question_hi": "Ye property kis area ya sector mein hai?",
                     })
                 if not self.project_or_society:
                     missing.append({
                         "id": "project_sector",
                         "label": "Project or building name",
                         "question_en": "And which commercial project or building is it in?",
-                        "question_hi": "Aur sir, kaun se project ya building mein hai?",
+                        "question_hi": "Aur kaun se project ya building mein hai?",
                     })
             # Asked right after the category, BEFORE unit/floor (never skipped, never assumed)
             if not self.commercial_type:
@@ -312,49 +315,49 @@ class RealEstateState:
                     "id": "commercial_type",
                     "label": "Office space, retail shop, or another commercial unit",
                     "question_en": "Is it an office space, retail shop, or another commercial unit?",
-                    "question_hi": "Yeh office space hai, retail shop hai, ya koi doosra commercial unit hai?",
+                    "question_hi": "Ye office space hai, retail shop, ya kuch aur?",
                 })
             if not (self.unit_number and self.floor_number):
                 missing.append({
                     "id": "unit_floor",
                     "label": "Unit number and floor",
-                    "question_en": "Could you share the unit number and which floor it's on?",
-                    "question_hi": "Sir, main ye jaan sakti hoon unit number kya hai aur kaun se floor par hai ye?",
+                    "question_en": "What's the unit number, and which floor is it on?",
+                    "question_hi": "Ye kaun sa unit number hai, aur kaun se floor par hai?",
                 })
             if self.is_currently_leased is None:
                 missing.append({
                     "id": "leased_status",
                     "label": "Already leased out or vacant",
                     "question_en": "And is the property currently leased out, or vacant?",
-                    "question_hi": "Aur sir kya ye property pehle se leased out hai ya vacant hai?",
+                    "question_hi": "Ye property abhi leased hai, ya khaali hai?",
                 })
             elif self.is_currently_leased is True and not self.current_rent_received:
                 missing.append({
                     "id": "current_rent",
                     "label": "Current rent received (if leased)",
-                    "question_en": "Could you share what monthly rental you are currently receiving?",
-                    "question_hi": "Agar lease par hai, toh abhi lagbhag kitna monthly rent mil raha hai?",
+                    "question_en": "What monthly rent are you getting at the moment?",
+                    "question_hi": "Abhi lagbhag kitna monthly rent mil raha hai?",
                 })
             if not self.approx_area_sqft:
                 missing.append({
                     "id": "approx_area",
                     "label": "Approximate area in square feet",
-                    "question_en": "And roughly how much total area in square feet would that be?",
-                    "question_hi": "Aur total square feet mein sir kitna area hoga ye?",
+                    "question_en": "And roughly how much area is it, in square feet?",
+                    "question_hi": "Aur lagbhag kitna area hoga, square feet mein?",
                 })
             if not self.furnishing_status:
                 missing.append({
                     "id": "furnishing",
                     "label": "Unfurnished, semi-furnished, or fully furnished",
                     "question_en": "Is the property bare-shell, semi-furnished, or fully furnished?",
-                    "question_hi": "Property bare-shell hai, semi-furnished, ya fully furnished hai?",
+                    "question_hi": "Furnishing kaisi hai, bare-shell, semi-furnished, ya fully furnished?",
                 })
             if not self.expected_sale_price:
                 missing.append({
                     "id": "sale_price",
                     "label": "Expected sale price",
-                    "question_en": "And what kind of price are you expecting for it?",
-                    "question_hi": "Aur sir kya price expect kar rahe hain aap iske liye?",
+                    "question_en": "And what price are you expecting for it?",
+                    "question_hi": "Aur price kitna expect kar rahe hain?",
                 })
 
         elif self.step == RealEstateStep.COMMERCIAL_LEASE:
@@ -364,15 +367,15 @@ class RealEstateState:
                     missing.append({
                         "id": "location",
                         "label": "Location or sector",
-                        "question_en": "Which area or sector is the property located in?",
-                        "question_hi": "Sir, ye property kis location ya sector mein hai?",
+                        "question_en": "Which area or sector is the property in?",
+                        "question_hi": "Ye property kis area ya sector mein hai?",
                     })
                 if not self.project_or_society:
                     missing.append({
                         "id": "project_sector",
                         "label": "Project or building name",
                         "question_en": "And which commercial project or building is it in?",
-                        "question_hi": "Aur sir, kaun se project ya building mein hai?",
+                        "question_hi": "Aur kaun se project ya building mein hai?",
                     })
             # Asked right after the category, BEFORE unit/floor (never skipped, never assumed)
             if not self.commercial_type:
@@ -380,42 +383,42 @@ class RealEstateState:
                     "id": "commercial_type",
                     "label": "Office space, retail shop, or another commercial unit",
                     "question_en": "Is it an office space, retail shop, or another commercial unit?",
-                    "question_hi": "Yeh office space hai, retail shop hai, ya koi doosra commercial unit hai?",
+                    "question_hi": "Ye office space hai, retail shop, ya kuch aur?",
                 })
             if not (self.unit_number and self.floor_number):
                 missing.append({
                     "id": "unit_floor",
                     "label": "Unit number and floor",
-                    "question_en": "Could you share the unit number and which floor it's on?",
-                    "question_hi": "Sir, main ye jaan sakti hoon unit number kya hai aur kaun se floor par hai ye?",
+                    "question_en": "What's the unit number, and which floor is it on?",
+                    "question_hi": "Ye kaun sa unit number hai, aur kaun se floor par hai?",
                 })
             if not self.approx_area_sqft:
                 missing.append({
                     "id": "approx_area",
                     "label": "Approximate area in square feet",
-                    "question_en": "And roughly how much total area in square feet would that be?",
-                    "question_hi": "Aur total square feet mein sir kitna area hoga ye?",
+                    "question_en": "And roughly how much area is it, in square feet?",
+                    "question_hi": "Aur lagbhag kitna area hoga, square feet mein?",
                 })
             if not self.furnishing_status:
                 missing.append({
                     "id": "furnishing",
                     "label": "Unfurnished, semi-furnished, or fully furnished",
                     "question_en": "Is the property bare-shell, semi-furnished, or fully furnished?",
-                    "question_hi": "Property bare-shell hai, semi-furnished, ya fully furnished hai?",
+                    "question_hi": "Furnishing kaisi hai, bare-shell, semi-furnished, ya fully furnished?",
                 })
             if not self.expected_monthly_rent:
                 missing.append({
                     "id": "monthly_rent",
                     "label": "Expected monthly rent",
                     "question_en": "And what monthly rent are you expecting for it?",
-                    "question_hi": "Aur sir kitna monthly rent expect kar rahe hain aap iske liye?",
+                    "question_hi": "Aur monthly rent kitna expect kar rahe hain?",
                 })
             if self.immediate_occupancy is None:
                 missing.append({
                     "id": "immediate_occupancy",
                     "label": "Available for immediate occupancy",
-                    "question_en": "Is the property available for immediate occupancy, or is there a notice period?",
-                    "question_hi": "Kya yeh property immediate occupancy ke liye available hai, ya notice period hai?",
+                    "question_en": "Is it available right away, or is there a notice period?",
+                    "question_hi": "Property turant available hai, ya notice period rahega?",
                 })
 
         return [

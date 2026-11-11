@@ -135,19 +135,45 @@ def is_standalone_from_speech(text: Any) -> bool:
 def other_property_question(lang: str) -> str:
     """Scenario B: asked right after the caller refuses the property at the given location."""
     return (
-        "Understood, Sir. Do you have any other property location that you would like to sell or rent?"
+        "Understood. Do you have any other property you would like to sell or rent?"
         if lang == "en"
-        else "Ji Sir, samajh gayi. Kya aapki koi doosri property hai jise aap sell ya rent karna chahte hain?"
+        else "Ji, samajh gayi. Kya aapki koi doosri property hai, jise aap sell ya rent karna chahte hain?"
     )
 
 
 def ask_new_location_question(lang: str) -> str:
     """Scenario B2: asked when the caller says they have another property."""
     return (
-        "Great, Sir! Which location or sector is that property in?"
+        "Great! Which area or sector is that property in?"
         if lang == "en"
-        else "Achha Sir, wo property kis location ya sector mein hai?"
+        else "Achha, wo property kis area ya sector mein hai?"
     )
+
+
+async def _replay(frames):
+    for f in frames:
+        yield f
+
+
+def say_cached(session, state, text: str, allow_interruptions: bool = True):
+    """session.say(), but plays pre-rendered audio when this exact line was synthesised during the ring."""
+    frames = getattr(state, "audio_cache", {}).get(text)
+    if frames:
+        try:
+            return session.say(text, audio=_replay(frames), allow_interruptions=allow_interruptions)
+        except Exception as e:
+            logger.debug(f"cached audio failed, synthesising normally: {e}")
+    return session.say(text, allow_interruptions=allow_interruptions)
+
+
+def _grounded(category, intent, heard):
+    """Category / intent from the LLM are accepted ONLY if the caller's latest words support them.
+    A bare "haan ji" must never become residential + sale (the LLM invents that). When the caller really
+    said it, it is read from their own words; with no transcript at all the LLM value is the only source."""
+    heard = (heard or "").strip()
+    if heard:
+        return classify_category(heard), classify_intent(heard)
+    return classify_category(category), classify_intent(intent)
 
 
 class RealEstateTools:
@@ -163,8 +189,8 @@ class RealEstateTools:
 
     # ── Fast reply helper (skips the 2nd LLM call after a tool) ─────────────
     # Human feel: a wider pool, picked at random but never the same word twice in a row.
-    _ACK_HI = ("Achha.", "Theek hai.", "Okay.", "Haan ji.", "Perfect.", "Samajh gayi.", "Got it.", "Ji, noted.", "Bilkul.")
-    _ACK_EN = ("Got it.", "Sure.", "Okay.", "Alright.", "Perfect.", "Understood.", "Great.", "Okay, noted.", "Right.")
+    _ACK_HI = ("Achha.", "Theek hai.", "Okay.", "Haan ji.", "Samajh gayi.", "Got it.", "Ji, noted.", "Bilkul.", "Achha, theek hai.")
+    _ACK_EN = ("Got it.", "Sure.", "Okay.", "Alright.", "Understood.", "Great.", "Okay, noted.", "Right.", "Thanks.")
     _SHORT_ACK_HI = ("achha", "theek hai", "perfect", "noted", "great", "bilkul")
     _SHORT_ACK_EN = ("got it", "perfect", "noted", "great", "okay", "alright")
 
@@ -289,7 +315,7 @@ class RealEstateTools:
 
         async def _run():
             try:
-                handle = self.agent.session.say(text, allow_interruptions=False)
+                handle = say_cached(self.agent.session, self.state, text, allow_interruptions=False)
                 await handle.wait_for_playout()
             except Exception as e:
                 logger.warning(f"Closing speech failed: {e}")
@@ -318,9 +344,7 @@ class RealEstateTools:
         if not self.state.owner_name_confirmed:
             self.state.owner_name_confirmed = (self.state.owner_name or "").strip() or "Sir"
 
-        heard = (self.state.last_user_text or "").strip()
-        detected_cat = classify_category(category) or classify_category(heard)
-        detected_int = classify_intent(intent) or classify_intent(heard)
+        detected_cat, detected_int = _grounded(category, intent, self.state.last_user_text)
 
         if detected_cat:
             self.state.category = detected_cat
@@ -355,21 +379,21 @@ class RealEstateTools:
             cat_q = (
                 "Is it a residential or commercial property?"
                 if self.state.reply_lang == "en"
-                else "Yeh residential property hai ya commercial?"
+                else "Ye residential property hai ya commercial?"
             )
             return self._fast(cat_q, f"Ask category: '{cat_q}'", ack="auto")
         elif self.state.category:
             int_q = (
                 "Are you looking to sell or rent it out?"
                 if self.state.reply_lang == "en"
-                else "Aap ise sell karna chahte hain ya rent par dena chahte hain?"
+                else "Aap ise sell karna chahte hain, ya rent par dena?"
             )
             return self._fast(int_q, f"Ask intent: '{int_q}'", ack="auto")
         else:
             cat_int_q = (
                 "Is it a residential or commercial property? And are you looking to sell or rent it out?"
                 if self.state.reply_lang == "en"
-                else "Yeh residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
+                else "Ye residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
             )
             return self._fast(cat_int_q, f"Ask category and intent: '{cat_int_q}'", ack="auto")
 
@@ -412,11 +436,9 @@ class RealEstateTools:
                 self.state.sector_or_location = clean_loc
                 self.state.project_or_society = clean_loc
 
-        classified_cat = classify_category(category)
+        classified_cat, classified_int = _grounded(category, intent, self.state.last_user_text)
         if classified_cat:
             self.state.category = classified_cat
-
-        classified_int = classify_intent(intent)
         if classified_int:
             self.state.intent = classified_int
 
@@ -424,9 +446,9 @@ class RealEstateTools:
         if not self.state.sector_or_location or self.state.sector_or_location == getattr(self.state, "initial_property_location", None):
             await self._go(RealEstateStep.ASK_NEW_LOCATION)
             q = (
-                "Great, Sir! Which location or sector is that property in?"
+                "Great! Which area or sector is that property in?"
                 if self.state.reply_lang == "en"
-                else "Achha Sir, wo property kis location ya sector mein hai?"
+                else "Achha, wo property kis area ya sector mein hai?"
             )
             return self._fast(q, f"Ask for new property location: '{q}'", ack=None)
 
@@ -436,7 +458,7 @@ class RealEstateTools:
             q = (
                 "Is it a residential or commercial property? And are you looking to sell or rent it out?"
                 if self.state.reply_lang == "en"
-                else "Yeh residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
+                else "Ye residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
             )
             return self._fast(q, f"Ask category and intent: '{q}'", ack=None)
 
@@ -473,11 +495,9 @@ class RealEstateTools:
             self.state.sector_or_location = clean_loc
             self.state.project_or_society = clean_loc
 
-        classified_cat = classify_category(category)
+        classified_cat, classified_int = _grounded(category, intent, self.state.last_user_text)
         if classified_cat:
             self.state.category = classified_cat
-
-        classified_int = classify_intent(intent)
         if classified_int:
             self.state.intent = classified_int
 
@@ -503,19 +523,19 @@ class RealEstateTools:
             q = (
                 "Is it a residential or commercial property?"
                 if self.state.reply_lang == "en"
-                else "Yeh residential property hai ya commercial?"
+                else "Ye residential property hai ya commercial?"
             )
         elif self.state.category:
             q = (
                 "Are you looking to sell or rent it out?"
                 if self.state.reply_lang == "en"
-                else "Aap ise sell karna chahte hain ya rent par dena chahte hain?"
+                else "Aap ise sell karna chahte hain, ya rent par dena?"
             )
         else:
             q = (
                 "Is it a residential or commercial property? And are you looking to sell or rent it out?"
                 if self.state.reply_lang == "en"
-                else "Yeh residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
+                else "Ye residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
             )
         return self._fast(q, f"Ask category and intent: '{q}'", ack="auto")
 
@@ -590,14 +610,14 @@ class RealEstateTools:
             q = (
                 "Is it a residential or commercial property?"
                 if self.state.reply_lang == "en"
-                else "Yeh residential property hai ya commercial?"
+                else "Ye residential property hai ya commercial?"
             )
             return self._fast(q, f"Ask category: '{q}'", ack=None)
 
         q = (
             "Are you looking to sell or rent it out?"
             if self.state.reply_lang == "en"
-            else "Aap ise sell karna chahte hain ya rent par dena chahte hain?"
+            else "Aap ise sell karna chahte hain, ya rent par dena?"
         )
         return self._fast(q, f"Ask intent: '{q}'", ack=None)
 
