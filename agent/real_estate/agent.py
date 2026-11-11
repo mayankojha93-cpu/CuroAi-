@@ -5,8 +5,9 @@ import logging
 from livekit.agents import Agent, StopResponse
 from src.carrier_filter import classify_carrier_message
 from .prompts import get_step_instructions
-from .state import RealEstateState
-from .config import CHAT_CTX_MAX_ITEMS
+from .state import RealEstateState, RealEstateStep as _Step
+from .config import CHAT_CTX_MAX_ITEMS, FAST_TOOL_REPLY, FASTPATH_ENABLED
+from .fastpath import extract as _fastpath_extract
 
 # Leak patterns for tool-call text that the LLM sometimes types instead of calling the tool.
 _LEAK_PATTERNS = [
@@ -64,6 +65,90 @@ _NEUTRAL_UTTERANCES = {
 def _is_neutral_utterance(text: str) -> bool:
     t = re.sub(r"[\s.,?!\u0964]+", " ", (text or "").lower()).strip()
     return t in _NEUTRAL_UTTERANCES
+
+
+# ── Scenario B helpers (deterministic, no LLM) ────────────────────────────────
+def _tokens(text: str):
+    return [t for t in re.split(r"[\s.,?!;:\"'\u2018\u2019\u0964\-]+", (text or "").lower()) if t]
+
+
+def _variants(text: str):
+    """The text itself plus, for Devanagari (Sarvam STT often returns it), a romanised copy."""
+    cands = [text or ""]
+    if re.search(r"[\u0900-\u097F]", text or ""):
+        try:
+            from src.transliteration import romanize_hindi
+            cands.append(romanize_hindi(text))
+        except Exception:
+            pass
+    return cands
+
+
+# Caller refuses THIS property/location ("us location pe nahi bechna", "wahan ka nahi", "not at that location").
+# A plain "not interested" is NOT this: that closes the call.
+_LOC_REJECT_LATIN = re.compile(
+    r"((?<![a-z])(us|uss|is|iss|wo|woh|vo|wahan|waha|vahan|yahan|yaha)\s+(wali\s+|wala\s+)?"
+    r"(location|jagah|jagha|property|address|place|flat|ghar|makaan|makan)\s*(pe|par|per|ko|ki|ka|ke|mein|me)?\s*(bhi\s+)?(nahi|nhi|nahin)"
+    r"|(?<![a-z])(wahan|waha|vahan|yahan|yaha)\s*(ka|ki|ke|pe|par|per)?\s*(bhi\s+)?(nahi|nhi|nahin)"
+    r"|(?<![a-z])(ye|yeh|woh|wo|vo)\s+wali\s+(nahi|nhi|nahin)"
+    r"|\bnot\s+(at|on|for|in)\s+(that|this|the)\s+(location|property|address|place|one)"
+    r"|\bnot\s+(that|this)\s+(location|property|address|place|one))"
+)
+_LOC_REJECT_DEV = re.compile(
+    "((उस|इस|वो|वह)\\s*(वाली\\s*)?(लोकेशन|जगह|प्रॉपर्टी|प्रोपर्टी|एड्रेस|फ्लैट|घर|मकान)\\s*(पे|पर|को|की|का|के|में)?\\s*(भी\\s*)?(नहीं|नही)"
+    "|(वहाँ|वहां|यहाँ|यहां)\\s*(का|की|के|पे|पर)?\\s*(भी\\s*)?(नहीं|नही)"
+    "|(ये|यह|वो|वह)\\s*वाली\\s*(नहीं|नही))"
+)
+
+
+def _rejects_this_location(text: str) -> bool:
+    if not text:
+        return False
+    for c in _variants(text):
+        if _LOC_REJECT_DEV.search(c) or _LOC_REJECT_LATIN.search((c or "").lower()):
+            return True
+    return False
+
+
+_NEG_TOKENS = {"nahi", "nahin", "nhi", "nahii", "no", "nope", "nah", "not", "never", "nothing", "none",
+               "नहीं", "नही", "नहि", "नो"}
+_STRONG_AFF = {"haan", "han", "haa", "ha", "haanji", "hanji", "yes", "yeah", "yep", "yup", "bilkul", "zaroor", "sure",
+               "हाँ", "हां", "हा", "हांजी", "हाँजी", "यस", "येस", "बिल्कुल", "ज़रूर", "जरूर"}
+_HAI = {"hai", "hain", "है", "हैं"}
+_OTHER_WORDS = {"doosri", "dusri", "doosra", "dusra", "another", "other", "दूसरी", "दूसरा"}
+_YES_FILL = {"ji", "jee", "sir", "hmm", "hm", "mm", "ok", "okay", "achha", "accha", "ek", "aur", "property", "one",
+             "more", "i", "do", "have", "there", "is", "also", "bhi",
+             "जी", "सर", "एक", "और", "प्रॉपर्टी", "भी", "अच्छा", "ओके", "हम्म"} | _HAI | _OTHER_WORDS
+_NO_FILL = {"koi", "aur", "other", "another", "else", "anything", "property", "hi", "ji", "jee", "sir", "bas", "sirf",
+            "ek", "wohi", "yehi", "thanks", "thank", "you", "thats", "all", "i", "dont", "do", "have", "there", "is",
+            "are", "bhi", "hmm", "hm", "ok", "okay", "achha", "accha", "theek", "thik", "ab", "abhi", "mere", "paas",
+            "pass", "ke", "ka", "ki", "liye", "thi", "tha", "hoon", "hu",
+            "कोई", "और", "प्रॉपर्टी", "ही", "जी", "सर", "बस", "सिर्फ", "एक", "वही", "अब", "अभी", "मेरे", "पास",
+            "के", "का", "की", "लिए", "थी", "था", "हूँ", "हूं", "अच्छा", "ठीक"} | _HAI
+
+
+def _other_property_answer(text: str):
+    """Answer to "do you have any other property?": True / False when it is a clean yes / no,
+    None when there is more in it (a location, a category...) -> the LLM + tool handle it."""
+    for c in _variants(text):
+        toks = _tokens(c)
+        if not toks or len(toks) > 8:
+            continue
+        has_neg = any(t in _NEG_TOKENS for t in toks)
+        strong = any(t in _STRONG_AFF for t in toks)
+        weak = any(t in _HAI for t in toks) and any(t in _OTHER_WORDS for t in toks)
+        if has_neg and not strong:
+            if all(t in _NEG_TOKENS or t in _NO_FILL for t in toks):
+                return False
+        elif (strong or weak) and not has_neg:
+            if all(t in _STRONG_AFF or t in _YES_FILL for t in toks):
+                return True
+    return None
+
+
+def _starts_with_negation(text: str) -> bool:
+    toks = _tokens(text)
+    return bool(toks) and toks[0] in _NEG_TOKENS
 
 
 # ── Caller asks US for the price/rate ("kya rate chal raha hai? kitne mein bech sakte hain?") ──
@@ -242,6 +327,43 @@ class RealEstateAgent(Agent):
         state.last_user_text = text
         low_text = text.lower()
 
+        # ── Scenario B, deterministic (no LLM, exact scripted lines) ─────────────────────────
+        from .tools import other_property_question, ask_new_location_question
+        tools_ = self._re_tools
+
+        # B: caller refuses THIS location ("us location pe nahi bechna") -> "any other property?"
+        if state.step == _Step.INTRODUCTION and _rejects_this_location(text):
+            logger.info(f"📍 Refused THIS location -> asking about another property (no LLM): '{text}'")
+            ok = False
+            try:
+                await tools_.not_interested_in_this_location()
+                reply = state.direct_reply or other_property_question(state.reply_lang)
+                state.direct_reply = None
+                self.session.say(reply, allow_interruptions=True)
+                ok = True
+            except Exception as e:
+                logger.warning(f"Location-refusal shortcut failed, falling back to LLM: {e}")
+            if ok:
+                raise StopResponse()
+
+        # B1 / B2: clean yes / no to "do you have any other property?"
+        if state.step == _Step.CHECK_OTHER_PROPERTY:
+            _ans = _other_property_answer(text)
+            if _ans is not None:
+                logger.info(f"🏘️ Other property answer = {_ans} (no LLM): '{text}'")
+                ok = False
+                try:
+                    await tools_.has_other_property(has_other=_ans)   # False -> not-interested closing is spoken by the tool
+                    if _ans:
+                        reply = state.direct_reply or ask_new_location_question(state.reply_lang)
+                        state.direct_reply = None
+                        self.session.say(reply, allow_interruptions=True)
+                    ok = True
+                except Exception as e:
+                    logger.warning(f"Other-property shortcut failed, falling back to LLM: {e}")
+                if ok:
+                    raise StopResponse()
+
         # Caller says "standalone" / "independent" property -> no unit number or floor exists, so
         # get_missing_fields() stops asking for them. Checked on every pre-closing intake turn.
         from .tools import is_standalone_from_speech
@@ -325,8 +447,12 @@ class RealEstateAgent(Agent):
         from .tools import classify_category, classify_intent, commercial_type_from_speech
         from .state import RealEstateStep
 
-        detected_cat = classify_category(text)
-        detected_int = classify_intent(text)
+        # A refusal ("nahi, us location pe nahi bechna") must not be read as an intent ('bechna' -> sale).
+        _refusal = state.step in (RealEstateStep.INTRODUCTION, RealEstateStep.CHECK_OTHER_PROPERTY) and (
+            _rejects_this_location(text) or _starts_with_negation(text)
+        )
+        detected_cat = None if _refusal else classify_category(text)
+        detected_int = None if _refusal else classify_intent(text)
         step_changed = False
 
         if detected_cat:
@@ -428,6 +554,46 @@ class RealEstateAgent(Agent):
                 state.valuation_requested = False
             else:
                 raise StopResponse()
+
+        # ── FAST PATH: a clean answer to the ONE open intake question needs no LLM call ─────────────
+        # Parsed with regex (fastpath.py) -> save_property_details() -> the tool speaks the next canonical
+        # question (FAST_TOOL_REPLY). Anything unclear / multi-field / objection returns None and the
+        # normal LLM path below handles it exactly as before.
+        if (
+            FASTPATH_ENABLED
+            and FAST_TOOL_REPLY
+            and text
+            and state.step in (
+                RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.RESIDENTIAL_LEASE,
+                RealEstateStep.COMMERCIAL_SALE, RealEstateStep.COMMERCIAL_LEASE,
+            )
+            and not state.closing_spoken
+            and not state.impatient_detected
+        ):
+            _fp_missing = state.get_missing_fields()
+            if _fp_missing:
+                _fp_field = _fp_missing[0]["id"]
+                if _fp_field == "commercial_type":
+                    _ct = commercial_type_from_speech(text)
+                    _fp_kw = {"commercial_type": _ct} if (_ct and _ct != "Other" and len(_tokens(text)) <= 4) else None
+                else:
+                    _fp_kw = _fastpath_extract(_fp_field, text)
+                if _fp_kw:
+                    try:
+                        await self._re_tools.save_property_details(**_fp_kw)
+                    except Exception as e:
+                        logger.warning(f"Fast path failed, falling back to LLM: {e}")
+                    else:
+                        logger.info(f"⚡ FASTPATH (LLM skipped) field={_fp_field} saved={_fp_kw} heard='{text[:80]}'")
+                        if not state.closing_spoken:   # closing is spoken by the tool itself
+                            _fp_reply, state.direct_reply = state.direct_reply, None
+                            if not _fp_reply:          # never leave dead air
+                                _m = state.get_missing_fields()
+                                if _m:
+                                    _fp_reply = _m[0]["question_en"] if state.reply_lang == "en" else _m[0]["question_hi"]
+                            if _fp_reply:
+                                self.session.say(_fp_reply, allow_interruptions=True)
+                        raise StopResponse()
 
     async def llm_node(self, chat_ctx, tools, model_settings):
         """Prevent hallucinated second tool call when last item was tool output.
