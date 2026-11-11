@@ -146,6 +146,23 @@ def _other_property_answer(text: str):
     return None
 
 
+_REFUSAL_FILL = {"toh", "to", "ji", "jee", "sir", "abhi", "bilkul", "bas", "तो", "जी", "सर", "अभी", "बिल्कुल"}
+
+
+def _is_bare_refusal(text: str) -> bool:
+    """A plain "nahi" / "nahi ji" / "toh nahi" / "no sir" with nothing else: treated as refusing THIS property,
+    so the deterministic "any other property?" line is spoken without an LLM round trip (~1.3s saved)."""
+    for c in _variants(text):
+        toks = _tokens(c)
+        if not toks or len(toks) > 4:
+            continue
+        if any(t in _STRONG_AFF for t in toks):
+            continue
+        if any(t in _NEG_TOKENS for t in toks) and all(t in _NEG_TOKENS or t in _REFUSAL_FILL for t in toks):
+            return True
+    return False
+
+
 def _starts_with_negation(text: str) -> bool:
     toks = _tokens(text)
     return bool(toks) and toks[0] in _NEG_TOKENS
@@ -328,18 +345,18 @@ class RealEstateAgent(Agent):
         low_text = text.lower()
 
         # ── Scenario B, deterministic (no LLM, exact scripted lines) ─────────────────────────
-        from .tools import other_property_question, ask_new_location_question
+        from .tools import other_property_question, ask_new_location_question, say_cached
         tools_ = self._re_tools
 
         # B: caller refuses THIS location ("us location pe nahi bechna") -> "any other property?"
-        if state.step == _Step.INTRODUCTION and _rejects_this_location(text):
+        if state.step == _Step.INTRODUCTION and (_rejects_this_location(text) or _is_bare_refusal(text)):
             logger.info(f"📍 Refused THIS location -> asking about another property (no LLM): '{text}'")
             ok = False
             try:
                 await tools_.not_interested_in_this_location()
                 reply = state.direct_reply or other_property_question(state.reply_lang)
                 state.direct_reply = None
-                self.session.say(reply, allow_interruptions=True)
+                say_cached(self.session, state, reply, True)
                 ok = True
             except Exception as e:
                 logger.warning(f"Location-refusal shortcut failed, falling back to LLM: {e}")
@@ -357,7 +374,7 @@ class RealEstateAgent(Agent):
                     if _ans:
                         reply = state.direct_reply or ask_new_location_question(state.reply_lang)
                         state.direct_reply = None
-                        self.session.say(reply, allow_interruptions=True)
+                        say_cached(self.session, state, reply, True)
                     ok = True
                 except Exception as e:
                     logger.warning(f"Other-property shortcut failed, falling back to LLM: {e}")
