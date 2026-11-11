@@ -1114,6 +1114,7 @@ async def entrypoint(ctx: agents.JobContext):
     if opening_speech is None:
         opening_speech = session.say(greeting, allow_interruptions=False)
     log_dialogue("assistant", greeting)
+    state.last_agent_question = greeting
 
     # 4. Silence watchdog
     async def silence_watchdog():
