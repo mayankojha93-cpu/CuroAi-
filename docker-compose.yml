@@ -25,6 +25,8 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres123}@postgres:5432/${POSTGRES_DB:-ai_calling}
       PORT: 3000
       RECORDING_STORAGE_DIR: /app/recordings
+      EXOTEL_BRIDGE_HOST: exotel-bridge
+      EXOTEL_BRIDGE_PORT: 8088
     ports:
       - "3000:3000"
     volumes:
@@ -69,6 +71,24 @@ services:
       - .env
     environment:
       BACKEND_URL: http://backend:3000
+    depends_on:
+      backend:
+        condition: service_started
+
+  # Exotel WSS Audio Bridge: proxies Exotel WebSocket media stream to LiveKit Cloud WebRTC
+  exotel-bridge:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    command: ["python", "exotel_wss_bridge.py"]
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      BACKEND_URL: http://backend:3000
+      EXOTEL_BRIDGE_PORT: 8088
+    ports:
+      - "8088:8088"
     depends_on:
       backend:
         condition: service_started
