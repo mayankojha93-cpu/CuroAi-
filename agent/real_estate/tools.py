@@ -1,4 +1,5 @@
 import re
+import random
 import logging
 import asyncio
 from typing import Optional, List, Dict, Any, Union
@@ -111,12 +112,12 @@ def commercial_type_from_speech(text: Any) -> Optional[str]:
 
 # Standalone / independent property: no separate unit number or floor exists, so we never ask for them.
 # "independent floor" / "builder floor" are NOT standalone (one floor of a building -> floor matters).
-_STANDALONE_RE = re.compile(r"(?<![a-z])(stand[\s\-]?alone|independent)(?![a-z])")
-_STANDALONE_DEV = re.compile(r"(स्टैंड\s?अलोन|स्टैंडअलोन|इंडिपेंडेंट|इंडिपेंडेन्ट)")
+_STANDALONE_RE = re.compile(r"(?<![a-z])(stand[\s\-]?alone|free[\s\-]?standing|independent)(?![a-z])")
+_STANDALONE_DEV = re.compile(r"(स्टैंड\s?अलोन|स्टैंडअलोन|इंडिपेंडेंट|इंडिपेंडेन्ट|फ्री\s?स्टैंडिंग)")
 _STANDALONE_NEG_RE = re.compile(
-    r"(not\s+(a\s+|an\s+)?(stand[\s\-]?alone|independent)"
-    r"|(stand[\s\-]?alone|independent)\s+(nahi|nahin|nhi)"
-    r"|(stand[\s\-]?alone|independent)\s+(floor|builder))"
+    r"(not\s+(a\s+|an\s+)?(stand[\s\-]?alone|free[\s\-]?standing|independent)"
+    r"|(stand[\s\-]?alone|free[\s\-]?standing|independent)\s+(nahi|nahin|nhi)"
+    r"|(stand[\s\-]?alone|free[\s\-]?standing|independent)\s+(floor|builder))"
 )
 
 
@@ -131,6 +132,24 @@ def is_standalone_from_speech(text: Any) -> bool:
     return bool(_STANDALONE_RE.search(low) or _STANDALONE_DEV.search(low))
 
 
+def other_property_question(lang: str) -> str:
+    """Scenario B: asked right after the caller refuses the property at the given location."""
+    return (
+        "Understood, Sir. Do you have any other property location that you would like to sell or rent?"
+        if lang == "en"
+        else "Ji Sir, samajh gayi. Kya aapki koi doosri property hai jise aap sell ya rent karna chahte hain?"
+    )
+
+
+def ask_new_location_question(lang: str) -> str:
+    """Scenario B2: asked when the caller says they have another property."""
+    return (
+        "Great, Sir! Which location or sector is that property in?"
+        if lang == "en"
+        else "Achha Sir, wo property kis location ya sector mein hai?"
+    )
+
+
 class RealEstateTools:
     def __init__(self, state: RealEstateState, post_outcome_func, hangup_func):
         self.state = state
@@ -140,25 +159,105 @@ class RealEstateTools:
         self.log_dialogue_func = None  # Bound by worker
         self._hangup_scheduled = False
         self._ack_i = 0
+        self._last_ack = ""
 
     # ── Fast reply helper (skips the 2nd LLM call after a tool) ─────────────
-    _ACK_HI = ("Theek hai.", "Achha.", "Okay Sir.", "Samajh gayi.")
-    _ACK_EN = ("Got it.", "Sure, Sir.", "Okay.", "Understood.")
+    # Human feel: a wider pool, picked at random but never the same word twice in a row.
+    _ACK_HI = ("Achha.", "Theek hai.", "Okay.", "Haan ji.", "Perfect.", "Samajh gayi.", "Got it.", "Ji, noted.", "Bilkul.")
+    _ACK_EN = ("Got it.", "Sure.", "Okay.", "Alright.", "Perfect.", "Understood.", "Great.", "Okay, noted.", "Right.")
+    _SHORT_ACK_HI = ("achha", "theek hai", "perfect", "noted", "great", "bilkul")
+    _SHORT_ACK_EN = ("got it", "perfect", "noted", "great", "okay", "alright")
 
-    def _fast(self, question: str, fallback: str, ack: Optional[str] = "auto") -> str:
+    def _pick(self, pool):
+        """Random choice that never repeats the previous acknowledgement (same opening word every turn
+        is the most robotic thing a caller hears)."""
+        key = lambda s: s.lower().strip(" .,")
+        choices = [p for p in pool if key(p) != self._last_ack] or list(pool)
+        pick = random.choice(choices)
+        self._last_ack = key(pick)
+        return pick
+
+    def _fast(self, question: str, fallback: str, ack: Optional[str] = "auto", echo: Optional[str] = None) -> str:
         """If FAST_TOOL_REPLY is on, store the exact line to speak in state.direct_reply and
         return a neutral tool result. llm_node then speaks it without calling the LLM again.
         Otherwise return `fallback` (the original instruction string) = old behaviour."""
         if not FAST_TOOL_REPLY or not question:
             return fallback
         en = self.state.reply_lang == "en"
-        if ack == "auto":
-            pool = self._ACK_EN if en else self._ACK_HI
-            ack = pool[self._ack_i % len(pool)]
-            self._ack_i += 1
+        if echo:
+            # "3 BHK, achha." / "704 on 7th floor, perfect."  -> sounds like someone actually listened
+            short = self._pick(self._SHORT_ACK_EN if en else self._SHORT_ACK_HI)
+            ack = f"{echo[:1].upper()}{echo[1:]}, {short}."
+        elif ack == "auto":
+            ack = self._pick(self._ACK_EN if en else self._ACK_HI)
         text = f"{ack} {question}".strip() if ack else question
         self.state.direct_reply = text
         return f"Reply already spoken to the customer: '{text}'. Do not repeat it."
+
+    # ── Echo of what the caller just said (only ever a value that is really in their words) ──
+    _ECHO_FIELDS = (
+        "unit_number", "floor_number", "bhk_config", "commercial_type",
+        "approx_area_sqft", "furnishing_status", "expected_sale_price", "expected_monthly_rent",
+    )
+
+    def _snap(self) -> Dict[str, Any]:
+        return {k: getattr(self.state, k, None) for k in self._ECHO_FIELDS}
+
+    def _in_heard(self, value: Any) -> bool:
+        """True only if `value` is backed by the caller's latest words (digits, or a 3+ letter word).
+        Guarantees we never read back a detail the LLM invented."""
+        heard = (self.state.last_user_text or "").lower()
+        if not heard or value is None:
+            return False
+        v = str(value).lower()
+        digits = re.findall(r"\d+(?:\.\d+)?", v)
+        if digits:
+            return any(re.search(r"(?<![\d.])" + re.escape(d) + r"(?!\d)", heard) for d in digits)
+        return any(w in heard for w in re.findall(r"[a-z]{3,}", v))
+
+    def _echo_from_changes(self, before: Dict[str, Any]) -> Optional[str]:
+        """2-4 word echo of ONE newly saved detail, or None."""
+        try:
+            s = self.state
+
+            def new(k):
+                v = getattr(s, k, None)
+                return v if v not in (None, "") and v != before.get(k) else None
+
+            unit, floor = new("unit_number"), new("floor_number")
+            if unit and floor and self._in_heard(unit):
+                fl = str(floor)
+                fl = fl if "floor" in fl.lower() else f"{fl} floor"
+                return f"{unit} on {fl}"
+            bhk = new("bhk_config")
+            if bhk and self._in_heard(bhk):
+                return str(bhk) if re.search(r"bhk", str(bhk), re.I) else f"{bhk} BHK"
+            ctype = new("commercial_type")
+            if ctype and ctype != "Other" and self._in_heard(ctype):
+                return str(ctype).capitalize()
+            area = new("approx_area_sqft")
+            if area:
+                a = int(area) if float(area).is_integer() else area
+                if self._in_heard(a):
+                    return f"{a} square feet"
+            fur = new("furnishing_status")
+            if fur and self._in_heard(fur):
+                return str(fur).capitalize()
+            for k in ("expected_sale_price", "expected_monthly_rent"):
+                p = new(k)
+                if p and self._in_heard(p):
+                    return str(p)
+        except Exception:
+            pass
+        return None
+
+    def _apply_standalone(self):
+        """'independent house' / 'standalone' / 'freestanding building' said in the caller's latest words
+        -> no unit number or floor exists, so get_missing_fields() must stop asking for them. Called before
+        every tool that computes the next question, so it also works when it is said at the very first reply."""
+        if not self.state.is_standalone and is_standalone_from_speech(self.state.last_user_text):
+            self.state.is_standalone = True
+            logger.info("Standalone/independent property -> unit number & floor will be skipped")
 
     async def _go(self, next_step: RealEstateStep):
         """Transition step and synchronize agent instructions and available tools."""
@@ -212,6 +311,7 @@ class RealEstateTools:
         """Call when customer confirms they are interested in selling or renting their property.
         Optionally accepts category ('residential'/'commercial') or intent ('sale'/'lease'/'rent') if mentioned."""
         self.state.is_interested = True
+        self._apply_standalone()
 
         # Both customer name and property location are already provided from data/records.
         # It is STRICTLY FORBIDDEN to ask customer name or property location.
@@ -276,12 +376,16 @@ class RealEstateTools:
     @function_tool
     async def not_interested_in_this_location(self) -> str:
         """Call when customer says they are not looking to sell or rent the property at the currently mentioned location, but may consider other properties."""
+        # The refused property is discarded. Words from this sentence ("us location pe nahi BECHNA") must
+        # never leak into the NEXT property's category / intent, or the B2 question would be cut short.
+        s = self.state
+        s.category = None
+        s.intent = None
+        s.commercial_type = None
+        s.bhk_config = None
+        s.is_standalone = False
         await self._go(RealEstateStep.CHECK_OTHER_PROPERTY)
-        q = (
-            "Understood, Sir. Do you have any other property location that you would like to sell or rent?"
-            if self.state.reply_lang == "en"
-            else "Ji Sir, samajh gayi. Kya aapki koi doosri property hai jise aap sell ya rent karna chahte hain?"
-        )
+        q = other_property_question(s.reply_lang)
         return self._fast(q, f"Ask if they have another property to sell or rent: '{q}'", ack=None)
 
     @function_tool
@@ -300,6 +404,7 @@ class RealEstateTools:
 
         self.state.has_other_property = True
         self.state.is_standalone = False  # new property: decide again from what the caller says
+        self._apply_standalone()
 
         if new_location:
             clean_loc = _clean_str(new_location)
@@ -360,6 +465,9 @@ class RealEstateTools:
         intent: Optional[str] = None,
     ) -> str:
         """Call when customer provides the location/sector of their new property to sell or rent."""
+        if self.state.step == RealEstateStep.CHECK_OTHER_PROPERTY:
+            self.state.is_standalone = False  # straight from "any other property?": this is a new property
+        self._apply_standalone()
         clean_loc = _clean_str(location)
         if clean_loc:
             self.state.sector_or_location = clean_loc
@@ -445,6 +553,7 @@ class RealEstateTools:
         intent: Optional[str] = None,
     ) -> str:
         """Set property category (residential/commercial) and intent (sale/lease/rent)."""
+        self._apply_standalone()
         # The LLM sometimes invents category='residential', intent='sale' after a bare "haan".
         # Accept an argument only if the caller's latest words actually support it.
         heard = (self.state.last_user_text or "").strip()
@@ -517,6 +626,7 @@ class RealEstateTools:
         Pass just those parameters and OMIT every other parameter. Never pass null and never guess
         or reuse values from earlier turns. commercial_type must be exactly the unit type the caller
         said (office, shop, showroom...); never assume it."""
+        before = self._snap()
         clean_society = _clean_str(project_or_society)
         if clean_society:
             self.state.project_or_society = clean_society
@@ -634,7 +744,8 @@ class RealEstateTools:
 
         next_field = missing[0]
         q = next_field["question_en"] if self.state.reply_lang == "en" else next_field["question_hi"]
-        return self._fast(q, f"Details saved. Echo what the caller mentioned, and naturally ask: '{q}'")
+        return self._fast(q, f"Details saved. Echo what the caller mentioned, and naturally ask: '{q}'",
+                          echo=self._echo_from_changes(before))
 
     @function_tool
     async def customer_does_not_know(self, field_id: Optional[str] = None) -> str:
