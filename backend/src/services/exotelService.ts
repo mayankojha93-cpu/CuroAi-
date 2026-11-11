@@ -39,7 +39,7 @@ export async function initiateExotelWssCall(params: ExotelWssCallParams): Promis
   }
 
   // Caller ID ExoPhone
-  let callerId = params.callerId || env.SIP_CALLER_ID || env.EXOTEL_CALLER_ID || '02241780517';
+  let callerId = params.callerId || env.SIP_CALLER_ID || env.EXOTEL_CALLER_ID || '07948514615';
   if (callerId.startsWith('+91') && callerId.length === 13) {
     callerId = `0${callerId.slice(3)}`;
   }
