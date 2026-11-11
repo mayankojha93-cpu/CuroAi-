@@ -24,28 +24,32 @@ export class ComplianceService {
 
   /**
    * Scrub phone number against DND (Do Not Disturb) and suppression tables.
+   * Only genuine Do-Not-Call (DNC / DND) requests suppress calls.
+   * Note: "Wrong Number" and completed tickets (is_closed) are NOT DND and must not suppress future campaigns.
    */
   async isDndSuppressed(phone: string): Promise<{ suppressed: boolean; reason?: string }> {
     const normalized = normalizePhone(phone);
     if (!normalized) return { suppressed: false };
 
-    // Check both real estate leads and customer tables for DND / DNC markers
+    // Check suppression table, real estate leads, and customer tables for explicit DND / DNC markers
     const res = await query(
-      `SELECT 'real_estate_leads' as source, current_disposition, lead_status
+      `SELECT 'suppressed_contacts' as source, reason as current_disposition, '' as lead_status
+       FROM suppressed_contacts
+       WHERE phone = $1
+         AND LOWER(COALESCE(reason, '')) IN ('do not call', 'dnc', 'dnd', 'do_not_call')
+       UNION ALL
+       SELECT 'real_estate_leads' as source, current_disposition, lead_status
        FROM real_estate_leads
        WHERE phone = $1
          AND (
-           LOWER(COALESCE(current_disposition, '')) IN ('do not call', 'dnc', 'dnd', 'wrong number')
-           OR LOWER(COALESCE(lead_status, '')) IN ('dnd', 'unreachable')
+           LOWER(COALESCE(current_disposition, '')) IN ('do not call', 'dnc', 'dnd')
+           OR LOWER(COALESCE(lead_status, '')) IN ('dnc', 'do_not_call')
          )
        UNION ALL
        SELECT 'customers' as source, current_disposition, '' as lead_status
        FROM customers
        WHERE phone = $1
-         AND (
-           LOWER(COALESCE(current_disposition, '')) IN ('do_not_call', 'dnc', 'dnd', 'wrong_person', 'wrong_number')
-           OR is_closed = TRUE
-         )
+         AND LOWER(COALESCE(current_disposition, '')) IN ('do_not_call', 'dnc', 'dnd')
        LIMIT 1`,
       [normalized]
     );
@@ -54,7 +58,7 @@ export class ComplianceService {
       const row = res.rows[0];
       return {
         suppressed: true,
-        reason: `Number ${normalized} is suppressed (Reason: ${row.current_disposition || row.lead_status || 'DND'})`,
+        reason: `Number ${normalized} is on Do-Not-Call list (Reason: ${row.current_disposition || row.lead_status || 'DND'})`,
       };
     }
 
