@@ -91,7 +91,7 @@ callsRouter.post(
 
       // 3. If real estate lead, initiate via realEstateCallService
       if (isReLead) {
-        const call = await realEstateCallService.initiateCall(customerId, { skipHoursCheck: true });
+        const call = await realEstateCallService.initiateCall(customerId);
         return res.status(201).json({
           message: 'Real estate campaign call initiated successfully',
           call: {
@@ -130,7 +130,7 @@ callsRouter.post(
           );
           leadId = newLead.rows[0].id;
         }
-        const call = await realEstateCallService.initiateCall(leadId, { skipHoursCheck: true });
+        const call = await realEstateCallService.initiateCall(leadId);
         return res.status(201).json({
           message: 'Real estate campaign call initiated successfully',
           call: {
