@@ -44,7 +44,7 @@ const DEVELOPER_PRESETS: SamplePreset[] = [
       service_end_date: '2026-08-27',
       r_date: '2026-08-29',
       address: 'Delhi, 110011, burari, sant nagar',
-      language: 'hi',
+      language: 'en',
     },
   },
   {
@@ -60,7 +60,7 @@ const DEVELOPER_PRESETS: SamplePreset[] = [
       service_end_date: '2026-09-15',
       r_date: '2026-09-18',
       address: 'Flat 402, Sunshine Heights, Koramangala 4th Block, Bengaluru - 560034',
-      language: 'hi',
+      language: 'en',
     },
   },
   {
@@ -76,7 +76,7 @@ const DEVELOPER_PRESETS: SamplePreset[] = [
       service_end_date: '2026-08-10',
       r_date: '2026-08-14',
       address: 'C-12, Sector 62, Green Park Extension, Noida, UP - 201309',
-      language: 'hi',
+      language: 'en',
     },
   },
 ];
