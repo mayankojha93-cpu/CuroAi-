@@ -1122,22 +1122,37 @@ export class CampaignService {
       const reQuery = `
         SELECT
           rl.id as lead_id,
-          COALESCE(rl.property_location, 'Real Estate Unit') as subs_del_no,
           rl.phone as mobile,
           rl.owner_name as customer_name,
-          'My Estate Finder' as product_name,
+          rl.email,
           COALESCE(rl.property_location, 'Location On Record') as address,
-          null as pincode,
-          null as service_end_date,
-          null as account_no,
-          null as customer_identifier,
-          null as zone,
-          null as town_flag,
           (rl.lead_status IN ('QUALIFIED', 'NOT_INTERESTED', 'DO_NOT_CALL')) as is_closed,
           rl.current_disposition,
           rl.total_attempts,
-          rl.created_at as lead_created_at
+          rl.created_at as lead_created_at,
+          rp.category,
+          rp.intent,
+          rp.project_or_society,
+          rp.sector_or_location,
+          rp.unit_number,
+          rp.floor_number,
+          rp.bhk_config,
+          rp.commercial_type,
+          rp.approx_area_sqft,
+          rp.furnishing_status,
+          COALESCE(rp.expected_sale_price, rp.expected_monthly_rent) as expected_price,
+          ro.agent_summary
         FROM real_estate_leads rl
+        LEFT JOIN LATERAL (
+          SELECT * FROM real_estate_properties
+          WHERE lead_id = rl.id
+          ORDER BY created_at DESC LIMIT 1
+        ) rp ON true
+        LEFT JOIN LATERAL (
+          SELECT * FROM real_estate_outcomes
+          WHERE lead_id = rl.id
+          ORDER BY created_at DESC LIMIT 1
+        ) ro ON true
         WHERE rl.campaign_id = $1
            OR rl.id IN (SELECT DISTINCT re_lead_id FROM calls WHERE campaign_id = $1 AND re_lead_id IS NOT NULL)
         ORDER BY rl.created_at ASC
@@ -1158,7 +1173,8 @@ export class CampaignService {
               c.recording_url,
               c.ended_at,
               COALESCE(ro.final_disposition, c.call_status, c.status) as disposition,
-              ro.final_disposition as outcome_disposition
+              ro.final_disposition as outcome_disposition,
+              ro.agent_summary as call_summary
             FROM calls c
             LEFT JOIN real_estate_outcomes ro ON c.id = ro.call_id
             WHERE c.re_lead_id = $1 OR (c.campaign_id = $2 AND c.re_lead_id = $1)
@@ -1168,19 +1184,18 @@ export class CampaignService {
           const calls = callsRes.rows;
           const attemptsCount = Math.max(lead.total_attempts || 0, calls.length);
 
-          const attemptDisps: Record<string, string> = {};
-          for (let i = 1; i <= 8; i++) {
-            const attemptCall = calls.find((c: any) => c.attempt_number === i) || calls[i - 1];
-            if (attemptCall) {
-              const matched = matchRealEstateDisposition(
-                attemptCall.outcome_disposition || attemptCall.disposition,
-                attemptCall.duration_seconds,
-                attemptCall.call_status
-              );
-              attemptDisps[`attempt_${i}`] = matched;
-            } else {
-              attemptDisps[`attempt_${i}`] = '';
-            }
+          const attemptDispositions: (string | null)[] = Array(8).fill(null);
+          for (let i = 0; i < calls.length; i++) {
+            const call = calls[i];
+            const rawDisp = call.outcome_disposition || call.disposition || call.call_status || '';
+            const matched = rawDisp
+              ? matchRealEstateDisposition(rawDisp, call.duration_seconds, call.call_status)
+              : '';
+            const attemptNum = typeof call.attempt_number === 'number' && call.attempt_number >= 1
+              ? call.attempt_number
+              : (calls.length === 1 && attemptsCount > 1 ? attemptsCount : (i + 1));
+            const attemptIdx = Math.min(Math.max(attemptNum - 1, 0), 7);
+            attemptDispositions[attemptIdx] = matched || rawDisp || null;
           }
 
           const connectedCalls = calls.filter((c: any) => {
@@ -1190,6 +1205,7 @@ export class CampaignService {
           });
           const connectedAttemptsCount = connectedCalls.length;
 
+          const firstCallTime = calls.length > 1 && calls[0]?.call_time ? calls[0].call_time : null;
           const lastCall = calls.length > 0 ? calls[calls.length - 1] : null;
           const lastCallTime = lastCall?.call_time || null;
           const lastRecordingUrl = calls.slice().reverse().find((c: any) => c.recording_url)?.recording_url || '';
@@ -1204,32 +1220,50 @@ export class CampaignService {
             overallStatus = finalDisposition === 'Schedule Callback' || finalDisposition === 'Advisor Callback Booked' ? 'Callback' : 'Failed';
           }
 
+          const agentSummary = lastCall?.call_summary || lead.agent_summary || '';
+
           reportRows.push({
+            sno: idx + 1,
             s_no: idx + 1,
             lead_id: lead.lead_id,
-            subs_del_no: lead.subs_del_no || '',
-            mobile: formatMobileNumber(lead.mobile),
             customer_name: lead.customer_name || 'Property Owner',
-            product_name: lead.product_name || 'My Estate Finder',
+            mobile: formatMobileNumber(lead.mobile),
+            email: lead.email || '',
             address: lead.address || '',
-            pincode: '',
-            zone: '',
-            town_flag: '',
+            category: lead.category ? (lead.category.charAt(0).toUpperCase() + lead.category.slice(1).toLowerCase()) : '',
+            intent: lead.intent ? (lead.intent.charAt(0).toUpperCase() + lead.intent.slice(1).toLowerCase()) : '',
+            society: lead.project_or_society || '',
+            unit_number: lead.unit_number || '',
+            floor_number: lead.floor_number || '',
+            bhk_config: lead.bhk_config || lead.commercial_type || '',
+            approx_area_sqft: lead.approx_area_sqft ? `${lead.approx_area_sqft} sqft` : '',
+            furnishing_status: lead.furnishing_status || '',
+            expected_price: lead.expected_price || '',
             status: overallStatus,
             attempts_count: attemptsCount,
             connected_attempts_count: connectedAttemptsCount,
+            first_call_time: firstCallTime ? formatDateTime(firstCallTime) : '',
             last_call_time: lastCallTime ? formatDateTime(lastCallTime) : '',
-            attempt_1: attemptDisps.attempt_1 || '',
-            attempt_2: attemptDisps.attempt_2 || '',
-            attempt_3: attemptDisps.attempt_3 || '',
-            attempt_4: attemptDisps.attempt_4 || '',
-            attempt_5: attemptDisps.attempt_5 || '',
-            attempt_6: attemptDisps.attempt_6 || '',
-            attempt_7: attemptDisps.attempt_7 || '',
-            attempt_8: attemptDisps.attempt_8 || '',
+            attempt_1_disposition: attemptDispositions[0] || '',
+            attempt_2_disposition: attemptDispositions[1] || '',
+            attempt_3_disposition: attemptDispositions[2] || '',
+            attempt_4_disposition: attemptDispositions[3] || '',
+            attempt_5_disposition: attemptDispositions[4] || '',
+            attempt_6_disposition: attemptDispositions[5] || '',
+            attempt_7_disposition: attemptDispositions[6] || '',
+            attempt_8_disposition: attemptDispositions[7] || '',
+            attempt_1: attemptDispositions[0] || '',
+            attempt_2: attemptDispositions[1] || '',
+            attempt_3: attemptDispositions[2] || '',
+            attempt_4: attemptDispositions[3] || '',
+            attempt_5: attemptDispositions[4] || '',
+            attempt_6: attemptDispositions[5] || '',
+            attempt_7: attemptDispositions[6] || '',
+            attempt_8: attemptDispositions[7] || '',
             final_disposition: finalDisposition,
             conclusion_date: lastCallTime ? formatDateTime(lastCallTime) : '',
             recording: lastRecordingUrl || '',
+            agent_summary: agentSummary,
           });
         }
         return reportRows;
