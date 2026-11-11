@@ -124,7 +124,7 @@ callsRouter.post(
         } else {
           const newLead = await query(
             `INSERT INTO real_estate_leads (id, campaign_id, owner_name, phone, preferred_language, lead_status)
-             VALUES (gen_random_uuid(), $1, $2, $3, 'hi', 'NEW')
+             VALUES (gen_random_uuid(), $1, $2, $3, 'en', 'NEW')
              RETURNING id`,
             [custRow.campaign_id, custRow.name, custRow.phone]
           );
@@ -245,8 +245,8 @@ callsRouter.post(
             companyName: (call as any).company_name || 'My Estate Finder',
             script: (call as any).script || 'My Estate Finder — Property Intake',
             voicePipeline: (call as any).voice_pipeline || 'Sarvam AI (Priya - hi/en)',
-            language: (call as any).language || lead.preferred_language || 'hi',
-            initialLanguage: (call as any).initial_language || lead.preferred_language || 'hi',
+            language: (call as any).language || lead.preferred_language || 'en',
+            initialLanguage: (call as any).initial_language || lead.preferred_language || 'en',
             languageSwitched: (call as any).language_switched || false,
             createdAt: call.created_at,
           },
