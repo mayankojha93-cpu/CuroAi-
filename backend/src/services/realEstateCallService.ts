@@ -132,8 +132,8 @@ export class RealEstateCallService {
       propertyLocation = null;
     }
 
-    const rawLang = (data.language || 'hi').trim().toLowerCase();
-    const cleanLang = (rawLang === 'en' || rawLang === 'english' || rawLang.startsWith('en-')) ? 'en' : 'hi';
+    const rawLang = (data.language || 'en').trim().toLowerCase();
+    const cleanLang = (rawLang === 'hi' || rawLang === 'hindi' || rawLang.startsWith('hi-') || rawLang === 'hinglish') ? 'hi' : 'en';
 
     // Reuse existing lead or create new lead
     const existingLead = await query(`SELECT * FROM real_estate_leads WHERE phone = $1 LIMIT 1`, [normalizedPhone]);
@@ -262,7 +262,7 @@ export class RealEstateCallService {
        VALUES ($1, $2, $3, 'initiated', 'initiated', $4, $5, 'outbound',
                'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Priya - hi/en)', 'real_estate', $6, $6, FALSE)
        RETURNING *`,
-      [callId, leadId, lead.campaign_id, attempt, roomName, lead.preferred_language || 'hi']
+      [callId, leadId, lead.campaign_id, attempt, roomName, lead.preferred_language || 'en']
     );
     const call = insCall.rows[0];
 
@@ -300,7 +300,7 @@ export class RealEstateCallService {
         ownerName: safeLeadName,
         customerName: safeLeadName,
         phone: lead.phone,
-        preferredLanguage: lead.preferred_language || 'hi',
+        preferredLanguage: lead.preferred_language || 'en',
         direction: 'outbound',
         propertyLocation: effectiveLocation,
         address: effectiveLocation,
@@ -1022,8 +1022,10 @@ ${dialogueText.slice(0, 4000)}`;
 
     // 5. Update lead status if lead exists
     if (leadId) {
-      if (data.language) {
-        await query(`UPDATE real_estate_leads SET preferred_language = $1 WHERE id = $2`, [data.language, leadId]);
+      // Keep the lead's starting language (not the mid-call switched one) so retries begin in the default/initial language.
+      const leadLang = data.initial_language || data.language;
+      if (leadLang) {
+        await query(`UPDATE real_estate_leads SET preferred_language = $1 WHERE id = $2`, [leadLang, leadId]);
       }
       let leadStatus = 'CONTACTED';
       if (canonicalDisp === 'Qualified Lead') leadStatus = 'QUALIFIED';
@@ -1207,4 +1209,3 @@ ${dialogueText.slice(0, 4000)}`;
 }
 
 export const realEstateCallService = new RealEstateCallService();
-
