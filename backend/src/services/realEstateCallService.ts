@@ -99,19 +99,13 @@ export class RealEstateCallService {
     property_location?: string;
     address?: string;
     notes?: string;
-  }, options?: { skipHoursCheck?: boolean }) {
+  }) {
     const normalizedPhone = normalizePhone(data.phone);
     if (!normalizedPhone || normalizedPhone.replace(/\D/g, '').length < 10) {
       throw new AppError('A valid 10-digit phone number is required to place a call', 400);
     }
 
-    // TEST CALL: bypassHours defaults to true for test calls
-    const bypassHours = (options?.skipHoursCheck ?? true) || env.ALLOW_AFTER_HOURS_CALLS === 'true';
-    if (env.NODE_ENV === 'production' && !bypassHours) {
-      const hoursCheck = complianceService.isWithinCallingHours();
-      if (!hoursCheck.allowed) {
-        throw new AppError(hoursCheck.reason!, 403);
-      }
+    if (env.NODE_ENV === 'production') {
       const dndCheck = await complianceService.isDndSuppressed(normalizedPhone);
       if (dndCheck.suppressed) {
         throw new AppError(dndCheck.reason!, 403);
@@ -124,7 +118,7 @@ export class RealEstateCallService {
       ? rawPassedName
       : null;
 
-    if (!ownerName && env.NODE_ENV === 'production' && !bypassHours) {
+    if (!ownerName && env.NODE_ENV === 'production') {
       throw new AppError('A verified owner_name is required before placing outbound calls in production', 400);
     }
 
@@ -200,7 +194,7 @@ export class RealEstateCallService {
   /**
    * Initiates an outbound call to an existing real_estate_lead
    */
-  async initiateCall(leadId: string, options?: { skipHoursCheck?: boolean }) {
+  async initiateCall(leadId: string) {
     const leadRes = await query(`SELECT * FROM real_estate_leads WHERE id = $1`, [leadId]);
     if (leadRes.rows.length === 0) {
       throw new AppError(`Real estate lead not found: ${leadId}`, 404);
@@ -225,13 +219,7 @@ export class RealEstateCallService {
       return { call: activeCheck.rows[0], lead };
     }
 
-    // CAMPAIGN CALL: bypassHours defaults to false for bulk calls
-    const bypassHours = (options?.skipHoursCheck ?? false) || env.ALLOW_AFTER_HOURS_CALLS === 'true';
-    if (env.NODE_ENV === 'production' && !bypassHours) {
-      const hoursCheck = complianceService.isWithinCallingHours();
-      if (!hoursCheck.allowed) {
-        throw new AppError(hoursCheck.reason!, 403);
-      }
+    if (env.NODE_ENV === 'production') {
       const dndCheck = await complianceService.isDndSuppressed(lead.phone);
       if (dndCheck.suppressed) {
         throw new AppError(dndCheck.reason!, 403);
@@ -239,7 +227,7 @@ export class RealEstateCallService {
     }
 
     const rawOwnerName = (lead.owner_name || '').trim();
-    if (env.NODE_ENV === 'production' && !bypassHours && (!rawOwnerName || ['property owner', 'test subscriber', 'customer', 'none', 'null'].includes(rawOwnerName.toLowerCase()))) {
+    if (env.NODE_ENV === 'production' && (!rawOwnerName || ['property owner', 'test subscriber', 'customer', 'none', 'null'].includes(rawOwnerName.toLowerCase()))) {
       throw new AppError(`Lead ${leadId} requires a verified owner name before placing an outbound call`, 400);
     }
 
