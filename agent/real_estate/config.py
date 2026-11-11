@@ -83,6 +83,9 @@ FASTPATH_ENABLED = os.getenv("FASTPATH_ENABLED", "1") == "1"
 #                        played from memory the moment the callee answers (no TTS wait on "Hello?").
 #                        Costs one greeting's worth of TTS characters for calls that are never answered.
 PRERENDER_GREETING = os.getenv("PRERENDER_GREETING", "1") == "1"
+# PRERENDER_COMMON=1 : also pre-synthesise the fixed lines that need no LLM (other-property question, closings)
+#                      while the phone rings, so they play with no TTS wait. Needs PRERENDER_GREETING-style TTS usage.
+PRERENDER_COMMON = os.getenv("PRERENDER_COMMON", "1") == "1"
 
 OPENROUTER_PROVIDER_SORT = os.getenv("OPENROUTER_PROVIDER_SORT", "latency").strip()
 PREEMPTIVE_GENERATION = os.getenv("PREEMPTIVE_GENERATION", "1") == "1"
