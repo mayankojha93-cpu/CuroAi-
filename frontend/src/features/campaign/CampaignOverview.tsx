@@ -97,7 +97,7 @@ export const CampaignOverview: React.FC<CampaignOverviewProps> = ({
   const handleDownloadCsv = async (campaign: CampaignItem) => {
     try {
       const reportData: CampaignReportRow[] = await fetchCampaignReport(campaign.id);
-      const csvContent = generateCampaignAuditedReportCsv(reportData);
+      const csvContent = generateCampaignAuditedReportCsv(reportData, campaign.pipeline);
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
