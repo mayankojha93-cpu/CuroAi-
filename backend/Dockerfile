@@ -34,4 +34,4 @@ COPY --from=builder /app/migrations ./migrations
 EXPOSE 3000
 
 # Run migrations, seed, and start server
-CMD ["sh", "-c", "node dist/src/db/migrate.js && node dist/src/db/seed.js && node dist/src/index.js"]
+CMD ["sh", "-c", "node dist/src/db/migrate.js && (node dist/src/db/seed.js || true) && node dist/src/index.js"]
