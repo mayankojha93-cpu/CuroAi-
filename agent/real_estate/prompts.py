@@ -328,18 +328,41 @@ MANDATORY INSTRUCTIONS:
 """
 
     if step == RealEstateStep.CATEGORY_SELECT:
+        en = state.reply_lang == "en"
+        already_known_parts = []
+        if state.category:
+            already_known_parts.append(f"category='{state.category}' is ALREADY CONFIRMED — DO NOT ask about it again!")
         if state.intent:
+            already_known_parts.append(f"intent='{state.intent}' is ALREADY CONFIRMED — DO NOT ask about it again!")
+        already_known_note = "\n".join(already_known_parts)
+
+        if state.category and state.intent:
+            # Both are known — this instruction block should rarely render (step transitions happen fast),
+            # but as a safety net tell the LLM to call the tool immediately.
+            say_cat = (
+                f"Category '{state.category}' and intent '{state.intent}' are ALREADY CONFIRMED. "
+                f"Call `set_category_and_intent(category='{state.category}', intent='{state.intent}')` immediately."
+            )
+        elif state.intent:
             intent_label = "selling" if state.intent == "sale" else "renting/leasing"
             intent_label_hi = "sell" if state.intent == "sale" else "rent"
             say_cat = (
                 f'The customer already indicated they want {intent_label}. Ask in English: "Is it a residential or commercial property?"'
-                if state.reply_lang == "en"
+                if en
                 else f'Customer ne bataya hai ki property {intent_label_hi} karni hai. Poochhein in Hinglish: "Ye residential property hai ya commercial?"'
+            )
+        elif state.category:
+            cat_label_en = state.category.capitalize()
+            cat_label_hi = "residential" if state.category == "residential" else "commercial"
+            say_cat = (
+                f'The customer already indicated this is a {cat_label_en} property. Ask in English: "Are you looking to sell or rent it out?"'
+                if en
+                else f'Customer ne bataya hai ki property {cat_label_hi} hai. Poochhein in Hinglish: "Aap ise sell karna chahte hain ya rent par dena chahte hain?"'
             )
         else:
             say_cat = (
                 'Ask in English: "Is it a residential or commercial property? And are you looking to sell or rent it out?"'
-                if state.reply_lang == "en"
+                if en
                 else 'Poochhein in Hinglish: "Ye residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"'
             )
 
@@ -349,13 +372,16 @@ Goal: Clarify whether the property is Residential or Commercial, and whether the
 
 {say_cat}
 
+{"ALREADY CONFIRMED (do NOT re-ask):" + chr(10) + already_known_note + chr(10) if already_known_note else ""}
 MANDATORY RULES FOR THIS STEP:
 - STRICT RULE: Do NOT ask for the caller's name, property location, or society name. They are already confirmed.
 - ZERO ASSUMPTIONS: NEVER assume category='residential' or intent='sale'. You MUST record EXACTLY what the caller says:
   * If the caller says "commercial" / "office" / "shop" / "retail", category is commercial.
   * If the caller says "residential" / "flat" / "apartment" / "house", category is residential.
+  * Also accept phonetic/garbled STT variants as residential: "ritenshiyal", "rejidenshiyal", "rezidential", "aavasiy", "aavasiiy" = residential.
   * If the caller says "sell" / "bechna" / "sale", intent is sale.
   * If the caller says "rent" / "lease" / "kiraye par", intent is lease.
+- ANTI-REPETITION (CRITICAL): If a field is ALREADY CONFIRMED above, NEVER ask for it again under ANY circumstances.
 - You MUST confirm BOTH category (residential/commercial) AND intent (sale/lease/rent) before moving forward.
 - If only one is known, explicitly ask for the missing one before calling `set_category_and_intent`.
 - Call `set_category_and_intent(category=..., intent=...)` as soon as either or both become known from what the user said:
@@ -369,6 +395,7 @@ MANDATORY RULES FOR THIS STEP:
 - If customer says "commercial" but has NOT said sell or rent → ask "Are you looking to sell it or rent it out?"
 - If customer says "sell" but has NOT said residential or commercial → ask "Is it a residential or commercial property?"
 - If customer says "rent" but has NOT said residential or commercial → ask "Is it a residential or commercial property?"
+- If the caller's answer is unclear or garbled, ask ONCE more using different wording. If still unclear after two tries, politely say you will note it as residential and move on.
 """
 
     if step in (
@@ -388,6 +415,31 @@ MANDATORY RULES FOR THIS STEP:
             [f"{idx + 1}. {m['label']} -> Example: \"{m['question_en']}\"" for idx, m in enumerate(upcoming_missing)]
         ) if upcoming_missing else "None (all fields captured)"
 
+        # Build a summary of already-captured fields to prevent re-asking them
+        captured = []
+        if state.unit_number:
+            captured.append(f"unit_number='{state.unit_number}'")
+        if state.floor_number:
+            captured.append(f"floor_number='{state.floor_number}'")
+        if state.bhk_config:
+            captured.append(f"bhk_config='{state.bhk_config}'")
+        if state.approx_area_sqft:
+            captured.append(f"area='{state.approx_area_sqft} sqft'")
+        if state.furnishing_status:
+            captured.append(f"furnishing='{state.furnishing_status}'")
+        if state.expected_sale_price:
+            captured.append(f"sale_price='{state.expected_sale_price}'")
+        if state.expected_monthly_rent:
+            captured.append(f"monthly_rent='{state.expected_monthly_rent}'")
+        if state.immediate_occupancy is not None:
+            captured.append(f"immediate_occupancy='{state.immediate_occupancy}'")
+        if state.is_currently_leased is not None:
+            captured.append(f"is_currently_leased='{state.is_currently_leased}'")
+        captured_note = (
+            "ALREADY CAPTURED — DO NOT ASK AGAIN: " + ", ".join(captured)
+            if captured else ""
+        )
+
         branch_title = {
             RealEstateStep.RESIDENTIAL_SALE: "4.1 Sale of Residential Premises",
             RealEstateStep.RESIDENTIAL_LEASE: "4.2 Lease of Residential Premises",
@@ -398,6 +450,8 @@ MANDATORY RULES FOR THIS STEP:
         return base + f"""
 Current Step: {branch_title}
 Goal: Conduct a smooth, consultative phone dialogue with the owner to understand their property.
+
+{captured_note}
 
 CONVERSATIONAL FOCUS & NEXT DETAIL:
 "{next_q}"
@@ -430,6 +484,10 @@ CRITICAL MANDATORY INSTRUCTIONS:
    - NEVER explain or mention that you are skipping BHK. Simply ask the current missing detail directly.
 6. UNKNOWN DETAILS: If the customer says they do not know, do not remember, or cannot share the detail just asked (pata nahi, yaad nahi, idea nahi), use the customer_does_not_know tool and move on to the next detail. NEVER ask that detail again.
 7. TALK LATER: If the customer says they want to talk later (baad mein baat karte hain), ask which day and time suits them, then schedule the callback. Do not ask any more property questions.
+8. STT PHONETIC RECOGNITION (Sarvam phone-line garbling — accept these as valid answers):
+   - "furnishing" question: "supar furnished" / "simi furnished" / "semi furnish" = semi-furnished; "phully furnished" / "fuli furnished" = fully furnished.
+   - "available / occupancy" question: "right abhi" / "avelable" / "availeble" / "avlble" = available immediately.
+   - If the caller's phonetic answer clearly maps to a known option, accept it. If truly ambiguous, ask ONCE more in different words. NEVER ask the same question a third time.
 """
 
     if step == RealEstateStep.CLOSING:
