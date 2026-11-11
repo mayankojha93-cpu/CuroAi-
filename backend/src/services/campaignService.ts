@@ -812,15 +812,6 @@ export class CampaignService {
       const campaign = await this.updateCampaignStatus(campaignId, 'RUNNING');
       const maxConcurrent = campaign.max_concurrent_calls || 5;
 
-      // Production compliance check: TRAI Calling Hours (09:00 AM - 08:00 PM IST)
-      if (env.NODE_ENV === 'production') {
-        const hoursCheck = complianceService.isWithinCallingHours();
-        if (!hoursCheck.allowed) {
-          logger.warn({ campaignId, reason: hoursCheck.reason }, 'Campaign dispatch paused outside TRAI calling hours');
-          return { campaign, dispatchedCount: 0 };
-        }
-      }
-
       // Check currently active calls for this campaign
       const activeRes = await pool.query(
         `SELECT COUNT(*)::int as active_count

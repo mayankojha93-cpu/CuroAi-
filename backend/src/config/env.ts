@@ -79,7 +79,6 @@ const envSchema = z.object({
   SARVAM_API_KEY: z.string().optional().default(''),
   GROQ_API_KEY: z.string().optional().default(''),
   LLM_MODEL: z.string().default('meta-llama/llama-3.3-70b-instruct'),
-  ALLOW_AFTER_HOURS_CALLS: z.string().optional().default('false'),
 
   // Seed / Test customer
   TEST_PHONE: z.string().default('+919999999999'),
