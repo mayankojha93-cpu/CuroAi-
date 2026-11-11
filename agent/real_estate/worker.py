@@ -41,6 +41,12 @@ from .config import (
     OPENROUTER_PROVIDER_ORDER,
     BACKEND_URL,
     INTERNAL_SECRET,
+    LLM_PROVIDER,
+    GROQ_API_KEY,
+    GROQ_MODEL,
+    LLM_FALLBACK,
+    LLM_ATTEMPT_TIMEOUT,
+    PRERENDER_GREETING,
 )
 from .state import RealEstateState, RealEstateStep
 from .agent import RealEstateAgent
@@ -145,6 +151,78 @@ def prewarm(proc: agents.JobProcess):
 
 
 server.setup_fnc = prewarm
+
+
+# ── Latency helpers ────────────────────────────────────────────────────────────
+def _build_llm():
+    """Primary = Groq direct (fast), fallback = OpenRouter. Falls back to OpenRouter-only if Groq is not set up."""
+    common = dict(temperature=0.05, parallel_tool_calls=False, max_completion_tokens=LLM_MAX_TOKENS)
+
+    def _openrouter():
+        extra = {}
+        if OPENROUTER_PROVIDER_ORDER:
+            extra["extra_body"] = {"provider": {"order": OPENROUTER_PROVIDER_ORDER, "allow_fallbacks": True}}
+        elif OPENROUTER_PROVIDER_SORT:
+            extra["extra_body"] = {"provider": {"sort": OPENROUTER_PROVIDER_SORT}}
+        return openai.LLM(model=LLM_MODEL, base_url="https://openrouter.ai/api/v1",
+                          api_key=OPENROUTER_API_KEY, **common, **extra)
+
+    def _groq():
+        return openai.LLM(model=GROQ_MODEL, base_url="https://api.groq.com/openai/v1",
+                          api_key=GROQ_API_KEY, **common)
+
+    provider = LLM_PROVIDER
+    if provider == "auto":
+        provider = "groq" if GROQ_API_KEY else "openrouter"
+    if provider == "groq" and not GROQ_API_KEY:
+        logger.warning("LLM_PROVIDER=groq but GROQ_API_KEY is empty -> using OpenRouter")
+        provider = "openrouter"
+
+    if provider != "groq":
+        logger.info(f"🧠 LLM: OpenRouter {LLM_MODEL}")
+        return _openrouter()
+
+    primary = _groq()
+    if LLM_FALLBACK and OPENROUTER_API_KEY:
+        try:
+            from livekit.agents import llm as lk_llm
+            secondary = _openrouter()
+            try:
+                adapter = lk_llm.FallbackAdapter([primary, secondary], attempt_timeout=LLM_ATTEMPT_TIMEOUT, max_retry_per_llm=0)
+            except TypeError:
+                adapter = lk_llm.FallbackAdapter([primary, secondary])
+            logger.info(f"🧠 LLM: Groq {GROQ_MODEL} (fallback -> OpenRouter {LLM_MODEL})")
+            return adapter
+        except Exception as e:
+            logger.warning(f"FallbackAdapter unavailable ({e}); using Groq only")
+    logger.info(f"🧠 LLM: Groq {GROQ_MODEL} (no fallback)")
+    return primary
+
+
+async def _prerender_tts(tts_obj, text: str, timeout: float = 10.0):
+    """Synthesise `text` ahead of time and return the audio frames (used for the opening greeting)."""
+    frames = []
+
+    async def _run():
+        stream = tts_obj.synthesize(text)
+        try:
+            async for ev in stream:
+                fr = getattr(ev, "frame", None)
+                if fr is not None:
+                    frames.append(fr)
+        finally:
+            try:
+                await stream.aclose()
+            except Exception:
+                pass
+
+    await asyncio.wait_for(_run(), timeout=timeout)
+    return frames
+
+
+async def _replay_frames(frames):
+    for f in frames:
+        yield f
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -440,26 +518,13 @@ async def entrypoint(ctx: agents.JobContext):
     if vad is None:
         vad = await asyncio.to_thread(_load_vad)
 
-    llm_extra = {}
-    if OPENROUTER_PROVIDER_ORDER:
-        llm_extra["extra_body"] = {"provider": {"order": OPENROUTER_PROVIDER_ORDER, "allow_fallbacks": True}}
-    elif OPENROUTER_PROVIDER_SORT:
-        llm_extra["extra_body"] = {"provider": {"sort": OPENROUTER_PROVIDER_SORT}}
     logger.info(
         f"⚙️ Latency config: FAST_TOOL_REPLY={FAST_TOOL_REPLY} VAD_MIN_SILENCE={VAD_MIN_SILENCE} "
-        f"provider={llm_extra.get('extra_body')} endpoint=({ENDPOINT_MIN_DELAY},{ENDPOINT_MAX_DELAY}) "
-        f"preemptive={PREEMPTIVE_GENERATION}"
+        f"endpoint=({ENDPOINT_MIN_DELAY},{ENDPOINT_MAX_DELAY}) preemptive={PREEMPTIVE_GENERATION} "
+        f"prerender_greeting={PRERENDER_GREETING}"
     )
 
-    llm = openai.LLM(
-        model=LLM_MODEL,
-        base_url="https://openrouter.ai/api/v1",
-        api_key=OPENROUTER_API_KEY,
-        temperature=0.05,
-        parallel_tool_calls=False,
-        max_completion_tokens=LLM_MAX_TOKENS,
-        **llm_extra,
-    )
+    llm = _build_llm()
 
     initial_code = TTS_LANGUAGE_EN if preferred_language == "en" else TTS_LANGUAGE_HI
     initial_speaker = TTS_SPEAKER_EN if preferred_language == "en" else TTS_SPEAKER_HI
@@ -852,6 +917,44 @@ async def entrypoint(ctx: agents.JobContext):
 
     ctx.add_shutdown_callback(_save_and_shutdown)
 
+    # ── Use the ringing time: warm every connection and pre-render the opening line ────────────────
+    # The backend dispatches this agent BEFORE it dials Exotel, so we have several idle seconds here.
+    def _build_greeting() -> str:
+        loc = state.initial_property_location
+        name_call = _owner_call_name(state)
+        salutation_en = f"Hello {name_call} Sir" if name_call != "Sir" else "Hello Sir"
+        salutation_hi = f"Hello {name_call} ji" if name_call != "Sir" else "Hello Sir"
+        if loc:
+            return (
+                f"{salutation_en}, I’m Priya, calling from My Estate Finder. Sir, regarding your property at {loc}, are you considering selling or renting it out?"
+                if state.reply_lang == "en"
+                else f"{salutation_hi}, main Priya bol rahi hoon My Estate Finder se. Sir, {loc} par jo aapki property hai, kya aap use sell ya rent karne ka soch rahe hain?"
+            )
+        return (
+            f"{salutation_en}, I’m Priya, calling from My Estate Finder. Sir, we help property owners to sell or rent their properties. Are you also considering selling or renting a property of yours?"
+            if state.reply_lang == "en"
+            else f"{salutation_hi}, main Priya bol rahi hoon My Estate Finder se. Sir, hum property owners ko unki property sell ya rent karne mein help karte hain. Kya aap bhi apni koi property sell ya rent karne ka soch rahe hain?"
+        )
+
+    greeting = _build_greeting()
+
+    for _name, _comp in (("stt", stt), ("tts", tts), ("llm", llm)):
+        _fn = getattr(_comp, "prewarm", None)
+        if callable(_fn):
+            try:
+                _fn()
+                logger.info(f"🔥 {_name} prewarm requested (during ring)")
+            except Exception as e:
+                logger.debug(f"{_name} prewarm failed: {e}")
+
+    prerender_task: Optional[asyncio.Task] = None
+    if PRERENDER_GREETING:
+        prerender_task = asyncio.create_task(_prerender_tts(tts, greeting))
+
+    def _cancel_prerender():
+        if prerender_task is not None and not prerender_task.done():
+            prerender_task.cancel()
+
     # 1. Wait for the callee to actually ANSWER (not just for the SIP leg to appear while ringing)
     ring_timeout = 65.0 if direction == "outbound" else 20.0
     deadline = time.time() + ring_timeout
@@ -871,6 +974,7 @@ async def entrypoint(ctx: agents.JobContext):
             state.final_disposition = "Not Connected (No Answer)"
             state.agent_summary = "Call unanswered by recipient within timeout period"
             logger.warning("❌ Callee did not answer (timeout / rejected / hung up while ringing).")
+        _cancel_prerender()
         await _save_and_shutdown()
         return
 
@@ -901,36 +1005,24 @@ async def entrypoint(ctx: agents.JobContext):
     if recorder:
         await recorder.start(ctx.room)
 
-    for _name, _comp in (("tts", tts), ("llm", llm)):
-        _fn = getattr(_comp, "prewarm", None)
-        if callable(_fn):
-            try:
-                _fn()
-                logger.info(f"🔥 {_name} prewarm requested")
-            except Exception as e:
-                logger.debug(f"{_name} prewarm failed: {e}")
-
-    # 3. Opening greeting
-    loc = state.initial_property_location
-    name_call = _owner_call_name(state)
-    salutation_en = f"Hello {name_call} Sir" if name_call != "Sir" else "Hello Sir"
-    salutation_hi = f"Hello {name_call} ji" if name_call != "Sir" else "Hello Sir"
-
-    if loc:
-        greeting = (
-            f"{salutation_en}, I’m Priya, calling from My Estate Finder. Sir, regarding your property at {loc}, are you considering selling or renting it out?"
-            if state.reply_lang == "en"
-            else f"{salutation_hi}, main Priya bol rahi hoon My Estate Finder se. Sir, {loc} par jo aapki property hai, kya aap use sell ya rent karne ka soch rahe hain?"
-        )
-    else:
-        greeting = (
-            f"{salutation_en}, I’m Priya, calling from My Estate Finder. Sir, we help property owners to sell or rent their properties. Are you also considering selling or renting a property of yours?"
-            if state.reply_lang == "en"
-            else f"{salutation_hi}, main Priya bol rahi hoon My Estate Finder se. Sir, hum property owners ko unki property sell ya rent karne mein help karte hain. Kya aap bhi apni koi property sell ya rent karne ka soch rahe hain?"
-        )
-
+    # 3. Opening greeting: play the pre-rendered audio if it is ready, else synthesise as before
     state.last_activity_time = time.time()
-    opening_speech = session.say(greeting, allow_interruptions=False)
+    opening_speech = None
+    pre_frames = None
+    if prerender_task is not None:
+        if prerender_task.done() and not prerender_task.cancelled() and prerender_task.exception() is None:
+            pre_frames = prerender_task.result()
+        else:
+            _cancel_prerender()
+    if pre_frames:
+        try:
+            opening_speech = session.say(greeting, audio=_replay_frames(pre_frames), allow_interruptions=False)
+            logger.info("⚡ Greeting played from pre-rendered audio (TTS wait skipped)")
+        except Exception as e:
+            logger.warning(f"Pre-rendered greeting failed ({e}); synthesising normally")
+            opening_speech = None
+    if opening_speech is None:
+        opening_speech = session.say(greeting, allow_interruptions=False)
     log_dialogue("assistant", greeting)
 
     # 4. Silence watchdog
