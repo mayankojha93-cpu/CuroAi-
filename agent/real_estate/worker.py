@@ -926,14 +926,14 @@ async def entrypoint(ctx: agents.JobContext):
         salutation_hi = f"Hello {name_call} ji" if name_call != "Sir" else "Hello Sir"
         if loc:
             return (
-                f"{salutation_en}, I’m Priya, calling from My Estate Finder. Sir, regarding your property at {loc}, are you considering selling or renting it out?"
+                f"{salutation_en}, I’m Priya from My Estate Finder. Regarding your property at {loc}, are you considering selling or renting it out?"
                 if state.reply_lang == "en"
-                else f"{salutation_hi}, main Priya bol rahi hoon My Estate Finder se. Sir, {loc} par jo aapki property hai, kya aap use sell ya rent karne ka soch rahe hain?"
+                else f"{salutation_hi}, main Priya bol rahi hoon, My Estate Finder se. {loc} par jo aapki property hai, kya aap use sell ya rent karne ka soch rahe hain?"
             )
         return (
-            f"{salutation_en}, I’m Priya, calling from My Estate Finder. Sir, we help property owners to sell or rent their properties. Are you also considering selling or renting a property of yours?"
+            f"{salutation_en}, I’m Priya from My Estate Finder. We help property owners sell or rent their properties. Are you also thinking of selling or renting out a property?"
             if state.reply_lang == "en"
-            else f"{salutation_hi}, main Priya bol rahi hoon My Estate Finder se. Sir, hum property owners ko unki property sell ya rent karne mein help karte hain. Kya aap bhi apni koi property sell ya rent karne ka soch rahe hain?"
+            else f"{salutation_hi}, main Priya bol rahi hoon, My Estate Finder se. Hum property owners ko unki property sell ya rent karne mein help karte hain. Kya aap bhi apni koi property sell ya rent karne ka soch rahe hain?"
         )
 
     greeting = _build_greeting()
