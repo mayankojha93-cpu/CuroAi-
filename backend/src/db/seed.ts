@@ -54,10 +54,9 @@ export async function seedRealEstateLead() {
       id, owner_name, phone, email, property_location, preferred_language, lead_status, current_disposition, notes
     )
     VALUES ('e1000000-0000-0000-0000-000000000001', $1, $2, $3, $4, 'hi', 'NEW', 'Pending Outreach', 'Owner of luxury apartment in Gurgaon')
-    ON CONFLICT (id)
+    ON CONFLICT (phone)
     DO UPDATE SET
       owner_name = EXCLUDED.owner_name,
-      phone = EXCLUDED.phone,
       email = EXCLUDED.email,
       property_location = EXCLUDED.property_location
     RETURNING id, owner_name, phone, email, property_location;
