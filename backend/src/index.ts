@@ -1,4 +1,5 @@
 import http from 'http';
+import type { Socket } from 'net';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import { pinoHttp } from 'pino-http';
@@ -153,14 +154,18 @@ if (process.env.NODE_ENV !== 'test') {
   server.on('upgrade', (req, socket, head) => {
     if (req.url && req.url.startsWith('/api/exotel/media-stream')) {
       const proxyReq = http.request({
-        port: 8088,
-        host: '127.0.0.1',
+        port: Number(env.EXOTEL_BRIDGE_PORT || 8088),
+        host: env.EXOTEL_BRIDGE_HOST || '127.0.0.1',
         method: req.method,
         path: req.url,
         headers: req.headers,
       });
 
       proxyReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
+        // Disable Nagle's algorithm on both legs: 20-40 ms audio packets must be sent immediately,
+        // otherwise TCP can hold them back and add jitter/latency to the call audio.
+        (socket as Socket).setNoDelay?.(true);
+        proxySocket.setNoDelay(true);
         let rawHeaders = `HTTP/1.1 101 Switching Protocols\r\n`;
         for (const [k, v] of Object.entries(proxyRes.headers)) {
           if (Array.isArray(v)) {
