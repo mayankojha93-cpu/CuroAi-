@@ -274,7 +274,7 @@ export class CampaignService {
       totalCredits,
       totalContacts, // initial remaining_calls
       data.script || (campaignPipeline === 'real_estate' ? 'My Estate Finder — Property Intake (Priya)' : 'Airtel Delhi Wi-Fi (Routine Pickup)'),
-      data.language || 'hi-IN',
+      data.language || (campaignPipeline === 'real_estate' ? 'en-IN' : 'hi-IN'),
       data.voice_pipeline || (campaignPipeline === 'real_estate' ? 'Sarvam AI (Priya - hi/en)' : 'Sarvam AI (Priya - hi-IN)'),
       data.schedule_start_time || '09:00',
       data.schedule_end_time || '20:00',
@@ -291,7 +291,7 @@ export class CampaignService {
 
     // Insert deduplicated contacts linked to this campaign with full CSV metadata
     if (uniqueContacts.length > 0) {
-      const custLang = data.language ? data.language.slice(0, 2).toLowerCase() : 'hi';
+      const custLang = data.language ? data.language.slice(0, 2).toLowerCase() : (campaignPipeline === 'real_estate' ? 'en' : 'hi');
       for (const item of uniqueContacts) {
         try {
           const normServiceEnd = normalizeDate(item.service_end_date);
@@ -685,7 +685,7 @@ export class CampaignService {
           COALESCE(rl.property_location, 'Real Estate Owner') as contact_ref,
           COALESCE(rl.property_location, 'Location On Record') as address,
           rl.email,
-          COALESCE(rl.preferred_language, 'hi') as language,
+          COALESCE(rl.preferred_language, 'en') as language,
           COALESCE(call_counts.count, 0)::INT as attempts,
           COALESCE(rl.max_attempts, 3)::INT as max_attempts,
           COALESCE(latest_call.final_disposition, 'Pending Outreach') as current_disposition,
@@ -949,7 +949,7 @@ export class CampaignService {
     }
 
     const retryAttempts = campaign.retry_attempts || 3;
-    const custLang = campaign.language ? campaign.language.slice(0, 2).toLowerCase() : 'hi';
+    const custLang = campaign.language ? campaign.language.slice(0, 2).toLowerCase() : (campaign.pipeline === 'real_estate' ? 'en' : 'hi');
     let addedCount = 0;
 
     for (const entry of validContacts) {
