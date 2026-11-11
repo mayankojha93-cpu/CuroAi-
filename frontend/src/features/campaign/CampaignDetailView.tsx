@@ -378,14 +378,34 @@ const normalizeContactStatus = (callStatus?: string, disposition?: string): 'COM
     canonical === 'Already Returned Device' ||
     canonical === 'Already Recharged' ||
     canonical === 'Willing To Pickup' ||
-    canonical === 'Willing To Recharge'
+    canonical === 'Willing To Recharge' ||
+    canonical === 'Qualified Lead' ||
+    canonical === 'Advisor Callback Booked' ||
+    canonical === 'Schedule Callback' ||
+    canonical === 'WhatsApp Info Requested' ||
+    canonical === 'Not Interested' ||
+    canonical === 'Interested (Disconnected)' ||
+    canonical === 'Partial Details Captured (Disconnected)'
   ) {
     return 'COMPLETED';
   }
   if (canonical === 'Not Connected (No Answer)' || canonical === 'Voicemail or IVR Detected') {
     return 'NO_ANSWER';
   }
-  return 'FAILED';
+  if (canonical === 'Wrong Number' || canonical === 'Not Connected (Failed)') {
+    return 'FAILED';
+  }
+  const s = (callStatus || '').toLowerCase();
+  if (s === 'completed' || s === 'answered') {
+    return 'COMPLETED';
+  }
+  if (s === 'no_answer') {
+    return 'NO_ANSWER';
+  }
+  if (s === 'failed') {
+    return 'FAILED';
+  }
+  return 'COMPLETED';
 };
 
 const formatContactDisposition = (c: CampaignContactRecord): string => {
@@ -439,6 +459,9 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
   onSelectCall,
 }) => {
   const [currentCampaign, setCurrentCampaign] = useState<CampaignItem>(campaign);
+  const isRealEstateCampaign =
+    (currentCampaign as any)?.pipeline === 'real_estate' ||
+    (currentCampaign as any)?.name?.toLowerCase()?.includes('estate');
   const [activeTab, setActiveTab] = useState<SubTab>('OVERVIEW');
   const [calls, setCalls] = useState<CallRecord[]>([]);
   const [contacts, setContacts] = useState<CampaignContactRecord[]>([]);
@@ -610,7 +633,7 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
           throw new Error('Selected CSV file is empty.');
         }
 
-        const { validContacts } = parseAudienceCsv(text);
+        const { validContacts } = parseAudienceCsv(text, isRealEstateCampaign);
 
         if (validContacts.length === 0) {
           throw new Error('No valid phone numbers found in CSV.');
@@ -1172,7 +1195,7 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
               {/* Sample Format download button */}
               <button
                 type="button"
-                onClick={() => downloadCampaignAudienceSampleCsv()}
+                onClick={() => downloadCampaignAudienceSampleCsv(isRealEstateCampaign)}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -1195,7 +1218,11 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
                   e.currentTarget.style.background = 'rgba(56, 189, 248, 0.08)';
                   e.currentTarget.style.borderColor = 'rgba(56, 189, 248, 0.25)';
                 }}
-                title="Download CSV format template with all 19 columns"
+                title={
+                  isRealEstateCampaign
+                    ? 'Download Estate Finder CSV format sample (Customer Name, Mobile, Email, Address)'
+                    : 'Download CSV format template with all 19 columns'
+                }
               >
                 <Download size={14} />
                 <span>Sample Format</span>

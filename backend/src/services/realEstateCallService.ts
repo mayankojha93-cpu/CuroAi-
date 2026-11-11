@@ -13,6 +13,7 @@ import { normalizePhone } from '../utils/csvParser.js';
 import { matchRealEstateDisposition, RealEstateCanonicalDisposition } from '../utils/realEstateDispositions.js';
 import { romanizeTranscript } from '../utils/transliteration.js';
 import { complianceService } from './complianceService.js';
+import { initiateExotelWssCall } from './exotelService.js';
 
 export interface RealEstateLeadRecord {
   id: string;
@@ -209,6 +210,20 @@ export class RealEstateCallService {
       throw new AppError('Real estate lead phone number is required', 400);
     }
 
+    // Concurrency guard: Do not dial if an active call is already in progress for this lead
+    const activeCheck = await query(
+      `SELECT id, room_name FROM calls
+       WHERE re_lead_id = $1
+         AND status IN ('initiated', 'dialing', 'answered')
+         AND created_at > NOW() - INTERVAL '10 minutes'
+       LIMIT 1`,
+      [leadId]
+    );
+    if (activeCheck.rows.length > 0) {
+      logger.warn({ leadId, activeCallId: activeCheck.rows[0].id }, 'Lead already has an active call in progress; skipping duplicate initiation');
+      return { call: activeCheck.rows[0], lead };
+    }
+
     // Production compliance check: TRAI Calling Hours (09:00 AM - 08:00 PM IST) and DND suppression
     if (env.NODE_ENV === 'production') {
       const hoursCheck = complianceService.isWithinCallingHours();
@@ -251,14 +266,14 @@ export class RealEstateCallService {
     );
     const call = insCall.rows[0];
 
-    // Query property location if known for this lead
+    // Query property location if known for this lead (check properties table, fallback to lead.property_location)
     const propRes = await query(
       `SELECT sector_or_location, project_or_society FROM real_estate_properties WHERE lead_id = $1 ORDER BY created_at DESC LIMIT 1`,
       [leadId]
     );
-    const propertyLocation = propRes.rows.length > 0
-      ? (propRes.rows[0].sector_or_location || propRes.rows[0].project_or_society || '').trim() || null
-      : null;
+    const propertyLocation = (propRes.rows.length > 0 && (propRes.rows[0].sector_or_location || propRes.rows[0].project_or_society))
+      ? (propRes.rows[0].sector_or_location || propRes.rows[0].project_or_society || '').trim()
+      : (lead.property_location || '').trim() || null;
 
     this.executeOutboundWorkflow(callId, lead, roomName, propertyLocation).catch((err) => {
       logger.error({ err, callId }, 'Unhandled error in real estate outbound call workflow');
@@ -277,16 +292,20 @@ export class RealEstateCallService {
         ? rawLeadName
         : null;
 
-      const effectiveLocation = (propertyLocation || '').trim() || null;
+      const effectiveLocation = (propertyLocation || lead?.property_location || '').trim() || null;
 
       const metaPayload = JSON.stringify({
         callId,
         leadId: lead.id,
         ownerName: safeLeadName,
+        customerName: safeLeadName,
         phone: lead.phone,
         preferredLanguage: lead.preferred_language || 'hi',
         direction: 'outbound',
         propertyLocation: effectiveLocation,
+        address: effectiveLocation,
+        location: effectiveLocation,
+        customerAddress: effectiveLocation,
       });
 
       await this.roomService.createRoom({
@@ -305,32 +324,56 @@ export class RealEstateCallService {
         metadata: metaPayload,
       });
 
-      if (!env.SIP_OUTBOUND_TRUNK_ID) {
-        throw new Error('Missing SIP_OUTBOUND_TRUNK_ID in environment. Check Exotel SIP trunk in .env');
+      const dialablePhone = normalizePhone(lead.phone);
+      let callerId = env.SIP_CALLER_ID || undefined;
+      if (callerId && callerId.startsWith('+91') && callerId.length === 13) {
+        callerId = `0${callerId.slice(3)}`;
       }
 
-      const dialablePhone = normalizePhone(lead.phone);
-      const callerId = env.SIP_CALLER_ID || undefined;
-
       await query("UPDATE calls SET status = 'dialing', call_status = 'dialing' WHERE id = $1", [callId]);
-      logger.info({ callId, phone: dialablePhone, trunk: env.SIP_OUTBOUND_TRUNK_ID }, `📞 [DIALING CARRIER] Dials: ${dialablePhone} via Exotel trunk`);
 
-      const participant = await this.sipClient.createSipParticipant(
-        env.SIP_OUTBOUND_TRUNK_ID,
-        dialablePhone,
-        roomName,
-        {
-          participantIdentity: `phone-${dialablePhone.replace(/[^0-9]/g, '')}`,
-          participantName: safeLeadName || undefined,
-          fromNumber: callerId,
-          ringingTimeout: 65,      // Server-side SIP 65s ringing timeout enforced by LiveKit gateway
-          maxCallDuration: 900,    // Server-side SIP 15-minute max call duration
-          waitUntilAnswered: false,
-        } as any
-      );
+      // Check whether to use Exotel WSS (AgentStream) or standard SIP trunk
+      const useWss = env.EXOTEL_USE_WSS !== 'false';
+      if (useWss) {
+        logger.info({ callId, phone: dialablePhone, callerId }, `📞 [DIALING CARRIER] Dials: ${dialablePhone} via Exotel WSS Audio Stream`);
+        const exotelCall = await initiateExotelWssCall({
+          callId,
+          phone: dialablePhone,
+          callerId,
+        });
 
-      await query('UPDATE calls SET sip_call_id = $1 WHERE id = $2', [participant.sipCallId || null, callId]);
-      logger.info({ callId, sipCallId: participant.sipCallId, phone: dialablePhone }, `📞 [RINGING] Carrier accepted call leg | SIP ID: ${participant.sipCallId || 'N/A'}`);
+        await query('UPDATE calls SET exotel_call_sid = $1, sip_call_id = $2 WHERE id = $3', [
+          exotelCall.sid,
+          exotelCall.sid,
+          callId,
+        ]);
+        logger.info(
+          { callId, exotelCallSid: exotelCall.sid, phone: dialablePhone },
+          `📞 [RINGING] Exotel WSS carrier accepted call leg | Call SID: ${exotelCall.sid}`
+        );
+      } else {
+        if (!env.SIP_OUTBOUND_TRUNK_ID) {
+          throw new Error('Missing SIP_OUTBOUND_TRUNK_ID in environment. Check Exotel SIP trunk in .env');
+        }
+
+        logger.info({ callId, phone: dialablePhone, trunk: env.SIP_OUTBOUND_TRUNK_ID }, `📞 [DIALING CARRIER] Dials: ${dialablePhone} via Exotel SIP trunk`);
+        const participant = await this.sipClient.createSipParticipant(
+          env.SIP_OUTBOUND_TRUNK_ID,
+          dialablePhone,
+          roomName,
+          {
+            participantIdentity: `phone-${dialablePhone.replace(/[^0-9]/g, '')}`,
+            participantName: safeLeadName || undefined,
+            fromNumber: callerId,
+            ringingTimeout: 65,      // Server-side SIP 65s ringing timeout enforced by LiveKit gateway
+            maxCallDuration: 900,    // Server-side SIP 15-minute max call duration
+            waitUntilAnswered: false,
+          } as any
+        );
+
+        await query('UPDATE calls SET sip_call_id = $1 WHERE id = $2', [participant.sipCallId || null, callId]);
+        logger.info({ callId, sipCallId: participant.sipCallId, phone: dialablePhone }, `📞 [RINGING] Carrier accepted call leg | SIP ID: ${participant.sipCallId || 'N/A'}`);
+      }
     } catch (err: any) {
       let mappedStatus = 'failed';
       let failureReason = err.message || 'Call placement failed';

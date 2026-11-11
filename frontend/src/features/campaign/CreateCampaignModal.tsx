@@ -208,8 +208,8 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
     if (!fileRawContent.trim()) {
       return { validContacts: [], flaggedDuplicates: [], flaggedShortNumbers: [] };
     }
-    return parseAudienceCsv(fileRawContent);
-  }, [fileRawContent]);
+    return parseAudienceCsv(fileRawContent, isRealEstate);
+  }, [fileRawContent, isRealEstate]);
 
   const contactCount = validContacts.length;
   const totalFlagged = flaggedDuplicates.length + flaggedShortNumbers.length;
@@ -283,6 +283,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
         contacts: validContacts,
       });
 
+      // The backend automatically dispatches calls upon creation when status is RUNNING.
       if (onCampaignCreated) {
         onCampaignCreated(created);
       }
@@ -871,10 +872,27 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
               gap: 14,
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div style={sectionHeadingStyle}>
-                <Upload size={15} color="#38BDF8" />
-                <span>Target Audience (CSV Upload)</span>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={sectionHeadingStyle}>
+                  <Upload size={15} color="#38BDF8" />
+                  <span>Target Audience (CSV Upload)</span>
+                </div>
+                {isRealEstate && (
+                  <span
+                    style={{
+                      fontSize: '0.70rem',
+                      color: '#34D399',
+                      background: 'rgba(16, 185, 129, 0.12)',
+                      border: '1px solid rgba(16, 185, 129, 0.28)',
+                      padding: '2px 8px',
+                      borderRadius: 12,
+                      fontWeight: 600,
+                    }}
+                  >
+                    4 Columns
+                  </span>
+                )}
               </div>
               <button
                 type="button"
@@ -895,7 +913,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
                 }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(56, 189, 248, 0.2)')}
                 onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)')}
-                title="Download CSV format template"
+                title={isRealEstate ? "Download Estate Finder CSV format sample (Customer Name, Mobile, Email, Address)" : "Download CSV format template"}
               >
                 <Download size={13} />
                 <span>Download CSV Format</span>
@@ -960,6 +978,28 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
                   {fileName || 'No file selected (or drag & drop here)'}
                 </span>
               </div>
+
+              {isRealEstate ? (
+                <div
+                  style={{
+                    marginTop: 8,
+                    fontSize: '0.74rem',
+                    color: '#94A3B8',
+                    lineHeight: '1.4',
+                    background: 'rgba(56, 189, 248, 0.04)',
+                    border: '1px dashed rgba(56, 189, 248, 0.2)',
+                    borderRadius: 6,
+                    padding: '7px 10px',
+                  }}
+                >
+                  <span style={{ color: '#38BDF8', fontWeight: 600 }}>Estate Finder Format: </span>
+                  Input file only contains 4 columns: <code style={{ color: '#F8FAFC', background: 'rgba(255,255,255,0.08)', padding: '1px 5px', borderRadius: 4 }}>Customer Name</code>, <code style={{ color: '#F8FAFC', background: 'rgba(255,255,255,0.08)', padding: '1px 5px', borderRadius: 4 }}>Mobile</code>, <code style={{ color: '#F8FAFC', background: 'rgba(255,255,255,0.08)', padding: '1px 5px', borderRadius: 4 }}>Email</code>, and <code style={{ color: '#F8FAFC', background: 'rgba(255,255,255,0.08)', padding: '1px 5px', borderRadius: 4 }}>Address</code>.
+                </div>
+              ) : (
+                <div style={{ marginTop: 6, fontSize: '0.72rem', color: '#64748B' }}>
+                  Supports standard 19-column CSV format. Mobile numbers must be 10+ digits.
+                </div>
+              )}
             </div>
 
             {/* Validation Breakdown Panel */}

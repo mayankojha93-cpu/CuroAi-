@@ -2,12 +2,19 @@ import { pool } from '../db/index.js';
 import { logger } from '../config/logger.js';
 import { env } from '../config/env.js';
 import { callService } from './callService.js';
+import { realEstateCallService } from './realEstateCallService.js';
 import { complianceService } from './complianceService.js';
 import {
   CANONICAL_DISPOSITIONS,
   TERMINAL_DISPOSITIONS,
   matchCanonicalDisposition,
 } from '../utils/dispositions.js';
+import {
+  REAL_ESTATE_CANONICAL_DISPOSITIONS,
+  TERMINAL_RE_DISPOSITIONS,
+  matchRealEstateDisposition,
+  isTerminalRealEstateDisposition,
+} from '../utils/realEstateDispositions.js';
 import { normalizeDate, extractPincode } from '../utils/csvParser.js';
 
 function formatDateTime(val: any): string {
@@ -107,6 +114,7 @@ function normalizePhoneNumber(raw: string): string | null {
 }
 
 export class CampaignService {
+  private static activeCampaignDispatches = new Set<string>();
   /**
    * List all campaigns with optional status filter, search query, and pipeline isolation
    */
@@ -265,9 +273,9 @@ export class CampaignService {
       totalContacts,
       totalCredits,
       totalContacts, // initial remaining_calls
-      data.script || 'Airtel Delhi Wi-Fi (Routine Pickup)',
+      data.script || (campaignPipeline === 'real_estate' ? 'My Estate Finder — Property Intake (Priya)' : 'Airtel Delhi Wi-Fi (Routine Pickup)'),
       data.language || 'hi-IN',
-      data.voice_pipeline || 'Sarvam AI (Priya - hi-IN)',
+      data.voice_pipeline || (campaignPipeline === 'real_estate' ? 'Sarvam AI (Priya - hi/en)' : 'Sarvam AI (Priya - hi-IN)'),
       data.schedule_start_time || '09:00',
       data.schedule_end_time || '20:00',
       JSON.stringify(data.operating_days || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']),
@@ -276,7 +284,7 @@ export class CampaignService {
       retryAttempts,
       retryDelayMinutes,
       maxDuration,
-      JSON.stringify(data.expected_dispositions || CANONICAL_DISPOSITIONS),
+      JSON.stringify(data.expected_dispositions || (campaignPipeline === 'real_estate' ? REAL_ESTATE_CANONICAL_DISPOSITIONS : CANONICAL_DISPOSITIONS)),
       campaignPipeline,
     ]);
     const campaign = res.rows[0];
@@ -308,17 +316,22 @@ export class CampaignService {
           const allocatedTo = item.allocated_to || null;
           const checkStatus = item.check_status || item.check || null;
 
+          const productName = campaignPipeline === 'real_estate' ? 'My Estate Finder' : 'Airtel IP TV';
           await pool.query(
             `INSERT INTO customers (
                name, phone, address, language, total_attempts, max_attempts, next_attempt_time, campaign_id,
                subs_del_no, cust_email, customer_identifier, service_end_date, r_date, alternate_phones, alternate_phone,
                account_no, pincode, zone, town_flag, service_city, disconnection_reason, circle_new, circle_new20, allocated_to, check_status, product_name
              )
-             VALUES ($1, $2, $3, $4, 0, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, 'Airtel IP TV')
+             VALUES ($1, $2, $3, $4, 0, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
              ON CONFLICT (phone)
              DO UPDATE SET
                campaign_id = EXCLUDED.campaign_id,
                max_attempts = EXCLUDED.max_attempts,
+               total_attempts = 0,
+               is_closed = FALSE,
+               current_disposition = 'Pending Outreach',
+               next_attempt_time = NOW(),
                name = CASE WHEN EXCLUDED.name != 'Airtel Subscriber' AND EXCLUDED.name NOT LIKE 'Contact %' THEN EXCLUDED.name ELSE customers.name END,
                address = CASE WHEN EXCLUDED.address != 'Address On Record' THEN EXCLUDED.address ELSE customers.address END,
                subs_del_no = COALESCE(EXCLUDED.subs_del_no, customers.subs_del_no),
@@ -363,8 +376,45 @@ export class CampaignService {
               circleNew20,
               allocatedTo,
               checkStatus,
+              productName,
             ]
           );
+
+          if (campaignPipeline === 'real_estate') {
+            await pool.query(
+              `INSERT INTO real_estate_leads (
+                 id, campaign_id, owner_name, phone, alternate_phone, email, preferred_language,
+                 lead_status, current_disposition, total_attempts, max_attempts, next_attempt_time,
+                 property_location, notes
+               )
+               VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'NEW', 'Pending Outreach', 0, $7, NOW(), $8, $9)
+               ON CONFLICT (phone)
+               DO UPDATE SET
+                 campaign_id = EXCLUDED.campaign_id,
+                 owner_name = CASE WHEN EXCLUDED.owner_name IS NOT NULL AND TRIM(EXCLUDED.owner_name) != '' AND EXCLUDED.owner_name != 'Airtel Subscriber' AND EXCLUDED.owner_name NOT LIKE 'Contact %' THEN EXCLUDED.owner_name ELSE real_estate_leads.owner_name END,
+                 property_location = CASE WHEN EXCLUDED.property_location IS NOT NULL AND TRIM(EXCLUDED.property_location) != '' THEN EXCLUDED.property_location ELSE real_estate_leads.property_location END,
+                 preferred_language = EXCLUDED.preferred_language,
+                 max_attempts = EXCLUDED.max_attempts,
+                 email = COALESCE(EXCLUDED.email, real_estate_leads.email),
+                 alternate_phone = COALESCE(EXCLUDED.alternate_phone, real_estate_leads.alternate_phone),
+                 total_attempts = 0,
+                 lead_status = 'NEW',
+                 current_disposition = 'Pending Outreach',
+                 next_attempt_time = NOW(),
+                 updated_at = NOW()`,
+              [
+                campaign.id,
+                name,
+                item.phone,
+                primaryAlt,
+                email,
+                custLang,
+                retryAttempts,
+                address,
+                `Imported into Real Estate Campaign: ${campaign.name || 'Property Intake'}`,
+              ]
+            );
+          }
         } catch (err) {
           logger.warn({ phone: item.phone, err }, 'Failed to insert customer lead for campaign');
         }
@@ -372,6 +422,13 @@ export class CampaignService {
     }
 
     logger.info({ campaignId: campaign.id, name: data.name, contactsCount: totalContacts }, 'Created new voice campaign');
+
+    if (status === 'RUNNING' && totalContacts > 0) {
+      this.startCampaign(campaign.id).catch((err) => {
+        logger.error({ campaignId: campaign.id, err }, 'Failed to auto-dispatch campaign calls after creation');
+      });
+    }
+
     return campaign;
   }
 
@@ -423,6 +480,72 @@ export class CampaignService {
        RETURNING *`,
       [attempts, delay, campaignId]
     );
+
+    const isRealEstate = campaign.pipeline === 'real_estate';
+
+    if (isRealEstate) {
+      const terminalList = [
+        ...TERMINAL_RE_DISPOSITIONS,
+        'Qualified Lead', 'Not Interested', 'Do Not Call', 'Wrong Number',
+        'QUALIFIED', 'NOT_INTERESTED', 'DO_NOT_CALL', 'WRONG_NUMBER'
+      ];
+
+      const reopenRes = await pool.query(
+        `UPDATE real_estate_leads
+         SET max_attempts = $1,
+             lead_status = CASE
+               WHEN current_disposition = ANY($2::text[]) OR lead_status = ANY($2::text[]) THEN lead_status
+               WHEN total_attempts >= $1 THEN 'FAILED'
+               ELSE 'NEW'
+             END,
+             next_attempt_time = CASE
+               WHEN total_attempts < $1 AND (current_disposition IS NULL OR NOT (current_disposition = ANY($2::text[])))
+               THEN NOW()
+               ELSE next_attempt_time
+             END
+         WHERE campaign_id = $3
+            OR id IN (SELECT re_lead_id FROM calls WHERE campaign_id = $3)
+         RETURNING id, lead_status, total_attempts`,
+        [attempts, terminalList, campaignId]
+      );
+
+      await pool.query(
+        `UPDATE customers
+         SET max_attempts = $1
+         WHERE campaign_id = $2`,
+        [attempts, campaignId]
+      );
+
+      const eligibleForRetryCount = reopenRes.rows.filter(
+        (r) => !['NOT_INTERESTED', 'DO_NOT_CALL', 'QUALIFIED'].includes(r.lead_status) && Number(r.total_attempts) < attempts
+      ).length;
+
+      await pool.query(
+        `UPDATE campaigns
+         SET remaining_calls = (
+           SELECT COUNT(*)::int
+           FROM real_estate_leads
+           WHERE (campaign_id = $1 OR id IN (SELECT re_lead_id FROM calls WHERE campaign_id = $1))
+             AND lead_status NOT IN ('NOT_INTERESTED', 'DO_NOT_CALL', 'QUALIFIED')
+             AND total_attempts < $2
+         ),
+         updated_at = NOW()
+         WHERE id = $1`,
+        [campaignId, attempts]
+      );
+
+      const finalCampRes = await pool.query('SELECT * FROM campaigns WHERE id = $1', [campaignId]);
+
+      logger.info(
+        { campaignId, retryAttempts: attempts, retryDelayMinutes: delay, eligibleForRetryCount },
+        'Updated real estate campaign retry settings and synced leads'
+      );
+
+      return {
+        campaign: finalCampRes.rows[0],
+        eligibleForRetryCount,
+      };
+    }
 
     // Terminal dispositions that should remain closed
     const terminalList = [
@@ -492,6 +615,9 @@ export class CampaignService {
    * Delete or archive a campaign
    */
   async deleteCampaign(id: string): Promise<boolean> {
+    await pool.query('DELETE FROM calls WHERE campaign_id = $1', [id]);
+    await pool.query('UPDATE real_estate_leads SET campaign_id = NULL WHERE campaign_id = $1', [id]);
+    await pool.query('UPDATE customers SET campaign_id = NULL WHERE campaign_id = $1', [id]);
     const res = await pool.query('DELETE FROM campaigns WHERE id = $1 RETURNING id', [id]);
     return (res.rowCount ?? 0) > 0;
   }
@@ -500,34 +626,41 @@ export class CampaignService {
    * Get calls belonging to a specific campaign
    */
   async getCampaignCalls(campaignId: string): Promise<any[]> {
+    const campaign = await this.getCampaign(campaignId);
+    const isRealEstate = campaign?.pipeline === 'real_estate';
+
     const res = await pool.query(
       `SELECT 
          c.id,
          c.customer_id,
+         c.re_lead_id,
          c.campaign_id,
          c.status,
          c.room_name,
          c.duration_seconds,
          c.created_at,
-         cu.name as customer_name,
-         cu.phone as customer_phone,
-         cu.subs_del_no as contact_ref,
-         cu.language as customer_language,
-         co.outcome as call_outcome,
-         COALESCE(co.final_disposition, c.call_status, cu.current_disposition, c.status) as call_result,
-         co.transcript
+         COALESCE(rl.owner_name, cu.name) as customer_name,
+         COALESCE(rl.phone, cu.phone) as customer_phone,
+         COALESCE(rl.property_location, rp.sector_or_location, cu.subs_del_no) as contact_ref,
+         COALESCE(rl.preferred_language, cu.language) as customer_language,
+         COALESCE(ro.agent_summary, co.outcome) as call_outcome,
+         COALESCE(ro.final_disposition, co.final_disposition, c.call_status, rl.current_disposition, cu.current_disposition, c.status) as call_result,
+         COALESCE(ro.transcript, co.transcript) as transcript
        FROM calls c
        LEFT JOIN customers cu ON c.customer_id = cu.id
+       LEFT JOIN real_estate_leads rl ON c.re_lead_id = rl.id
        LEFT JOIN call_outcomes co ON c.id = co.call_id
-       WHERE c.campaign_id = $1 OR cu.campaign_id = $1
+       LEFT JOIN real_estate_outcomes ro ON c.id = ro.call_id
+       LEFT JOIN real_estate_properties rp ON (rp.id = COALESCE(ro.property_id, (SELECT id FROM real_estate_properties WHERE call_id = c.id LIMIT 1)))
+       WHERE c.campaign_id = $1 OR cu.campaign_id = $1 OR rl.campaign_id = $1
        ORDER BY c.created_at DESC
        LIMIT 100`,
       [campaignId]
     );
     return res.rows.map((row: any) => {
-      const canonical = row.call_result
-        ? matchCanonicalDisposition(row.call_result, row.duration_seconds, row.status)
-        : null;
+      const canonical = isRealEstate
+        ? (row.call_result ? matchRealEstateDisposition(row.call_result, row.duration_seconds, row.status) : null)
+        : (row.call_result ? matchCanonicalDisposition(row.call_result, row.duration_seconds, row.status) : null);
       return {
         ...row,
         call_result: canonical || row.call_result,
@@ -540,6 +673,70 @@ export class CampaignService {
    * Get all target audience contacts for a campaign with their attempts, latest call status, duration, disposition, and timestamp
    */
   async getCampaignContacts(campaignId: string): Promise<any[]> {
+    const campaign = await this.getCampaign(campaignId);
+    const isRealEstate = campaign?.pipeline === 'real_estate';
+
+    if (isRealEstate) {
+      const reQuery = `
+        SELECT 
+          rl.id as contact_id,
+          rl.owner_name as contact_name,
+          rl.phone as contact_phone,
+          COALESCE(rl.property_location, 'Real Estate Owner') as contact_ref,
+          COALESCE(rl.property_location, 'Location On Record') as address,
+          rl.email,
+          COALESCE(rl.preferred_language, 'hi') as language,
+          COALESCE(call_counts.count, 0)::INT as attempts,
+          COALESCE(rl.max_attempts, 3)::INT as max_attempts,
+          COALESCE(latest_call.final_disposition, 'Pending Outreach') as current_disposition,
+          rl.created_at as contact_created_at,
+          latest_call.id as last_call_id,
+          latest_call.status as call_status,
+          latest_call.duration_seconds,
+          latest_call.created_at as last_called_at,
+          latest_call.recording_url,
+          latest_call.final_disposition,
+          latest_call.call_outcome
+        FROM real_estate_leads rl
+        LEFT JOIN LATERAL (
+          SELECT COUNT(*)::INT as count 
+          FROM calls 
+          WHERE re_lead_id = rl.id AND campaign_id = $1
+        ) call_counts ON true
+        LEFT JOIN LATERAL (
+          SELECT 
+            c.id,
+            c.status,
+            c.duration_seconds,
+            c.created_at,
+            c.recording_url,
+            COALESCE(ro.agent_summary, ro.final_disposition) as call_outcome,
+            ro.final_disposition
+          FROM calls c
+          LEFT JOIN real_estate_outcomes ro ON c.id = ro.call_id
+          WHERE c.re_lead_id = rl.id AND c.campaign_id = $1
+          ORDER BY c.created_at DESC
+          LIMIT 1
+        ) latest_call ON true
+        WHERE rl.campaign_id = $1
+           OR rl.id IN (SELECT DISTINCT re_lead_id FROM calls WHERE campaign_id = $1 AND re_lead_id IS NOT NULL)
+        ORDER BY COALESCE(latest_call.created_at, rl.created_at) DESC
+        LIMIT 500
+      `;
+      const reRes = await pool.query(reQuery, [campaignId]);
+      if (reRes.rows.length > 0) {
+        return reRes.rows.map((row: any) => ({
+          ...row,
+          final_disposition: row.final_disposition || row.current_disposition
+            ? matchRealEstateDisposition(row.final_disposition || row.current_disposition, row.duration_seconds, row.call_status)
+            : null,
+          current_disposition: row.current_disposition
+            ? matchRealEstateDisposition(row.current_disposition)
+            : 'Pending Outreach',
+        }));
+      }
+    }
+
     const query = `
       SELECT 
         cu.id as contact_id,
@@ -547,9 +744,9 @@ export class CampaignService {
         cu.phone as contact_phone,
         cu.subs_del_no as contact_ref,
         cu.language,
-        COALESCE(GREATEST(cu.total_attempts, call_counts.count), 0)::INT as attempts,
+        COALESCE(call_counts.count, 0)::INT as attempts,
         cu.max_attempts,
-        cu.current_disposition,
+        COALESCE(latest_call.final_disposition, 'Pending Outreach') as current_disposition,
         cu.created_at as contact_created_at,
         latest_call.id as last_call_id,
         latest_call.status as call_status,
@@ -562,7 +759,7 @@ export class CampaignService {
       LEFT JOIN LATERAL (
         SELECT COUNT(*)::INT as count 
         FROM calls 
-        WHERE customer_id = cu.id
+        WHERE customer_id = cu.id AND campaign_id = $1
       ) call_counts ON true
       LEFT JOIN LATERAL (
         SELECT 
@@ -575,7 +772,7 @@ export class CampaignService {
           co.final_disposition
         FROM calls c
         LEFT JOIN call_outcomes co ON c.id = co.call_id
-        WHERE c.customer_id = cu.id
+        WHERE c.customer_id = cu.id AND c.campaign_id = $1
         ORDER BY c.created_at DESC
         LIMIT 1
       ) latest_call ON true
@@ -588,10 +785,14 @@ export class CampaignService {
     return res.rows.map((row: any) => ({
       ...row,
       final_disposition: row.final_disposition || row.current_disposition
-        ? matchCanonicalDisposition(row.final_disposition || row.current_disposition, row.duration_seconds, row.call_status)
+        ? (isRealEstate
+            ? matchRealEstateDisposition(row.final_disposition || row.current_disposition, row.duration_seconds, row.call_status)
+            : matchCanonicalDisposition(row.final_disposition || row.current_disposition, row.duration_seconds, row.call_status))
         : null,
       current_disposition: row.current_disposition
-        ? matchCanonicalDisposition(row.current_disposition)
+        ? (isRealEstate
+            ? matchRealEstateDisposition(row.current_disposition)
+            : matchCanonicalDisposition(row.current_disposition))
         : null,
     }));
   }
@@ -600,62 +801,118 @@ export class CampaignService {
    * Start campaign and dispatch pending calls according to rate limits and schedule.
    */
   async startCampaign(campaignId: string): Promise<{ campaign: CampaignDbRow; dispatchedCount: number }> {
-    const campaign = await this.updateCampaignStatus(campaignId, 'RUNNING');
-    const maxConcurrent = campaign.max_concurrent_calls || 5;
-
-    // Production compliance check: TRAI Calling Hours (09:00 AM - 08:00 PM IST)
-    if (env.NODE_ENV === 'production') {
-      const hoursCheck = complianceService.isWithinCallingHours();
-      if (!hoursCheck.allowed) {
-        logger.warn({ campaignId, reason: hoursCheck.reason }, 'Campaign dispatch paused outside TRAI calling hours');
-        return { campaign, dispatchedCount: 0 };
-      }
+    if (CampaignService.activeCampaignDispatches.has(campaignId)) {
+      logger.warn({ campaignId }, 'Campaign dispatch already executing in another task, skipping duplicate dispatch');
+      const existingCamp = await this.getCampaign(campaignId);
+      return { campaign: existingCamp || ({} as any), dispatchedCount: 0 };
     }
 
-    // Check currently active calls for this campaign
-    const activeRes = await pool.query(
-      `SELECT COUNT(*)::int as active_count
-       FROM calls
-       WHERE campaign_id = $1
-         AND status IN ('initiated', 'dialing', 'answered')
-         AND created_at > NOW() - INTERVAL '10 minutes'`,
-      [campaignId]
-    );
-    const activeCount = activeRes.rows[0]?.active_count || 0;
-    const availableSlots = Math.max(0, maxConcurrent - activeCount);
+    CampaignService.activeCampaignDispatches.add(campaignId);
+    try {
+      const campaign = await this.updateCampaignStatus(campaignId, 'RUNNING');
+      const maxConcurrent = campaign.max_concurrent_calls || 5;
 
-    let dispatchedCount = 0;
-    if (availableSlots > 0) {
-      const pendingCustomers = await pool.query(
-        `SELECT * FROM customers
-         WHERE campaign_id = $1
-           AND is_closed = FALSE
-           AND (next_attempt_time IS NULL OR next_attempt_time <= NOW())
-         ORDER BY total_attempts ASC, created_at ASC
-         LIMIT $2`,
-        [campaignId, availableSlots]
-      );
-
-      for (const cust of pendingCustomers.rows) {
-        try {
-          // Check DND suppression
-          const dnd = await complianceService.isDndSuppressed(cust.phone);
-          if (dnd.suppressed) {
-            logger.info({ customerId: cust.id, phone: cust.phone }, 'Skipping customer on DND suppression list');
-            await pool.query("UPDATE customers SET is_closed = TRUE, current_disposition = 'DO_NOT_CALL' WHERE id = $1", [cust.id]);
-            continue;
-          }
-
-          await callService.initiateCall(cust.id);
-          dispatchedCount++;
-        } catch (err) {
-          logger.warn({ customerId: cust.id, err }, 'Failed to initiate campaign call for customer');
+      // Production compliance check: TRAI Calling Hours (09:00 AM - 08:00 PM IST)
+      if (env.NODE_ENV === 'production') {
+        const hoursCheck = complianceService.isWithinCallingHours();
+        if (!hoursCheck.allowed) {
+          logger.warn({ campaignId, reason: hoursCheck.reason }, 'Campaign dispatch paused outside TRAI calling hours');
+          return { campaign, dispatchedCount: 0 };
         }
       }
-    }
 
-    logger.info({ campaignId, dispatchedCount, activeCount, maxConcurrent }, 'Campaign start triggered');
-    return { campaign, dispatchedCount };
+      // Check currently active calls for this campaign
+      const activeRes = await pool.query(
+        `SELECT COUNT(*)::int as active_count
+         FROM calls
+         WHERE campaign_id = $1
+           AND status IN ('initiated', 'dialing', 'answered')
+           AND created_at > NOW() - INTERVAL '10 minutes'`,
+        [campaignId]
+      );
+      const activeCount = activeRes.rows[0]?.active_count || 0;
+      const availableSlots = Math.max(0, maxConcurrent - activeCount);
+
+      let dispatchedCount = 0;
+      if (availableSlots > 0) {
+        if (campaign.pipeline === 'real_estate') {
+          const pendingLeads = await pool.query(
+            `SELECT * FROM real_estate_leads
+             WHERE (campaign_id = $1 OR id IN (SELECT re_lead_id FROM calls WHERE campaign_id = $1))
+               AND lead_status NOT IN ('NOT_INTERESTED', 'DO_NOT_CALL', 'QUALIFIED')
+               AND total_attempts < COALESCE(max_attempts, 3)
+               AND (next_attempt_time IS NULL OR next_attempt_time <= NOW())
+               AND id NOT IN (
+                 SELECT re_lead_id FROM calls
+                 WHERE status IN ('initiated', 'dialing', 'answered')
+                   AND created_at > NOW() - INTERVAL '15 minutes'
+                   AND re_lead_id IS NOT NULL
+               )
+             ORDER BY total_attempts ASC, created_at ASC
+             LIMIT $2`,
+            [campaignId, availableSlots]
+          );
+
+          for (const lead of pendingLeads.rows) {
+            try {
+              const dnd = await complianceService.isDndSuppressed(lead.phone);
+              if (dnd.suppressed) {
+                logger.info({ leadId: lead.id, phone: lead.phone }, 'Skipping RE lead on DND suppression list');
+                await pool.query("UPDATE real_estate_leads SET lead_status = 'DO_NOT_CALL', current_disposition = 'Do Not Call' WHERE id = $1", [lead.id]);
+                continue;
+              }
+
+              if (lead.campaign_id !== campaignId) {
+                await pool.query('UPDATE real_estate_leads SET campaign_id = $1 WHERE id = $2', [campaignId, lead.id]);
+              }
+
+              await realEstateCallService.initiateCall(lead.id);
+              dispatchedCount++;
+            } catch (err) {
+              logger.warn({ leadId: lead.id, err }, 'Failed to initiate campaign call for real estate lead');
+            }
+          }
+        } else {
+          const pendingCustomers = await pool.query(
+            `SELECT * FROM customers
+             WHERE campaign_id = $1
+               AND is_closed = FALSE
+               AND (next_attempt_time IS NULL OR next_attempt_time <= NOW())
+               AND id NOT IN (
+                 SELECT customer_id FROM calls
+                 WHERE status IN ('initiated', 'dialing', 'answered')
+                   AND created_at > NOW() - INTERVAL '15 minutes'
+                   AND customer_id IS NOT NULL
+               )
+             ORDER BY total_attempts ASC, created_at ASC
+             LIMIT $2`,
+            [campaignId, availableSlots]
+          );
+
+          for (const cust of pendingCustomers.rows) {
+            try {
+              // Check DND suppression
+              const dnd = await complianceService.isDndSuppressed(cust.phone);
+              if (dnd.suppressed) {
+                logger.info({ customerId: cust.id, phone: cust.phone }, 'Skipping customer on DND suppression list');
+                await pool.query("UPDATE customers SET is_closed = TRUE, current_disposition = 'DO_NOT_CALL' WHERE id = $1", [cust.id]);
+                continue;
+              }
+
+              await callService.initiateCall(cust.id);
+              dispatchedCount++;
+            } catch (err) {
+              logger.warn({ customerId: cust.id, err }, 'Failed to initiate campaign call for customer');
+            }
+          }
+        }
+      }
+
+      logger.info({ campaignId, dispatchedCount, activeCount, maxConcurrent }, 'Campaign start triggered');
+      return { campaign, dispatchedCount };
+    } finally {
+      CampaignService.activeCampaignDispatches.delete(campaignId);
+    }
   }
 
   /**
@@ -719,17 +976,22 @@ export class CampaignService {
         const allocatedTo = entry.allocated_to || null;
         const checkStatus = entry.check_status || entry.check || null;
 
+        const productName = campaign.pipeline === 'real_estate' ? 'My Estate Finder' : 'Airtel IP TV';
         const ins = await pool.query(
           `INSERT INTO customers (
              name, phone, address, language, total_attempts, max_attempts, next_attempt_time, campaign_id,
              subs_del_no, cust_email, customer_identifier, service_end_date, r_date, alternate_phones, alternate_phone,
              account_no, pincode, zone, town_flag, service_city, disconnection_reason, circle_new, circle_new20, allocated_to, check_status, product_name
            )
-           VALUES ($1, $2, $3, $4, 0, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, 'Airtel IP TV')
+           VALUES ($1, $2, $3, $4, 0, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
            ON CONFLICT (phone)
            DO UPDATE SET
              campaign_id = EXCLUDED.campaign_id,
              max_attempts = EXCLUDED.max_attempts,
+             total_attempts = 0,
+             is_closed = FALSE,
+             current_disposition = 'Pending Outreach',
+             next_attempt_time = NOW(),
              name = CASE WHEN EXCLUDED.name != 'Airtel Subscriber' AND EXCLUDED.name NOT LIKE 'Contact %' THEN EXCLUDED.name ELSE customers.name END,
              address = CASE WHEN EXCLUDED.address != 'Address On Record' THEN EXCLUDED.address ELSE customers.address END,
              subs_del_no = COALESCE(EXCLUDED.subs_del_no, customers.subs_del_no),
@@ -775,8 +1037,45 @@ export class CampaignService {
             circleNew20,
             allocatedTo,
             checkStatus,
+            productName,
           ]
         );
+
+        if (campaign.pipeline === 'real_estate') {
+          await pool.query(
+            `INSERT INTO real_estate_leads (
+               id, campaign_id, owner_name, phone, alternate_phone, email, preferred_language,
+               lead_status, current_disposition, total_attempts, max_attempts, next_attempt_time,
+               property_location, notes
+             )
+             VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'NEW', 'Pending Outreach', 0, $7, NOW(), $8, $9)
+             ON CONFLICT (phone)
+             DO UPDATE SET
+               campaign_id = EXCLUDED.campaign_id,
+               owner_name = CASE WHEN EXCLUDED.owner_name IS NOT NULL AND TRIM(EXCLUDED.owner_name) != '' AND EXCLUDED.owner_name != 'Airtel Subscriber' AND EXCLUDED.owner_name NOT LIKE 'Contact %' THEN EXCLUDED.owner_name ELSE real_estate_leads.owner_name END,
+               property_location = CASE WHEN EXCLUDED.property_location IS NOT NULL AND TRIM(EXCLUDED.property_location) != '' THEN EXCLUDED.property_location ELSE real_estate_leads.property_location END,
+               preferred_language = EXCLUDED.preferred_language,
+               max_attempts = EXCLUDED.max_attempts,
+               email = COALESCE(EXCLUDED.email, real_estate_leads.email),
+               alternate_phone = COALESCE(EXCLUDED.alternate_phone, real_estate_leads.alternate_phone),
+               total_attempts = 0,
+               lead_status = 'NEW',
+               current_disposition = 'Pending Outreach',
+               next_attempt_time = NOW(),
+               updated_at = NOW()`,
+            [
+              campaignId,
+              name,
+              entry.phone,
+              primaryAlt,
+              email,
+              custLang,
+              retryAttempts,
+              address,
+              `Imported into Real Estate Campaign: ${campaign.name || 'Property Intake'}`,
+            ]
+          );
+        }
         if (ins.rows.length > 0) {
           addedCount++;
         }
@@ -815,6 +1114,126 @@ export class CampaignService {
     const campaign = await this.getCampaign(campaignId);
     if (!campaign) {
       throw new Error(`Campaign not found: ${campaignId}`);
+    }
+
+    const isRealEstate = campaign.pipeline === 'real_estate';
+
+    if (isRealEstate) {
+      const reQuery = `
+        SELECT
+          rl.id as lead_id,
+          COALESCE(rl.property_location, 'Real Estate Unit') as subs_del_no,
+          rl.phone as mobile,
+          rl.owner_name as customer_name,
+          'My Estate Finder' as product_name,
+          COALESCE(rl.property_location, 'Location On Record') as address,
+          null as pincode,
+          null as service_end_date,
+          null as account_no,
+          null as customer_identifier,
+          null as zone,
+          null as town_flag,
+          (rl.lead_status IN ('QUALIFIED', 'NOT_INTERESTED', 'DO_NOT_CALL')) as is_closed,
+          rl.current_disposition,
+          rl.total_attempts,
+          rl.created_at as lead_created_at
+        FROM real_estate_leads rl
+        WHERE rl.campaign_id = $1
+           OR rl.id IN (SELECT DISTINCT re_lead_id FROM calls WHERE campaign_id = $1 AND re_lead_id IS NOT NULL)
+        ORDER BY rl.created_at ASC
+      `;
+      const reLeadsRes = await pool.query(reQuery, [campaignId]);
+
+      if (reLeadsRes.rows.length > 0) {
+        const reportRows: any[] = [];
+        for (let idx = 0; idx < reLeadsRes.rows.length; idx++) {
+          const lead = reLeadsRes.rows[idx];
+          const callsQuery = `
+            SELECT
+              c.id as call_id,
+              c.attempt_number,
+              c.status as call_status,
+              c.duration_seconds,
+              c.created_at as call_time,
+              c.recording_url,
+              c.ended_at,
+              COALESCE(ro.final_disposition, c.call_status, c.status) as disposition,
+              ro.final_disposition as outcome_disposition
+            FROM calls c
+            LEFT JOIN real_estate_outcomes ro ON c.id = ro.call_id
+            WHERE c.re_lead_id = $1 OR (c.campaign_id = $2 AND c.re_lead_id = $1)
+            ORDER BY c.created_at ASC
+          `;
+          const callsRes = await pool.query(callsQuery, [lead.lead_id, campaignId]);
+          const calls = callsRes.rows;
+          const attemptsCount = Math.max(lead.total_attempts || 0, calls.length);
+
+          const attemptDisps: Record<string, string> = {};
+          for (let i = 1; i <= 8; i++) {
+            const attemptCall = calls.find((c: any) => c.attempt_number === i) || calls[i - 1];
+            if (attemptCall) {
+              const matched = matchRealEstateDisposition(
+                attemptCall.outcome_disposition || attemptCall.disposition,
+                attemptCall.duration_seconds,
+                attemptCall.call_status
+              );
+              attemptDisps[`attempt_${i}`] = matched;
+            } else {
+              attemptDisps[`attempt_${i}`] = '';
+            }
+          }
+
+          const connectedCalls = calls.filter((c: any) => {
+            const d = Number(c.duration_seconds) || 0;
+            const st = (c.call_status || '').toLowerCase();
+            return d > 0 || st === 'answered' || st === 'completed';
+          });
+          const connectedAttemptsCount = connectedCalls.length;
+
+          const lastCall = calls.length > 0 ? calls[calls.length - 1] : null;
+          const lastCallTime = lastCall?.call_time || null;
+          const lastRecordingUrl = calls.slice().reverse().find((c: any) => c.recording_url)?.recording_url || '';
+
+          const rawFinalDisp = lastCall?.outcome_disposition || lastCall?.disposition || lead.current_disposition || '';
+          const finalDisposition = rawFinalDisp ? matchRealEstateDisposition(rawFinalDisp, lastCall?.duration_seconds, lastCall?.call_status) : '';
+
+          let overallStatus = 'Pending';
+          if (lead.is_closed || isTerminalRealEstateDisposition(finalDisposition)) {
+            overallStatus = 'Completed';
+          } else if (attemptsCount > 0) {
+            overallStatus = finalDisposition === 'Schedule Callback' || finalDisposition === 'Advisor Callback Booked' ? 'Callback' : 'Failed';
+          }
+
+          reportRows.push({
+            s_no: idx + 1,
+            lead_id: lead.lead_id,
+            subs_del_no: lead.subs_del_no || '',
+            mobile: formatMobileNumber(lead.mobile),
+            customer_name: lead.customer_name || 'Property Owner',
+            product_name: lead.product_name || 'My Estate Finder',
+            address: lead.address || '',
+            pincode: '',
+            zone: '',
+            town_flag: '',
+            status: overallStatus,
+            attempts_count: attemptsCount,
+            connected_attempts_count: connectedAttemptsCount,
+            last_call_time: lastCallTime ? formatDateTime(lastCallTime) : '',
+            attempt_1: attemptDisps.attempt_1 || '',
+            attempt_2: attemptDisps.attempt_2 || '',
+            attempt_3: attemptDisps.attempt_3 || '',
+            attempt_4: attemptDisps.attempt_4 || '',
+            attempt_5: attemptDisps.attempt_5 || '',
+            attempt_6: attemptDisps.attempt_6 || '',
+            attempt_7: attemptDisps.attempt_7 || '',
+            attempt_8: attemptDisps.attempt_8 || '',
+            final_disposition: finalDisposition,
+            conclusion_date: lastCallTime ? formatDateTime(lastCallTime) : '',
+            recording: lastRecordingUrl || '',
+          });
+        }
+        return reportRows;
+      }
     }
 
     // Fetch all leads for this campaign with all their call attempts
@@ -982,19 +1401,25 @@ export class CampaignService {
       throw new Error(`Campaign not found: ${campaignId}`);
     }
 
+    const isRealEstate = campaign.pipeline === 'real_estate';
+
     const query = `
       WITH call_disps AS (
         SELECT 
           COALESCE(
+            NULLIF(TRIM(ro.final_disposition), ''),
             NULLIF(TRIM(co.final_disposition), ''),
             NULLIF(TRIM(c.call_status), ''),
+            NULLIF(TRIM(rl.current_disposition), ''),
             NULLIF(TRIM(cu.current_disposition), ''),
             NULLIF(TRIM(c.status), '')
           ) as disposition
         FROM calls c
         LEFT JOIN customers cu ON c.customer_id = cu.id
+        LEFT JOIN real_estate_leads rl ON c.re_lead_id = rl.id
         LEFT JOIN call_outcomes co ON c.id = co.call_id
-        WHERE c.campaign_id = $1 OR cu.campaign_id = $1
+        LEFT JOIN real_estate_outcomes ro ON c.id = ro.call_id
+        WHERE c.campaign_id = $1 OR cu.campaign_id = $1 OR rl.campaign_id = $1
       ),
       cust_disps AS (
         SELECT 
@@ -1006,10 +1431,22 @@ export class CampaignService {
             SELECT DISTINCT customer_id FROM calls WHERE customer_id IS NOT NULL AND (campaign_id = $1 OR customer_id IN (SELECT id FROM customers WHERE campaign_id = $1))
           )
       ),
+      lead_disps AS (
+        SELECT 
+          NULLIF(TRIM(rl.current_disposition), '') as disposition
+        FROM real_estate_leads rl
+        WHERE rl.campaign_id = $1
+          AND rl.current_disposition IS NOT NULL
+          AND rl.id NOT IN (
+            SELECT DISTINCT re_lead_id FROM calls WHERE re_lead_id IS NOT NULL AND (campaign_id = $1 OR re_lead_id IN (SELECT id FROM real_estate_leads WHERE campaign_id = $1))
+          )
+      ),
       all_disps AS (
         SELECT disposition FROM call_disps WHERE disposition IS NOT NULL
         UNION ALL
         SELECT disposition FROM cust_disps WHERE disposition IS NOT NULL
+        UNION ALL
+        SELECT disposition FROM lead_disps WHERE disposition IS NOT NULL
       )
       SELECT disposition, COUNT(*)::int as count
       FROM all_disps
@@ -1023,23 +1460,27 @@ export class CampaignService {
       `SELECT COUNT(*)::int as total 
        FROM calls c
        LEFT JOIN customers cu ON c.customer_id = cu.id
-       WHERE c.campaign_id = $1 OR cu.campaign_id = $1`,
+       LEFT JOIN real_estate_leads rl ON c.re_lead_id = rl.id
+       WHERE c.campaign_id = $1 OR cu.campaign_id = $1 OR rl.campaign_id = $1`,
       [campaignId]
     );
     let totalCalls = totalRes.rows[0]?.total || 0;
 
+    const targetList = isRealEstate ? REAL_ESTATE_CANONICAL_DISPOSITIONS : CANONICAL_DISPOSITIONS;
+    const matcher = isRealEstate ? matchRealEstateDisposition : matchCanonicalDisposition;
+
     const expected: string[] = Array.isArray(campaign.expected_dispositions) && campaign.expected_dispositions.length > 0
-      ? campaign.expected_dispositions.map((e) => matchCanonicalDisposition(e))
-      : [...CANONICAL_DISPOSITIONS];
+      ? campaign.expected_dispositions.map((e) => matcher(e))
+      : [...targetList];
 
     const dispMap = new Map<string, number>();
 
-    // Seed all 14 canonical dispositions with 0
-    CANONICAL_DISPOSITIONS.forEach((d) => dispMap.set(d, 0));
+    // Seed all target canonical dispositions with 0
+    targetList.forEach((d) => dispMap.set(d, 0));
 
-    // Fill with actual call counts mapped to canonical 14
+    // Fill with actual call counts mapped to target canonical dispositions
     res.rows.forEach((row) => {
-      const canonicalName = matchCanonicalDisposition(row.disposition);
+      const canonicalName = matcher(row.disposition);
       dispMap.set(canonicalName, (dispMap.get(canonicalName) || 0) + Number(row.count));
     });
 

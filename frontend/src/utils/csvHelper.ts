@@ -312,12 +312,11 @@ export interface AudienceParseResult {
 }
 
 /**
- * Parses audience CSV file supporting all 19 columns:
- * R. Date, Check, SUBS_DEL_NO, ACCOUNT_NO, SERVICE_END, Address, SERVICE_CITY,
- * CONTACT_PHONE1, CONTACT_PHONE2, CUST_EMAIL, DISCONNECTION_REASON, TOWN_FLAG,
- * CUSTOMER_IDENTIFER, SUBS_NAME, CIRCLE_NEW, CIRCLE_NEW20, Pin code, Zone, Allocated to
+ * Parses audience CSV file supporting both:
+ * 1. Estate Finder format (4 columns: Customer Name, Mobile, Email, Address)
+ * 2. Telecom format (19 columns: R. Date, Check, SUBS_DEL_NO, ACCOUNT_NO, SERVICE_END, Address, etc.)
  */
-export function parseAudienceCsv(csvText: string): AudienceParseResult {
+export function parseAudienceCsv(csvText: string, isRealEstate?: boolean): AudienceParseResult {
   const rows = parseCsvRows(csvText);
   if (rows.length < 2) {
     return { validContacts: [], flaggedDuplicates: [], flaggedShortNumbers: [], totalRows: 0 };
@@ -486,14 +485,15 @@ export function parseAudienceCsv(csvText: string): AudienceParseResult {
     const rawZone = zoneCol >= 0 ? row[zoneCol] : '';
     const rawAllocatedTo = allocatedToCol >= 0 ? row[allocatedToCol] : '';
 
-    const cleanAddress = rawAddress ? rawAddress.trim().replace(/^["']|["']$/g, '') : 'Address On Record';
+    const cleanAddress = rawAddress ? rawAddress.trim().replace(/^["']|["']$/g, '') : (isRealEstate ? 'Location Not Specified' : 'Address On Record');
     const pincode = rawPincode ? rawPincode.trim().replace(/^["']|["']$/g, '') : (extractPincode(cleanAddress) || undefined);
+    const defaultName = isRealEstate ? `Property Owner ${primaryPhone.slice(-4)}` : `Subscriber ${primaryPhone.slice(-4)}`;
 
     valid.push({
       phone: primaryPhone,
       alternate_phones: alternatePhones.length > 0 ? alternatePhones : undefined,
       alternate_phone: alternatePhones[0] || undefined,
-      name: rawName ? rawName.trim().replace(/^["']|["']$/g, '') : `Subscriber ${primaryPhone.slice(-4)}`,
+      name: rawName ? rawName.trim().replace(/^["']|["']$/g, '') : defaultName,
       address: cleanAddress,
       cust_email: rawEmail ? rawEmail.trim().replace(/^["']|["']$/g, '') : undefined,
       customer_identifier: rawIdentifier ? rawIdentifier.trim().replace(/^["']|["']$/g, '') : undefined,
@@ -511,7 +511,7 @@ export function parseAudienceCsv(csvText: string): AudienceParseResult {
       circle_new: rawCircleNew ? rawCircleNew.trim().replace(/^["']|["']$/g, '') : undefined,
       circle_new20: rawCircleNew20 ? rawCircleNew20.trim().replace(/^["']|["']$/g, '') : undefined,
       allocated_to: rawAllocatedTo ? rawAllocatedTo.trim().replace(/^["']|["']$/g, '') : undefined,
-      product_name: 'Airtel IP TV',
+      product_name: isRealEstate ? 'My Estate Finder' : 'Airtel IP TV',
     });
   }
 
@@ -560,10 +560,11 @@ export function downloadSampleCsv(): void {
 export function getCampaignAudienceSampleCsvContent(isRealEstate?: boolean): string {
   if (isRealEstate) {
     return [
-      'Customer Name,Mobile,Alternate Phone,Email,Address,Project / Society,Sector / Location,BHK / Config,Expected Price / Rent,Pincode',
-      'Raja Nayak,9811223344,9822334455,raja@example.com,"DLF Phase 5, Golf Course Road, Gurgaon","DLF Phase 5","Sector 54","3 BHK","2.4 Cr",122002',
-      'Priya Sharma,9876543210,,priya@example.com,"Cyber City, DLF Phase 2, Gurgaon","Cyber City","Sector 24","Office Space","85,000 / month",122002',
-      'Amit Verma,9811122334,9833445566,amit@example.com,"Grand Arch, Golf Course Ext, Gurgaon","Grand Arch","Sector 58","4 BHK","95,000 / month",122011',
+      'Customer Name,Mobile,Email,Address',
+      'Vikramaditya Singhania,9811122233,vikram@example.com,"DLF The Camellias, Golf Course Road, Gurgaon Sector 42"',
+      'Ananya Deshmukh,9845012345,ananya@example.com,"100ft Road, Indiranagar, Bengaluru"',
+      'Rajesh Khandelwal,9820098765,rajesh@example.com,"Tower 4, Purvanchal Royal City, Greater Noida"',
+      'Mayank Ojha,7412034540,mayank@example.com,"Estate Green, JMD Megapolis Sector 81, Gurgaon"',
     ].join('\n');
   }
 
@@ -585,7 +586,7 @@ export function downloadCampaignAudienceSampleCsv(isRealEstate?: boolean): void 
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.setAttribute('download', isRealEstate ? 'my_estate_finder_leads_sample.csv' : 'campaign_audience_format.csv');
+  link.setAttribute('download', isRealEstate ? 'estate_finder_leads_sample.csv' : 'campaign_audience_format.csv');
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);

@@ -1,3 +1,5 @@
+import http from 'http';
+import type { Socket } from 'net';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import { pinoHttp } from 'pino-http';
@@ -145,6 +147,54 @@ if (process.env.NODE_ENV !== 'test') {
       s3Service.syncLocalRecordings(getRecordingsDir()).catch((err) => {
         logger.warn({ err: err?.message }, 'Error during startup S3 recording sync');
       });
+    }
+  });
+
+  // Proxy Exotel WebSocket media stream upgrades from port 3000 to Python Audio Bridge on port 8088
+  server.on('upgrade', (req, socket, head) => {
+    if (req.url && req.url.startsWith('/api/exotel/media-stream')) {
+      const proxyReq = http.request({
+        port: Number(env.EXOTEL_BRIDGE_PORT || 8088),
+        host: env.EXOTEL_BRIDGE_HOST || '127.0.0.1',
+        method: req.method,
+        path: req.url,
+        headers: req.headers,
+      });
+
+      proxyReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
+        // Disable Nagle's algorithm on both legs: 20-40 ms audio packets must be sent immediately,
+        // otherwise TCP can hold them back and add jitter/latency to the call audio.
+        (socket as Socket).setNoDelay?.(true);
+        proxySocket.setNoDelay(true);
+        let rawHeaders = `HTTP/1.1 101 Switching Protocols\r\n`;
+        for (const [k, v] of Object.entries(proxyRes.headers)) {
+          if (Array.isArray(v)) {
+            for (const item of v) rawHeaders += `${k}: ${item}\r\n`;
+          } else if (v) {
+            rawHeaders += `${k}: ${v}\r\n`;
+          }
+        }
+        rawHeaders += '\r\n';
+        socket.write(rawHeaders);
+        if (proxyHead && proxyHead.length) socket.write(proxyHead);
+        if (head && head.length) proxySocket.write(head);
+        proxySocket.pipe(socket);
+        socket.pipe(proxySocket);
+
+        proxySocket.on('close', () => {
+          if (!socket.destroyed) socket.destroy();
+        });
+        socket.on('close', () => {
+          if (!proxySocket.destroyed) proxySocket.destroy();
+        });
+      });
+
+      proxyReq.on('error', (err) => {
+        logger.error({ err: err.message }, 'Exotel WebSocket upgrade proxy error');
+        socket.destroy();
+      });
+
+      proxyReq.end();
     }
   });
 

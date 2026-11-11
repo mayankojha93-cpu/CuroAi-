@@ -13,6 +13,7 @@ import { validateRequest } from '../middleware/validate.js';
 import { parseCsvToLeads } from '../utils/csvParser.js';
 import { processCallRecording, getRecordingsDir } from '../services/recordingDownloader.js';
 import { s3Service } from '../services/s3Service.js';
+import { fetchExotelCallDetails } from '../services/exotelService.js';
 
 export const callsRouter = Router();
 
@@ -52,18 +53,97 @@ const importLeadsSchema = {
   }),
 };
 
-// POST /calls or /api/calls - Initiate call to customer
+// POST /calls or /api/calls - Initiate call to customer (supports both Airtel & Real Estate pipelines)
 callsRouter.post(
   ['/calls', '/api/calls'],
   validateRequest(initiateCallSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      if (req.user?.assigned_pipeline && req.user.assigned_pipeline !== 'all' && req.user.assigned_pipeline !== 'airtel') {
-        return res.status(403).json({
-          error: 'Forbidden: Your account is not authorized to initiate Airtel telecom campaign calls.',
+      const userPipeline = req.user?.assigned_pipeline;
+      const { customerId } = req.body;
+
+      // 1. Check if customerId is a real_estate_leads ID
+      const reLead = await query('SELECT id, phone, owner_name, campaign_id FROM real_estate_leads WHERE id = $1', [customerId]);
+      const isReLead = reLead.rows.length > 0;
+
+      // 2. Strict pipeline isolation check
+      if (userPipeline && userPipeline !== 'all') {
+        if (userPipeline === 'real_estate' && !isReLead) {
+          // Check if customerId is in customers table linked to a real_estate campaign
+          const custCheck = await query(
+            `SELECT c.id, camp.pipeline 
+             FROM customers c 
+             JOIN campaigns camp ON c.campaign_id = camp.id 
+             WHERE c.id = $1`,
+            [customerId]
+          );
+          if (custCheck.rows.length === 0 || custCheck.rows[0].pipeline !== 'real_estate') {
+            return res.status(403).json({
+              error: 'Forbidden: Your account (My Estate Finder) is not authorized to initiate Airtel telecom campaign calls.',
+            });
+          }
+        } else if (userPipeline === 'airtel' && isReLead) {
+          return res.status(403).json({
+            error: 'Forbidden: Your account (Airtel Telecom) is not authorized to initiate Real Estate campaign calls.',
+          });
+        }
+      }
+
+      // 3. If real estate lead, initiate via realEstateCallService
+      if (isReLead) {
+        const call = await realEstateCallService.initiateCall(customerId);
+        return res.status(201).json({
+          message: 'Real estate campaign call initiated successfully',
+          call: {
+            id: call.id,
+            customerId: call.re_lead_id,
+            status: call.status,
+            roomName: call.room_name,
+            createdAt: call.created_at,
+          },
         });
       }
-      const { customerId } = req.body;
+
+      // 4. If customer belongs to a real estate campaign, bridge to real_estate_leads
+      const custWithCamp = await query(
+        `SELECT c.id, c.phone, c.name, c.campaign_id, camp.pipeline 
+         FROM customers c 
+         LEFT JOIN campaigns camp ON c.campaign_id = camp.id 
+         WHERE c.id = $1`,
+        [customerId]
+      );
+      if (custWithCamp.rows.length > 0 && custWithCamp.rows[0].pipeline === 'real_estate') {
+        const custRow = custWithCamp.rows[0];
+        let leadId: string;
+        const existingLead = await query('SELECT id FROM real_estate_leads WHERE phone = $1', [custRow.phone]);
+        if (existingLead.rows.length > 0) {
+          leadId = existingLead.rows[0].id;
+          if (!existingLead.rows[0].campaign_id && custRow.campaign_id) {
+            await query('UPDATE real_estate_leads SET campaign_id = $1 WHERE id = $2', [custRow.campaign_id, leadId]);
+          }
+        } else {
+          const newLead = await query(
+            `INSERT INTO real_estate_leads (id, campaign_id, owner_name, phone, preferred_language, lead_status)
+             VALUES (gen_random_uuid(), $1, $2, $3, 'hi', 'NEW')
+             RETURNING id`,
+            [custRow.campaign_id, custRow.name, custRow.phone]
+          );
+          leadId = newLead.rows[0].id;
+        }
+        const call = await realEstateCallService.initiateCall(leadId);
+        return res.status(201).json({
+          message: 'Real estate campaign call initiated successfully',
+          call: {
+            id: call.id,
+            customerId: call.re_lead_id,
+            status: call.status,
+            roomName: call.room_name,
+            createdAt: call.created_at,
+          },
+        });
+      }
+
+      // 5. Default Airtel call initiation
       const call = await callService.initiateCall(customerId);
       return res.status(201).json({
         message: 'Call initiated successfully',
@@ -527,6 +607,22 @@ callsRouter.get('/api/calls/:id/audio', async (req: Request<{ id: string }>, res
     const recUrl = call.recording_url;
     if (recUrl && (recUrl.startsWith('http://') || recUrl.startsWith('https://')) && !recUrl.includes('/api/calls/')) {
       return res.redirect(recUrl);
+    }
+
+    // 4. Fallback to Exotel API if exotel_call_sid exists
+    const exotelSidRes = await query('SELECT exotel_call_sid FROM calls WHERE id = $1', [callId]);
+    const exotelSid = exotelSidRes.rows[0]?.exotel_call_sid;
+    if (exotelSid) {
+      try {
+        const exotelDetails = await fetchExotelCallDetails(exotelSid);
+        if (exotelDetails.recordingUrl) {
+          await query(
+            `UPDATE calls SET recording_url = $1, recording_download_status = 'done' WHERE id = $2`,
+            [exotelDetails.recordingUrl, callId]
+          );
+          return res.redirect(exotelDetails.recordingUrl);
+        }
+      } catch {}
     }
 
     return res.status(404).json({

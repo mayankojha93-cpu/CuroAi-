@@ -25,6 +25,7 @@ import { romanizeTranscript } from '../utils/transliteration.js';
 import { livekitEgressService } from './livekitEgressService.js';
 import { getRecordingsDir } from './recordingDownloader.js';
 import { realEstateCallService } from './realEstateCallService.js';
+import { initiateExotelWssCall, fetchExotelCallDetails } from './exotelService.js';
 
 export interface CallRecord {
   id: string;
@@ -483,32 +484,56 @@ export class CallService {
         }),
       });
 
-      if (!env.SIP_OUTBOUND_TRUNK_ID) {
-        throw new Error('Missing SIP_OUTBOUND_TRUNK_ID in environment. Please configure your Exotel Outbound SIP trunk in .env');
+      const dialablePhone = normalizePhone(customer.phone, customer.subs_del_no);
+      let callerId = env.SIP_CALLER_ID || undefined;
+      if (callerId && callerId.startsWith('+91') && callerId.length === 13) {
+        callerId = `0${callerId.slice(3)}`;
       }
 
-      const dialablePhone = normalizePhone(customer.phone, customer.subs_del_no);
-      const callerId = env.SIP_CALLER_ID || undefined;
-
       await query("UPDATE calls SET status = 'dialing', call_status = 'dialing' WHERE id = $1", [callId]);
-      logger.info(
-        { callId, phone: dialablePhone, trunkId: env.SIP_OUTBOUND_TRUNK_ID, callerId },
-        'Updated call status to dialing. Dispatching Exotel SIP call...'
-      );
 
-      const participant = await this.sipClient.createSipParticipant(
-        env.SIP_OUTBOUND_TRUNK_ID,
-        dialablePhone,
-        roomName,
-        {
-          participantIdentity: `phone-${dialablePhone.replace(/[^0-9]/g, '')}`,
-          participantName: customer.name,
-          fromNumber: callerId,
-          waitUntilAnswered: false,
-        } as any
-      );
-      logger.info({ callId, sipCallId: participant.sipCallId }, 'Exotel SIP call dispatched to carrier!');
-      await query(`UPDATE calls SET sip_call_id = $1 WHERE id = $2`, [participant.sipCallId || null, callId]);
+      const useWss = env.EXOTEL_USE_WSS !== 'false';
+      if (useWss) {
+        logger.info(
+          { callId, phone: dialablePhone, callerId },
+          'Updated call status to dialing. Dispatching Exotel WSS audio stream call...'
+        );
+        const exotelCall = await initiateExotelWssCall({
+          callId,
+          phone: dialablePhone,
+          callerId,
+        });
+
+        logger.info({ callId, exotelCallSid: exotelCall.sid }, 'Exotel WSS call dispatched to carrier!');
+        await query(`UPDATE calls SET exotel_call_sid = $1, sip_call_id = $2 WHERE id = $3`, [
+          exotelCall.sid,
+          exotelCall.sid,
+          callId,
+        ]);
+      } else {
+        if (!env.SIP_OUTBOUND_TRUNK_ID) {
+          throw new Error('Missing SIP_OUTBOUND_TRUNK_ID in environment. Please configure your Exotel Outbound SIP trunk in .env');
+        }
+
+        logger.info(
+          { callId, phone: dialablePhone, trunkId: env.SIP_OUTBOUND_TRUNK_ID, callerId },
+          'Updated call status to dialing. Dispatching Exotel SIP call...'
+        );
+
+        const participant = await this.sipClient.createSipParticipant(
+          env.SIP_OUTBOUND_TRUNK_ID,
+          dialablePhone,
+          roomName,
+          {
+            participantIdentity: `phone-${dialablePhone.replace(/[^0-9]/g, '')}`,
+            participantName: customer.name,
+            fromNumber: callerId,
+            waitUntilAnswered: false,
+          } as any
+        );
+        logger.info({ callId, sipCallId: participant.sipCallId }, 'Exotel SIP call dispatched to carrier!');
+        await query(`UPDATE calls SET sip_call_id = $1 WHERE id = $2`, [participant.sipCallId || null, callId]);
+      }
     } catch (err: any) {
       let mappedStatus: 'NO_ANSWER' | 'BUSY' | 'FAILED' = 'FAILED';
       let failureReason = err.message || 'Call placement failed';
@@ -1194,7 +1219,7 @@ export class CallService {
     // 1. Fetch all calls currently in progress older than 30 seconds
     const inFlight = await query(
       `SELECT c.id, c.status, c.call_status, c.room_name, c.created_at, c.answered_at,
-              c.duration_seconds, c.pipeline, c.re_lead_id, c.customer_id,
+              c.duration_seconds, c.pipeline, c.re_lead_id, c.customer_id, c.exotel_call_sid,
               c.transcript as call_transcript,
               ro.final_disposition as re_disposition,
               ro.transcript as re_transcript
@@ -1280,6 +1305,26 @@ export class CallService {
         } catch {}
       }
 
+      // Self-healing check: check if audio recording exists on disk
+      let recoveredRecordingUrl: string | null = null;
+      try {
+        const recDir = getRecordingsDir();
+        if (fs.existsSync(path.join(recDir, `${call.id}.mp3`)) || fs.existsSync(path.join(recDir, `${call.id}.wav`))) {
+          recoveredRecordingUrl = `/api/calls/${call.id}/audio`;
+        }
+      } catch {}
+
+      // Fallback: check Exotel carrier recording if local recording not yet on disk
+      if (!recoveredRecordingUrl && call.exotel_call_sid) {
+        try {
+          const exotelDetails = await fetchExotelCallDetails(call.exotel_call_sid);
+          if (exotelDetails.recordingUrl) {
+            recoveredRecordingUrl = exotelDetails.recordingUrl;
+            logger.info({ callId: call.id, exotelRecordingUrl: recoveredRecordingUrl }, 'Retrieved carrier recording URL from Exotel');
+          }
+        } catch {}
+      }
+
       const hasCustomerTurns = Array.isArray(transcript) && transcript.some((t: any) => t.role === 'customer' || t.role === 'user');
       const wasAnswered = Boolean(call.answered_at) || hasCustomerTurns;
 
@@ -1293,9 +1338,11 @@ export class CallService {
            SET status = 'completed',
                call_status = CASE WHEN call_status IN ('initiated', 'dialing') THEN 'completed' ELSE call_status END,
                duration_seconds = GREATEST($1, COALESCE(duration_seconds, 0)),
+               recording_url = COALESCE(recording_url, $3),
+               recording_download_status = CASE WHEN $3 IS NOT NULL THEN 'done' ELSE recording_download_status END,
                ended_at = NOW()
            WHERE id = $2`,
-          [durationSec, call.id]
+          [durationSec, call.id, recoveredRecordingUrl]
         );
 
         // If Real Estate call has no outcome record yet, synthesize outcome from the transcript
@@ -1307,6 +1354,7 @@ export class CallService {
               final_disposition: disp,
               duration_seconds: durationSec,
               transcript: transcript,
+              recording_url: recoveredRecordingUrl || undefined,
               failure_reason: hasDialogue ? undefined : 'Call answered but agent had not joined the room before disconnect',
             });
             logger.info({ callId: call.id, disposition: disp }, 'Reconciler finalized missing real estate outcome for ended call');
@@ -1364,14 +1412,20 @@ export class CallService {
       `SELECT c.*,
               COALESCE(cust.name, rl.owner_name) as customer_name,
               COALESCE(cust.phone, rl.phone) as customer_phone,
-              cust.address as customer_address,
+              COALESCE(rl.property_location, cust.address) as customer_address,
+              COALESCE(rl.property_location, cust.address) as property_location,
               cust.account_no, cust.subs_del_no, cust.service_end_date, cust.total_attempts,
               camp.id as campaign_id, camp.name as campaign_name,
               COALESCE(co.outcome, ro.final_disposition) as outcome,
               COALESCE(co.final_disposition, ro.final_disposition) as final_disposition,
               co.pickup_date, co.confirmed_date,
               co.address_confirmed, co.new_address,
-              COALESCE(ro.transcript, co.transcript, c.transcript) as transcript,
+              CASE
+                WHEN ro.transcript IS NOT NULL AND jsonb_typeof(ro.transcript::jsonb) = 'array' AND jsonb_array_length(ro.transcript::jsonb) > 0 THEN ro.transcript
+                WHEN co.transcript IS NOT NULL AND jsonb_typeof(co.transcript::jsonb) = 'array' AND jsonb_array_length(co.transcript::jsonb) > 0 THEN co.transcript
+                WHEN c.transcript IS NOT NULL AND jsonb_typeof(c.transcript::jsonb) = 'array' AND jsonb_array_length(c.transcript::jsonb) > 0 THEN c.transcript
+                ELSE COALESCE(ro.transcript, co.transcript, c.transcript, '[]'::jsonb)
+              END as transcript,
               COALESCE(ro.agent_summary, co.customer_note) as customer_note,
               CASE
                 WHEN (rp.commercial_type IS NOT NULL AND LOWER(rp.commercial_type) != 'residential')

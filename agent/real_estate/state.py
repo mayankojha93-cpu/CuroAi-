@@ -170,23 +170,29 @@ class RealEstateState:
                 self.step = RealEstateStep.RESIDENTIAL_LEASE
 
         missing: List[Dict[str, str]] = []
+        has_known_loc = bool(
+            (self.initial_property_location and self.initial_property_location.strip())
+            or (self.sector_or_location and self.sector_or_location.strip())
+            or (self.project_or_society and self.project_or_society.strip())
+        )
 
         if self.step == RealEstateStep.RESIDENTIAL_SALE:
             # 4.1 In case of Sale of Residential Premises
-            if not self.sector_or_location:
-                missing.append({
-                    "id": "location",
-                    "label": "Location or sector",
-                    "question_en": "Which area or sector is the property located in?",
-                    "question_hi": "Sir, ye property kis location ya sector mein hai?",
-                })
-            if not self.project_or_society:
-                missing.append({
-                    "id": "society_sector",
-                    "label": "Society or project name",
-                    "question_en": "And which society or project is it?",
-                    "question_hi": "Aur sir, society ya project ka naam kya hai?",
-                })
+            if not has_known_loc:
+                if not self.sector_or_location:
+                    missing.append({
+                        "id": "location",
+                        "label": "Location or sector",
+                        "question_en": "Which area or sector is the property located in?",
+                        "question_hi": "Sir, ye property kis location ya sector mein hai?",
+                    })
+                if not self.project_or_society:
+                    missing.append({
+                        "id": "society_sector",
+                        "label": "Society or project name",
+                        "question_en": "And which society or project is it?",
+                        "question_hi": "Aur sir, society ya project ka naam kya hai?",
+                    })
             if not (self.unit_number and self.floor_number):
                 missing.append({
                     "id": "unit_floor",
@@ -225,20 +231,21 @@ class RealEstateState:
 
         elif self.step == RealEstateStep.RESIDENTIAL_LEASE:
             # 4.2 In case of Lease of Residential Premises
-            if not self.sector_or_location:
-                missing.append({
-                    "id": "location",
-                    "label": "Location or sector",
-                    "question_en": "Which area or sector is the property located in?",
-                    "question_hi": "Sir, ye property kis location ya sector mein hai?",
-                })
-            if not self.project_or_society:
-                missing.append({
-                    "id": "society_sector",
-                    "label": "Society or project name",
-                    "question_en": "And which society or project is it?",
-                    "question_hi": "Aur sir, society ya project ka naam kya hai?",
-                })
+            if not has_known_loc:
+                if not self.sector_or_location:
+                    missing.append({
+                        "id": "location",
+                        "label": "Location or sector",
+                        "question_en": "Which area or sector is the property located in?",
+                        "question_hi": "Sir, ye property kis location ya sector mein hai?",
+                    })
+                if not self.project_or_society:
+                    missing.append({
+                        "id": "society_sector",
+                        "label": "Society or project name",
+                        "question_en": "And which society or project is it?",
+                        "question_hi": "Aur sir, society ya project ka naam kya hai?",
+                    })
             if not (self.unit_number and self.floor_number):
                 missing.append({
                     "id": "unit_floor",
@@ -284,20 +291,21 @@ class RealEstateState:
 
         elif self.step == RealEstateStep.COMMERCIAL_SALE:
             # 4.3 In case of Sale of Commercial Premises
-            if not self.sector_or_location:
-                missing.append({
-                    "id": "location",
-                    "label": "Location or sector",
-                    "question_en": "Which area or sector is the property located in?",
-                    "question_hi": "Sir, ye property kis location ya sector mein hai?",
-                })
-            if not self.project_or_society:
-                missing.append({
-                    "id": "project_sector",
-                    "label": "Project or building name",
-                    "question_en": "And which commercial project or building is it in?",
-                    "question_hi": "Aur sir, kaun se project ya building mein hai?",
-                })
+            if not has_known_loc:
+                if not self.sector_or_location:
+                    missing.append({
+                        "id": "location",
+                        "label": "Location or sector",
+                        "question_en": "Which area or sector is the property located in?",
+                        "question_hi": "Sir, ye property kis location ya sector mein hai?",
+                    })
+                if not self.project_or_society:
+                    missing.append({
+                        "id": "project_sector",
+                        "label": "Project or building name",
+                        "question_en": "And which commercial project or building is it in?",
+                        "question_hi": "Aur sir, kaun se project ya building mein hai?",
+                    })
             # Asked right after the category, BEFORE unit/floor (never skipped, never assumed)
             if not self.commercial_type:
                 missing.append({
@@ -351,20 +359,21 @@ class RealEstateState:
 
         elif self.step == RealEstateStep.COMMERCIAL_LEASE:
             # 4.4 In case of Lease of Commercial Premises
-            if not self.sector_or_location:
-                missing.append({
-                    "id": "location",
-                    "label": "Location or sector",
-                    "question_en": "Which area or sector is the property located in?",
-                    "question_hi": "Sir, ye property kis location ya sector mein hai?",
-                })
-            if not self.project_or_society:
-                missing.append({
-                    "id": "project_sector",
-                    "label": "Project or building name",
-                    "question_en": "And which commercial project or building is it in?",
-                    "question_hi": "Aur sir, kaun se project ya building mein hai?",
-                })
+            if not has_known_loc:
+                if not self.sector_or_location:
+                    missing.append({
+                        "id": "location",
+                        "label": "Location or sector",
+                        "question_en": "Which area or sector is the property located in?",
+                        "question_hi": "Sir, ye property kis location ya sector mein hai?",
+                    })
+                if not self.project_or_society:
+                    missing.append({
+                        "id": "project_sector",
+                        "label": "Project or building name",
+                        "question_en": "And which commercial project or building is it in?",
+                        "question_hi": "Aur sir, kaun se project ya building mein hai?",
+                    })
             # Asked right after the category, BEFORE unit/floor (never skipped, never assumed)
             if not self.commercial_type:
                 missing.append({
