@@ -124,6 +124,9 @@ class RealEstateState:
         # Transcript tracking
         self.transcript: List[Dict[str, Any]] = []
 
+        # Pre-synthesised audio frames for fixed lines, keyed by the exact text (see worker.py / tools.say_cached)
+        self.audio_cache: Dict[str, list] = {}
+
     def add_transcript(self, role: str, text: str):
         if text and text.strip():
             self.transcript.append({"role": role, "text": text.strip(), "time": time.time()})
