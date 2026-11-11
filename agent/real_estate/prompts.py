@@ -199,11 +199,11 @@ def get_closing_text(state: RealEstateState) -> str:
         closing_en = "Thank you! I will have the property details and brochure sent to your WhatsApp shortly. Have a great day!"
         closing_hi = "Thank you! Main property details aur brochure aapke WhatsApp par bhejwa deti hoon. Have a great day!"
     elif "advisor" in disp:
-        closing_en = "Thank you for your time! I’ve noted your details and our senior property advisor will reach out to you shortly. Have a great day!"
-        closing_hi = "Apna time dene ke liye thank you! Maine details note kar li hain aur hamare senior property advisor aapse jald hi connect karenge. Have a great day!"
+        closing_en = "Thank you for your time. I’ve noted your details, and our senior property advisor will reach out to you shortly. Have a great day!"
+        closing_hi = "Apna time dene ke liye thank you. Maine details note kar li hain, aur hamare senior property advisor aapse jald hi connect karenge. Have a great day!"
     elif "not interested" in disp:
-        closing_en = "Understood, no problem at all! Thank you for your time, and have a great day!"
-        closing_hi = "Samajh gayi, koi baat nahi! Apna time dene ke liye thank you, and have a great day!"
+        closing_en = "Understood, no problem at all, and thank you for your time. Have a great day!"
+        closing_hi = "Samajh gayi, koi baat nahi, apna time dene ke liye thank you. Have a great day!"
     elif "wrong number" in disp:
         closing_en = "Sorry to have bothered you! Have a great day."
         closing_hi = "Sorry to bother you! Have a great day."
@@ -212,8 +212,8 @@ def get_closing_text(state: RealEstateState) -> str:
         closing_hi = "Sure, hum aapke bataye huye time par wapas call karenge. Thank you aur have a great day!"
     else:
         # Step 5 Official Closing from doc:
-        closing_en = "Thank you for your time! I’ve noted the details, and my colleague will follow up with you regarding the next steps. Have a great day!"
-        closing_hi = "Thank you for your time! Maine saari details note kar li hain, aur mere colleague next steps ke liye aapse follow-up karenge. Have a great day!"
+        closing_en = "Thank you for your time. I’ve noted the details, and my colleague will follow up with you about the next steps. Have a great day!"
+        closing_hi = "Thank you for your time. Maine saari details note kar li hain, aur mere colleague next steps ke liye aapse follow-up karenge. Have a great day!"
 
     selected_closing = closing_en if state.reply_lang == "en" else closing_hi
     return selected_closing
