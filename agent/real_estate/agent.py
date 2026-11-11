@@ -414,7 +414,11 @@ class RealEstateAgent(Agent):
                 _cat, _int = classify_category(text), classify_intent(text)
                 if _asks_repeat(text) or not (_cat or _int):
                     en = state.reply_lang == "en"
-                    if state.category and not state.intent:
+                    # Only re-ask what is STILL missing — never re-ask an already-collected field
+                    if state.category and state.intent:
+                        # Both known → nothing to re-ask here; fall through to LLM
+                        pass
+                    elif state.category and not state.intent:
                         _reask = "Are you looking to sell or rent it out?" if en else "Aap ise sell karna chahte hain, ya rent par dena?"
                     elif state.intent and not state.category:
                         _reask = "Is it a residential or commercial property?" if en else "Ye residential property hai ya commercial?"
