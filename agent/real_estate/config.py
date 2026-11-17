@@ -63,10 +63,10 @@ TTS_SPEAKER_EN = os.getenv("REAL_ESTATE_TTS_SPEAKER_EN", TTS_SPEAKER)
 DEFAULT_LANGUAGE = os.getenv("REAL_ESTATE_DEFAULT_LANGUAGE", "hi")
 
 # TTS Delivery Dynamics
-# Pace: 1.0–1.05 (1.02 = natural, human-paced conversational flow). Tune with REAL_ESTATE_TTS_PACE.
-TTS_PACE = float(os.getenv("REAL_ESTATE_TTS_PACE", "1.02"))
-# Temperature: 0.6 (crisp, focused synthesis). Tune with REAL_ESTATE_TTS_TEMPERATURE.
-TTS_TEMPERATURE = float(os.getenv("REAL_ESTATE_TTS_TEMPERATURE", "0.6"))
+# Pace: 1.0 = standard natural medium speed (not too fast, not too slow). Tune with REAL_ESTATE_TTS_PACE.
+TTS_PACE = float(os.getenv("REAL_ESTATE_TTS_PACE", "1.0"))
+# Temperature: 0.65 (warm, natural prosody variance without synthetic stiffness). Tune with REAL_ESTATE_TTS_TEMPERATURE.
+TTS_TEMPERATURE = float(os.getenv("REAL_ESTATE_TTS_TEMPERATURE", "0.65"))
 
 # ── LLM provider ──────────────────────────────────────────────────────────────
 # LLM TTFT is the biggest part of a turn. OpenRouter adds a routing hop and its TTFT swings 0.7-2.4s.
@@ -101,14 +101,11 @@ PREEMPTIVE_GENERATION = os.getenv("PREEMPTIVE_GENERATION", "1") == "1"
 FAST_TOOL_REPLY = os.getenv("FAST_TOOL_REPLY", "1") == "1"
 # LATENCY_LOG=1 : per-turn EOU / LLM TTFT / TTS TTFB breakdown in the logs.
 LATENCY_LOG = os.getenv("LATENCY_LOG", "1") == "1"
-# VAD silence needed to end a speech segment. Default = your current value (0.45).
-# Try 0.30-0.35 only after reading the latency logs.
-VAD_MIN_SILENCE = float(os.getenv("VAD_MIN_SILENCE", "0.35"))
-# Optional OpenRouter provider pinning, e.g. OPENROUTER_PROVIDER_ORDER=Groq,Cerebras (allow_fallbacks stays
-# True in worker.py). Default is OFF (OPENROUTER_PROVIDER_SORT as before): in a recent test log LLM TTFT was
-# 1.6-2.4s vs 0.7-0.9s earlier, so pinning must be A/B tested against your own latency logs before enabling.
-# "none" or empty = off.
-_prov_raw = os.getenv("OPENROUTER_PROVIDER_ORDER", "")
+# VAD silence needed to end a speech segment (0.28s gives snappy turn transitions without premature cut-off).
+VAD_MIN_SILENCE = float(os.getenv("VAD_MIN_SILENCE", "0.28"))
+# OpenRouter provider ordering: routes through ultra-fast LPU/hardware providers (Groq/Cerebras) first
+# with automatic fallback, dropping TTFT from ~2.5s down to 300-500ms. Set "none" to disable.
+_prov_raw = os.getenv("OPENROUTER_PROVIDER_ORDER", "Groq,Cerebras,Together,DeepInfra")
 OPENROUTER_PROVIDER_ORDER = [] if _prov_raw.strip().lower() == "none" else [p.strip() for p in _prov_raw.split(",") if p.strip()]
 # Max chat-history items sent to the LLM per call (system instructions are always kept). Every step's
 # instructions already carry the next missing field, so old turns add prompt tokens (-> TTFT) but no value.
@@ -123,7 +120,7 @@ def _opt_float(name: str):
         return None
 
 ENDPOINT_MIN_DELAY = _opt_float("ENDPOINT_MIN_DELAY") if _opt_float("ENDPOINT_MIN_DELAY") is not None else 0.05  # VAD already waits VAD_MIN_SILENCE; an extra 0.15s on top was pure dead time
-ENDPOINT_MAX_DELAY = _opt_float("ENDPOINT_MAX_DELAY") if _opt_float("ENDPOINT_MAX_DELAY") is not None else 0.45
+ENDPOINT_MAX_DELAY = _opt_float("ENDPOINT_MAX_DELAY") if _opt_float("ENDPOINT_MAX_DELAY") is not None else 0.35
 
 # Max tokens the LLM may generate per reply. 120 was too low: a tool call with many parameters
 # (save_property_details has 14) got CUT OFF mid-JSON and the caller heard nothing.

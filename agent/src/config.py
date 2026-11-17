@@ -43,8 +43,8 @@ TTS_LANGUAGE_HI = os.getenv("TTS_LANGUAGE_HI", "hi-IN")
 TTS_LANGUAGE_EN = os.getenv("TTS_LANGUAGE_EN", "en-IN")
 TTS_MODEL = os.getenv("TTS_MODEL", "bulbul:v3")
 TTS_SPEAKER = os.getenv("TTS_SPEAKER", "priya")
-TTS_PACE = float(os.getenv("TTS_PACE", "1.02"))
-TTS_TEMPERATURE = float(os.getenv("TTS_TEMPERATURE", "0.6"))
+TTS_PACE = float(os.getenv("TTS_PACE", "1.0"))
+TTS_TEMPERATURE = float(os.getenv("TTS_TEMPERATURE", "0.65"))
 
 
 DIRECT_SPEAK = os.getenv("DIRECT_SPEAK", "1") == "1"

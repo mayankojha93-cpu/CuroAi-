@@ -529,9 +529,9 @@ async def entrypoint(ctx: agents.JobContext):
         # Availability
         "available", "immediate", "notice period",
         # Configuration
-        "BHK", "RK", "studio", "penthouse", "duplex",
-        # Area units
-        "square feet", "sqft",
+        "BHK", "1 BHK", "2 BHK", "3 BHK", "4 BHK", "5 BHK", "RK", "studio", "penthouse", "duplex",
+        # Area units & numbers
+        "square feet", "sqft", "unit", "floor", "floor number",
         # Transaction type
         "sell", "rent", "lease",
         # Property types
@@ -990,18 +990,18 @@ async def entrypoint(ctx: agents.JobContext):
     def _build_greeting() -> str:
         loc = state.initial_property_location
         name_call = _owner_call_name(state)
-        salutation_en = f"Hello {name_call}" if name_call != "Sir" else "Hello Sir"
+        salutation_en = f"Hello {name_call} sir" if name_call != "Sir" else "Hello Sir"
         salutation_hi = f"Hello {name_call} ji" if name_call != "Sir" else "Hello Sir"
         if loc:
             return (
-                f"{salutation_en}, I’m Priya from My Estate Finder. Regarding your property at {loc}, are you considering selling or renting it out?"
+                f"{salutation_en}, Priya this side from My Estate Finder... Actually, calling regarding your property at {loc} — were you planning to sell it, or put it on rent?"
                 if state.reply_lang == "en"
-                else f"{salutation_hi}, main Priya bol rahi hoon, My Estate Finder se. {loc} par jo aapki property hai, kya aap use sell ya rent karne ka soch rahe hain?"
+                else f"{salutation_hi}, Priya baat kar rahi hoon My Estate Finder se... Actually, {loc} wali property ke regarding call kiya tha — kya aap use sell karne ka plan kar rahe hain ya rent out?"
             )
         return (
-            f"{salutation_en}, I’m Priya from My Estate Finder. We help property owners sell or rent their properties. Are you also thinking of selling or renting out a property?"
+            f"{salutation_en}, Priya this side from My Estate Finder... We connect property owners directly with verified buyers and tenants. Were you looking to sell or rent out any property?"
             if state.reply_lang == "en"
-            else f"{salutation_hi}, main Priya bol rahi hoon, My Estate Finder se. Hum property owners ko unki property sell ya rent karne mein help karte hain. Kya aap bhi apni koi property sell ya rent karne ka soch rahe hain?"
+            else f"{salutation_hi}, Priya baat kar rahi hoon My Estate Finder se... Hum property owners ko direct verified buyers aur tenants se connect karte hain. Kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"
         )
 
     greeting = _build_greeting()

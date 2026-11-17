@@ -234,10 +234,10 @@ class RealEstateTools:
     )
     _ACK_EN = (
         "Got it, Sir... ",
-        "Sure thing, ",
+        "Sure Sir, ",
         "Alright, Sir... ",
         "Understood, Sir... ",
-        "Great, Sir! ",
+        "Great, Sir... ",
         "Right, noted Sir... ",
         "Perfect, Sir... ",
         "Okay, great... ",
@@ -262,9 +262,9 @@ class RealEstateTools:
             return fallback
         en = self.state.reply_lang == "en"
         if echo:
-            # "3 BHK... perfect Sir. " / "704 on 7th floor... noted Sir. " -> sounds like an attentive real person
+            # "3 BHK... perfect Sir... " / "704 on 7th floor... noted Sir... " -> sounds like an attentive real person
             short = self._pick(self._SHORT_ACK_EN if en else self._SHORT_ACK_HI)
-            ack = f"{echo[:1].upper()}{echo[1:]}... {short}."
+            ack = f"{echo[:1].upper()}{echo[1:]}... {short}..."
         elif ack == "auto":
             ack = self._pick(self._ACK_EN if en else self._ACK_HI)
         text = f"{ack} {question}".strip() if ack else question

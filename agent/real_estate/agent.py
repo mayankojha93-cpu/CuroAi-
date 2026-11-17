@@ -32,8 +32,16 @@ def _call_open(buf: str) -> bool:
 
 
 def _soften_tts_phrase(s: str) -> str:
-    """Soften abrupt single-word affirmations so the TTS engine speaks smoothly with natural breathing pauses."""
-    return re.sub(r'^(Achha|Theek hai|Haanji|Haan ji|Samajh gayi|Got it|Sure|Perfect|Noted|Understood|Alright|Right)\.\s*', r'\1, ', s, flags=re.I)
+    """Soften abrupt single-word affirmations and mid-sentence period stops so the TTS engine speaks smoothly with natural human cadence."""
+    # 1. Opening affirmations with trailing period -> comma pause
+    s = re.sub(r'^(Achha|Theek hai|Haanji|Haan ji|Samajh gayi|Got it|Sure|Perfect|Noted|Understood|Alright|Right)\.\s*', r'\1, ', s, flags=re.I)
+    # 2. Mid-sentence honorific stops ("got it, Sir. And..." -> "got it, Sir... And...")
+    s = re.sub(r'(,\s*Sir|\bSir|\bji)\.\s+([A-Z])', r'\1... \2', s)
+    # 3. Exclamations to natural breathing pauses
+    s = s.replace("!", "... ")
+    # 4. Collapse accidental multiple spaces
+    s = re.sub(r'[ \t]{2,}', ' ', s)
+    return s.strip()
 
 
 logger = logging.getLogger("real-estate-agent")
