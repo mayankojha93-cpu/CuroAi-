@@ -355,7 +355,7 @@ export function parseAudienceCsv(csvText: string, isRealEstate?: boolean): Audie
       subsDelNoCol = index;
     } else if (header.includes('serviceend') || header.includes('enddate')) {
       serviceEndCol = index;
-    } else if (header.includes('address') || header === 'addr' || header.includes('location') || header.includes('propertylocation')) {
+    } else if (header.includes('address') || header === 'addr' || header.includes('location') || header.includes('propertylocation') || header.includes('sector')) {
       addressCol = index;
     } else if (header.includes('servicecity') || header === 'city') {
       serviceCityCol = index;
