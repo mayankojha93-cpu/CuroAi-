@@ -16,6 +16,7 @@ from .config import (
     ROOT_DIR,
     logger,
     AGENT_NAME,
+    AGENT_PERSONA_NAME,
     LLM_MODEL,
     SARVAM_API_KEY,
     OPENROUTER_API_KEY,
@@ -91,7 +92,7 @@ class ConversationFileLogger:
         return datetime.now().strftime("%H:%M:%S")
 
     def log_agent(self, text: str):
-        self._fh.write(f"[{self._ts()}] 🤖  Priya   : {text}\n")
+        self._fh.write(f"[{self._ts()}] 🤖  {AGENT_PERSONA_NAME:<7}: {text}\n")
 
     def log_customer(self, text: str):
         self._fh.write(f"[{self._ts()}] 🗣️  Customer: {text}\n")
@@ -672,7 +673,7 @@ async def entrypoint(ctx: agents.JobContext):
 
         now_str = datetime.now().strftime("%H:%M:%S")
         if is_agent:
-            banner = f"[{now_str}] 🤖 [Agent (Priya)]: {clean}"
+            banner = f"[{now_str}] 🤖 [Agent ({AGENT_PERSONA_NAME})]: {clean}"
             print(f"\n\033[1;36m{banner}\033[0m\n", flush=True)
             logger.info(banner)
             state.add_transcript("assistant", clean)
@@ -722,7 +723,7 @@ async def entrypoint(ctx: agents.JobContext):
             "-" * 70,
         ]
         for t in s.transcript:
-            role_label = "\033[1;36m🤖 Priya   \033[0m" if t.get("role") in ("assistant", "agent") else "\033[1;32m🗣️ Customer\033[0m"
+            role_label = f"\033[1;36m🤖 {AGENT_PERSONA_NAME:<7}\033[0m" if t.get("role") in ("assistant", "agent") else "\033[1;32m🗣️ Customer\033[0m"
             summary_lines.append(f"  {role_label}: {t.get('text')}")
         summary_lines.extend([
             "-" * 70,
@@ -997,14 +998,14 @@ async def entrypoint(ctx: agents.JobContext):
             parts = [p.strip() for p in loc.split(",") if p.strip()]
             spoken_loc = f"{parts[0]} in {parts[1]}" if len(parts) >= 2 else parts[0]
             return (
-                f"{salutation_en}, Priya this side from My Estate Finder. I'm calling about your property in {spoken_loc}... Were you looking to sell or rent it out?"
+                f"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. I'm calling about your property in {spoken_loc}... Were you looking to sell or rent it out?"
                 if state.reply_lang == "en"
-                else f"{salutation_hi}, main Priya baat kar rahi hoon My Estate Finder se. Aapki {spoken_loc} wali property ke baare mein call kiya tha... Kya aap use sell karne ka plan kar rahe hain ya rent out?"
+                else f"{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se. Aapki {spoken_loc} wali property ke baare mein call kiya tha... Kya aap use sell karne ka plan kar rahe hain ya rent out?"
             )
         return (
-            f"{salutation_en}, Priya this side from My Estate Finder. We connect property owners directly with verified buyers... Were you looking to sell or rent out any property?"
+            f"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. We connect property owners directly with verified buyers... Were you looking to sell or rent out any property?"
             if state.reply_lang == "en"
-            else f"{salutation_hi}, main Priya baat kar rahi hoon My Estate Finder se. Hum property owners ko direct verified buyers se connect karte hain... Kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"
+            else f"{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se. Hum property owners ko direct verified buyers se connect karte hain... Kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"
         )
 
     greeting = _build_greeting()
