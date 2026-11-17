@@ -21,6 +21,7 @@ import { realEstateRouter } from './routes/realEstate.js';
 import { requireAuth } from './middleware/auth.js';
 import { authService } from './services/authService.js';
 import { realEstateCallService } from './services/realEstateCallService.js';
+import { campaignService } from './services/campaignService.js';
 
 export const app = express();
 
@@ -107,6 +108,7 @@ app.use(errorHandler);
 // Background timers
 let sweeperInterval: NodeJS.Timeout | null = null;
 let recordingInterval: NodeJS.Timeout | null = null;
+let campaignInterval: NodeJS.Timeout | null = null;
 
 // Start server if not imported as module in tests
 if (process.env.NODE_ENV !== 'test') {
@@ -131,6 +133,15 @@ if (process.env.NODE_ENV !== 'test') {
         logger.error({ err }, 'Error running stuck calls reconciler');
       });
     }, 30000);
+
+    // Start continuous campaign auto-dialer processor every 10 seconds
+    campaignInterval = setInterval(() => {
+      campaignService.processRunningCampaigns().catch((err: any) => {
+        logger.error({ err }, 'Error running campaign auto-dialer');
+      });
+    }, 10000);
+    // Run once on startup to resume any ongoing campaigns
+    campaignService.processRunningCampaigns().catch(() => {});
 
     // Start recording downloader every 5 minutes
     // Per spec: Exotel recording appears 1–15 min after call, valid for 24 h
@@ -202,6 +213,7 @@ if (process.env.NODE_ENV !== 'test') {
     logger.info(`Received ${signal}. Shutting down gracefully...`);
     if (sweeperInterval) clearInterval(sweeperInterval);
     if (recordingInterval) clearInterval(recordingInterval);
+    if (campaignInterval) clearInterval(campaignInterval);
     server.close(async () => {
       logger.info('HTTP server closed.');
       try {
