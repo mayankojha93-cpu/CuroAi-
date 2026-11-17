@@ -347,7 +347,10 @@ class RealEstateTools:
         async def _run():
             try:
                 handle = say_cached(self.agent.session, self.state, text, allow_interruptions=False)
-                await handle.wait_for_playout()
+                if hasattr(handle, "wait_for_playout"):
+                    await handle.wait_for_playout()
+                else:
+                    await asyncio.sleep(4.0)
             except Exception as e:
                 logger.warning(f"Closing speech failed: {e}")
                 await asyncio.sleep(3.5)

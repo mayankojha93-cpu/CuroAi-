@@ -62,6 +62,10 @@ export function matchRealEstateDisposition(
   const statusUpper = (callStatus || '').toUpperCase().replace(/[-_]/g, ' ');
   const duration = Number(durationSeconds) || 0;
 
+  if (upper.includes('PENDING') || (!text && !callStatus)) {
+    return 'Pending Outreach' as any;
+  }
+
   // Exact canonical match check
   const exact = REAL_ESTATE_CANONICAL_DISPOSITIONS.find(
     (c) => c.toLowerCase() === text.toLowerCase() || c.toUpperCase() === upper

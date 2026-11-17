@@ -370,8 +370,11 @@ export const matchCanonicalDisposition = (
   return 'Not Connected (Failed)';
 };
 
-const normalizeContactStatus = (callStatus?: string, disposition?: string): 'COMPLETED' | 'NO_ANSWER' | 'FAILED' | 'PENDING' => {
+const normalizeContactStatus = (callStatus?: string, disposition?: string, attempts?: number): 'COMPLETED' | 'NO_ANSWER' | 'FAILED' | 'PENDING' => {
+  if (attempts === 0) return 'PENDING';
   if (!callStatus && !disposition) return 'PENDING';
+  const dispUpper = (disposition || '').toUpperCase();
+  if (dispUpper.includes('PENDING')) return 'PENDING';
   const canonical = matchCanonicalDisposition(disposition || callStatus);
   if (
     canonical === 'Confirmed For Pickup' ||
@@ -409,17 +412,22 @@ const normalizeContactStatus = (callStatus?: string, disposition?: string): 'COM
 };
 
 const formatContactDisposition = (c: CampaignContactRecord): string => {
+  if (c.attempts === 0 || !c.last_call_id) {
+    return 'Pending Outreach';
+  }
   if (c.final_disposition) {
+    if (c.final_disposition.toLowerCase().includes('pending')) return 'Pending Outreach';
     return matchCanonicalDisposition(c.final_disposition, c.duration_seconds, c.call_status);
   }
   if (c.current_disposition) {
+    if (c.current_disposition.toLowerCase().includes('pending')) return 'Pending Outreach';
     return matchCanonicalDisposition(c.current_disposition, c.duration_seconds, c.call_status);
   }
   const s = (c.call_status || '').toLowerCase();
   if (s === 'no_answer' || s === 'busy') return 'Not Connected (No Answer)';
   if (s === 'failed') return 'Not Connected (Failed)';
   if (s === 'completed') return 'Abruptly Disconnected Call';
-  return 'Pending Call';
+  return 'Pending Outreach';
 };
 
 const getDispositionColor = (key: string): string => {
@@ -693,7 +701,7 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
         name.toLowerCase().includes(contactSearchTerm.toLowerCase()) ||
         disp.toLowerCase().includes(contactSearchTerm.toLowerCase());
 
-      const norm = normalizeContactStatus(c.call_status, c.final_disposition);
+      const norm = normalizeContactStatus(c.call_status, c.final_disposition, c.attempts);
       const matchesFilter =
         contactFilter === 'ALL' ||
         norm === contactFilter;
@@ -859,7 +867,7 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
     let leadsCompleted = 0;
 
     contacts.forEach((c) => {
-      const norm = normalizeContactStatus(c.call_status, c.final_disposition);
+      const norm = normalizeContactStatus(c.call_status, c.final_disposition, c.attempts);
       if (norm === 'COMPLETED') {
         leadsCompleted++;
       } else if (c.attempts >= maxAtt) {
@@ -1960,7 +1968,7 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
                   </tr>
                 ) : (
                   filteredContacts.map((c) => {
-                    const normStatusType = normalizeContactStatus(c.call_status, c.final_disposition);
+                    const normStatusType = normalizeContactStatus(c.call_status, c.final_disposition, c.attempts);
                     const dispText = formatContactDisposition(c);
                     const durationText = formatContactDuration(c.duration_seconds);
                     const lastCalledText = formatLastCalled(c.last_called_at);
