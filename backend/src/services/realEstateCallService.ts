@@ -707,12 +707,20 @@ ${dialogueText.slice(0, 4000)}`;
    * Saves outcome and property dossier captured during call
    */
   async saveOutcome(callId: string, data: SaveRealEstateOutcomeInput) {
-    const callRes = await query('SELECT id, re_lead_id FROM calls WHERE id = $1', [callId]);
+    const callRes = await query('SELECT id, re_lead_id, campaign_id FROM calls WHERE id = $1', [callId]);
     if (callRes.rows.length === 0) {
       throw new AppError(`Call not found: ${callId}`, 404);
     }
     const call = callRes.rows[0];
     const leadId = data.lead_id || call.re_lead_id;
+
+    if (!call.campaign_id && leadId) {
+      const leadCampRes = await query('SELECT campaign_id FROM real_estate_leads WHERE id = $1', [leadId]);
+      if (leadCampRes.rows[0]?.campaign_id) {
+        call.campaign_id = leadCampRes.rows[0].campaign_id;
+        await query('UPDATE calls SET campaign_id = $1 WHERE id = $2', [call.campaign_id, callId]);
+      }
+    }
 
     // Automatic transcript extraction fallback if property details are missing
     if (data.transcript && (!data.project_or_society || !data.sector_or_location || !data.unit_number || !data.bhk_config)) {
@@ -1058,6 +1066,52 @@ ${dialogueText.slice(0, 4000)}`;
          WHERE id = $4`,
         [leadStatus, canonicalDisp, safeOwnerConfirmed || null, leadId]
       );
+    }
+
+    // 6. Update campaign counters and trigger next queued call if part of a campaign
+    if (call.campaign_id) {
+      const campId = call.campaign_id;
+      if (mappedStatus === 'completed') {
+        await query(
+          `UPDATE campaigns
+           SET successful_calls = successful_calls + 1,
+               remaining_calls = GREATEST(0, remaining_calls - 1),
+               unique_called = unique_called + 1,
+               credits_used = credits_used + 1,
+               progress_percent = LEAST(100, ROUND(((unique_called + 1)::numeric / GREATEST(total_contacts, 1)::numeric) * 100)),
+               updated_at = NOW()
+           WHERE id = $1`,
+          [campId]
+        );
+      } else if (mappedStatus === 'failed') {
+        await query(
+          `UPDATE campaigns
+           SET failed_calls = failed_calls + 1,
+               remaining_calls = GREATEST(0, remaining_calls - 1),
+               unique_called = unique_called + 1,
+               progress_percent = LEAST(100, ROUND(((unique_called + 1)::numeric / GREATEST(total_contacts, 1)::numeric) * 100)),
+               updated_at = NOW()
+           WHERE id = $1`,
+          [campId]
+        );
+      } else {
+        await query(
+          `UPDATE campaigns
+           SET unique_called = unique_called + 1,
+               progress_percent = LEAST(100, ROUND(((unique_called + 1)::numeric / GREATEST(total_contacts, 1)::numeric) * 100)),
+               updated_at = NOW()
+           WHERE id = $1`,
+          [campId]
+        );
+      }
+
+      // Immediately trigger next available campaign slot
+      setTimeout(async () => {
+        try {
+          const { campaignService } = await import('./campaignService.js');
+          await campaignService.startCampaign(campId);
+        } catch (_) {}
+      }, 500);
     }
 
     logger.info(

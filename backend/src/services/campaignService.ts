@@ -927,6 +927,93 @@ export class CampaignService {
   }
 
   /**
+   * Continuous auto-dialer processor: scans for all RUNNING campaigns and dispatches pending leads.
+   * If all contacts have been processed and no active calls remain, automatically marks the campaign COMPLETED.
+   */
+  async processRunningCampaigns(): Promise<void> {
+    try {
+      const runningRes = await pool.query(
+        `SELECT id, name, pipeline, max_concurrent_calls
+         FROM campaigns
+         WHERE status = 'RUNNING'`
+      );
+
+      if (runningRes.rows.length === 0) return;
+
+      for (const campaign of runningRes.rows) {
+        const campaignId = campaign.id;
+
+        // Check active calls currently in progress for this campaign
+        const activeRes = await pool.query(
+          `SELECT COUNT(*)::int as active_count
+           FROM calls
+           WHERE campaign_id = $1
+             AND status IN ('initiated', 'dialing', 'answered')
+             AND created_at > NOW() - INTERVAL '10 minutes'`,
+          [campaignId]
+        );
+        const activeCount = activeRes.rows[0]?.active_count || 0;
+
+        let pendingCount = 0;
+        if (campaign.pipeline === 'real_estate') {
+          const pendingRes = await pool.query(
+            `SELECT COUNT(*)::int as pending_count
+             FROM real_estate_leads
+             WHERE (campaign_id = $1 OR id IN (SELECT re_lead_id FROM calls WHERE campaign_id = $1))
+               AND lead_status NOT IN ('NOT_INTERESTED', 'DO_NOT_CALL', 'QUALIFIED')
+               AND total_attempts < COALESCE(max_attempts, 3)
+               AND (next_attempt_time IS NULL OR next_attempt_time <= NOW())
+               AND id NOT IN (
+                 SELECT re_lead_id FROM calls
+                 WHERE status IN ('initiated', 'dialing', 'answered')
+                   AND created_at > NOW() - INTERVAL '15 minutes'
+                   AND re_lead_id IS NOT NULL
+               )`,
+            [campaignId]
+          );
+          pendingCount = pendingRes.rows[0]?.pending_count || 0;
+        } else {
+          const pendingRes = await pool.query(
+            `SELECT COUNT(*)::int as pending_count
+             FROM customers
+             WHERE campaign_id = $1
+               AND total_attempts < COALESCE(max_attempts, 3)
+               AND (next_attempt_time IS NULL OR next_attempt_time <= NOW())
+               AND id NOT IN (
+                 SELECT customer_id FROM calls
+                 WHERE status IN ('initiated', 'dialing', 'answered')
+                   AND created_at > NOW() - INTERVAL '15 minutes'
+                   AND customer_id IS NOT NULL
+               )`,
+            [campaignId]
+          );
+          pendingCount = pendingRes.rows[0]?.pending_count || 0;
+        }
+
+        const maxConcurrent = campaign.max_concurrent_calls || 5;
+        if (pendingCount > 0 && activeCount < maxConcurrent) {
+          // Available slot exists! Trigger dispatch
+          await this.startCampaign(campaignId).catch((err) => {
+            logger.warn({ campaignId, err: err?.message }, 'Auto-dialer slot dispatch failed');
+          });
+        } else if (pendingCount === 0 && activeCount === 0) {
+          // Check if any leads ever existed for this campaign
+          const totalRes = campaign.pipeline === 'real_estate'
+            ? await pool.query(`SELECT COUNT(*)::int as total FROM real_estate_leads WHERE campaign_id = $1`, [campaignId])
+            : await pool.query(`SELECT COUNT(*)::int as total FROM customers WHERE campaign_id = $1`, [campaignId]);
+
+          if ((totalRes.rows[0]?.total || 0) > 0) {
+            await this.updateCampaignStatus(campaignId, 'COMPLETED');
+            logger.info({ campaignId, name: campaign.name }, '🎉 All campaign contacts completed. Campaign marked COMPLETED.');
+          }
+        }
+      }
+    } catch (err: any) {
+      logger.error({ err: err?.message }, 'Error in processRunningCampaigns');
+    }
+  }
+
+  /**
    * Add contacts to an existing campaign from CSV upload.
    */
   async addContactsToCampaign(

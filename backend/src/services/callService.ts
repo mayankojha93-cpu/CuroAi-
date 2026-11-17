@@ -840,6 +840,15 @@ export class CallService {
           [call.campaign_id]
         );
       }
+
+      // Immediately trigger next available campaign slot
+      const campId = call.campaign_id;
+      setTimeout(async () => {
+        try {
+          const { campaignService } = await import('./campaignService.js');
+          await campaignService.startCampaign(campId);
+        } catch (_) {}
+      }, 500);
     }
 
     if (call.customer_id) {
