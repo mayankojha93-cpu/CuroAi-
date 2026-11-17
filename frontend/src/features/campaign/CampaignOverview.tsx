@@ -12,11 +12,13 @@ import {
   X, 
   Clock, 
   ChevronDown,
-  RotateCcw
+  RotateCcw,
+  Trash2
 } from 'lucide-react';
 import type { CampaignSummary, CampaignItem, CampaignStage, CallRecord } from '../../types';
-import { fetchCampaigns, updateCampaignStatus, fetchCampaignReport, type CampaignReportRow } from '../../services';
+import { fetchCampaigns, updateCampaignStatus, fetchCampaignReport, deleteCampaign, type CampaignReportRow } from '../../services';
 import { generateCampaignAuditedReportCsv } from '../../utils/csvHelper';
+import { Toast } from '../../components';
 import { CampaignDetailView } from './CampaignDetailView';
 
 interface CampaignOverviewProps {
@@ -39,6 +41,14 @@ export const CampaignOverview: React.FC<CampaignOverviewProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'STOPPED'>('ALL');
   const [isUpdatingId, setIsUpdatingId] = useState<string | null>(null);
+  const [campaignToDelete, setCampaignToDelete] = useState<CampaignItem | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+  const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  }, []);
 
   // Load campaigns from backend PostgreSQL database
   const loadCampaignsFromDb = useCallback(async () => {
@@ -122,6 +132,23 @@ export const CampaignOverview: React.FC<CampaignOverviewProps> = ({
     return colors[idx % colors.length];
   };
 
+  const handleConfirmDelete = async () => {
+    if (!campaignToDelete) return;
+    const { id, name } = campaignToDelete;
+    setIsDeleting(true);
+    try {
+      await deleteCampaign(id);
+      setCampaigns((prev) => prev.filter((c) => c.id !== id));
+      setCampaignToDelete(null);
+      showToast(`Campaign "${name}" deleted successfully`, 'success');
+      await loadCampaignsFromDb();
+    } catch (err: any) {
+      showToast(err.message || 'Failed to delete campaign', 'error');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   // If a campaign is selected (e.g. by clicking the right-most play button on its card), show detail view matching user's screenshot
   if (selectedCampaign) {
     return (
@@ -130,6 +157,12 @@ export const CampaignOverview: React.FC<CampaignOverviewProps> = ({
         onBack={() => {
           setSelectedCampaign(null);
           loadCampaignsFromDb();
+        }}
+        onDeleteSuccess={() => {
+          const deletedName = selectedCampaign.name;
+          setSelectedCampaign(null);
+          loadCampaignsFromDb();
+          showToast(`Campaign "${deletedName}" deleted successfully`, 'success');
         }}
         onSelectCall={onSelectCall}
       />
@@ -427,6 +460,39 @@ export const CampaignOverview: React.FC<CampaignOverviewProps> = ({
                     >
                       {normStatus === 'STOPPED' ? <RotateCcw size={12} /> : <Square size={12} fill="currentColor" />}
                     </button>
+
+                    {/* Delete Campaign Button */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setCampaignToDelete(camp);
+                      }}
+                      title="Delete Campaign"
+                      aria-label="Delete Campaign"
+                      style={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: 6,
+                        background: 'rgba(239, 68, 68, 0.08)',
+                        border: '1px solid rgba(239, 68, 68, 0.25)',
+                        color: '#EF4444',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: 'pointer',
+                        transition: 'all 0.15s ease',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'rgba(239, 68, 68, 0.2)';
+                        e.currentTarget.style.borderColor = 'rgba(239, 68, 68, 0.5)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'rgba(239, 68, 68, 0.08)';
+                        e.currentTarget.style.borderColor = 'rgba(239, 68, 68, 0.25)';
+                      }}
+                    >
+                      <Trash2 size={13} />
+                    </button>
                   </div>
                 </div>
 
@@ -676,9 +742,6 @@ export const CampaignOverview: React.FC<CampaignOverviewProps> = ({
                   borderTop: '1px solid rgba(255, 255, 255, 0.05)',
                   marginBottom: 12,
                 }}>
-                  <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#38BDF8' }}>
-                    {camp.credits_used ?? 0} / {(camp.total_credits || camp.total_contacts).toLocaleString()} credits
-                  </div>
                   <div style={{ fontSize: '0.78rem', color: '#64748B' }}>
                     {camp.execution_date || 'October 2026'}
                   </div>
@@ -722,6 +785,134 @@ export const CampaignOverview: React.FC<CampaignOverviewProps> = ({
           );
         })}
       </div>
+
+      {/* Delete Confirmation Modal */}
+      {campaignToDelete && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0, 0, 0, 0.75)',
+            backdropFilter: 'blur(4px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+            padding: 16,
+          }}
+          onClick={() => !isDeleting && setCampaignToDelete(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: '#0E121B',
+              border: '1px solid rgba(239, 68, 68, 0.35)',
+              borderRadius: 14,
+              padding: '24px 28px',
+              width: '100%',
+              maxWidth: 460,
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.8), 0 0 25px rgba(239, 68, 68, 0.1)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 16 }}>
+              <div
+                style={{
+                  width: 42,
+                  height: 42,
+                  borderRadius: 10,
+                  background: 'rgba(239, 68, 68, 0.14)',
+                  border: '1px solid rgba(239, 68, 68, 0.35)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#EF4444',
+                  flexShrink: 0,
+                }}
+              >
+                <Trash2 size={20} />
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700, color: '#FFFFFF' }}>
+                  Delete Campaign
+                </h3>
+                <p style={{ margin: '3px 0 0 0', fontSize: '0.82rem', color: '#94A3B8' }}>
+                  Permanent deletion confirmation
+                </p>
+              </div>
+            </div>
+
+            <p style={{ fontSize: '0.88rem', color: '#CBD5E1', lineHeight: 1.6, marginBottom: 24 }}>
+              Are you sure you want to delete <strong style={{ color: '#FFFFFF' }}>{campaignToDelete.name}</strong>?
+              All call logs, metrics, and associated campaign data will be permanently removed.
+            </p>
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12 }}>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setCampaignToDelete(null)}
+                style={{
+                  padding: '9px 18px',
+                  borderRadius: 8,
+                  background: 'rgba(255, 255, 255, 0.05)',
+                  border: '1px solid rgba(255, 255, 255, 0.12)',
+                  color: '#CBD5E1',
+                  fontSize: '0.85rem',
+                  fontWeight: 600,
+                  cursor: isDeleting ? 'not-allowed' : 'pointer',
+                  transition: 'all 0.15s ease',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)')}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={handleConfirmDelete}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '9px 20px',
+                  borderRadius: 8,
+                  background: '#EF4444',
+                  border: 'none',
+                  color: '#FFFFFF',
+                  fontSize: '0.85rem',
+                  fontWeight: 600,
+                  cursor: isDeleting ? 'not-allowed' : 'pointer',
+                  boxShadow: '0 4px 14px rgba(239, 68, 68, 0.35)',
+                  transition: 'all 0.15s ease',
+                  opacity: isDeleting ? 0.7 : 1,
+                }}
+                onMouseEnter={(e) => {
+                  if (!isDeleting) e.currentTarget.style.background = '#DC2626';
+                }}
+                onMouseLeave={(e) => {
+                  if (!isDeleting) e.currentTarget.style.background = '#EF4444';
+                }}
+              >
+                <Trash2 size={15} />
+                <span>{isDeleting ? 'Deleting...' : 'Delete Campaign'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast Notification */}
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onClose={() => setToast(null)}
+        />
+      )}
     </div>
   );
 };

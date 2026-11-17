@@ -256,6 +256,20 @@ export async function createCampaign(data: Partial<CampaignItem>): Promise<Campa
 }
 
 /**
+ * Deletes a voice campaign and unlinks associated records
+ */
+export async function deleteCampaign(id: string): Promise<boolean> {
+  const res = await authFetch(`${API_BASE}/api/campaigns/${id}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to delete campaign: ${res.statusText}`);
+  }
+  return true;
+}
+
+/**
  * Fetches call records for a specific campaign
  */
 export async function fetchCampaignCalls(campaignId: string): Promise<CallRecord[]> {

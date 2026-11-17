@@ -166,6 +166,9 @@ export class CampaignService {
    * Get single campaign by ID with optional pipeline isolation
    */
   async getCampaign(id: string, pipeline?: string): Promise<CampaignDbRow | null> {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+    if (!isUuid) return null;
+
     let query = `
       SELECT 
         c.*,
@@ -631,14 +634,25 @@ export class CampaignService {
   }
 
   /**
-   * Delete or archive a campaign
+   * Delete a campaign and clean up all associated records
    */
   async deleteCampaign(id: string): Promise<boolean> {
-    await pool.query('DELETE FROM calls WHERE campaign_id = $1', [id]);
-    await pool.query('UPDATE real_estate_leads SET campaign_id = NULL WHERE campaign_id = $1', [id]);
-    await pool.query('UPDATE customers SET campaign_id = NULL WHERE campaign_id = $1', [id]);
-    const res = await pool.query('DELETE FROM campaigns WHERE id = $1 RETURNING id', [id]);
-    return (res.rowCount ?? 0) > 0;
+    CampaignService.activeCampaignDispatches.delete(id);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM calls WHERE campaign_id = $1', [id]);
+      await client.query('UPDATE real_estate_leads SET campaign_id = NULL WHERE campaign_id = $1', [id]);
+      await client.query('UPDATE customers SET campaign_id = NULL WHERE campaign_id = $1', [id]);
+      const res = await client.query('DELETE FROM campaigns WHERE id = $1 RETURNING id', [id]);
+      await client.query('COMMIT');
+      return (res.rowCount ?? 0) > 0;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   /**

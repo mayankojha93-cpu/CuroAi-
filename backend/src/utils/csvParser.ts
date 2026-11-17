@@ -203,7 +203,7 @@ export function parseCsvToLeads(csvText: string): ParsedTelecomLead[] {
       if (headerMap['customer_identifier'] === undefined) headerMap['customer_identifier'] = index;
     } else if (header.includes('serviceend') || header.includes('enddate') || header === 'serviceend') {
       headerMap['service_end_date'] = index;
-    } else if (header.includes('address') || header === 'addr') {
+    } else if (header.includes('address') || header === 'addr' || header.includes('location') || header.includes('sector')) {
       headerMap['address'] = index;
     } else if (header.includes('servicecity') || header === 'city') {
       headerMap['service_city'] = index;
