@@ -3,17 +3,15 @@ import {
   Megaphone, 
   Users, 
   Check, 
-  Wallet, 
   ChevronRight, 
   X, 
   Plus, 
   Phone,
   BarChart3,
-  CreditCard,
   PhoneOff
 } from 'lucide-react';
 import type { CampaignSummary, CallRecord, TabKey, AuthUser, CampaignItem } from '../../types';
-import { fetchCampaigns, fetchBillingBalance } from '../../services';
+import { fetchCampaigns } from '../../services';
 
 interface DashboardHomeProps {
   summary: CampaignSummary | null;
@@ -37,14 +35,10 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
   onTestCallOpen: _onTestCallOpen,
   onSelectCall,
   campaigns: propCampaigns,
-  credits: propCredits,
+  credits: _propCredits,
   customersCount = 0,
 }) => {
   const [internalCampaigns, setInternalCampaigns] = useState<CampaignItem[]>([]);
-  const [internalCredits, setInternalCredits] = useState<number>(() => {
-    const saved = localStorage.getItem('curoai_credits');
-    return saved ? parseInt(saved, 10) : 21874;
-  });
 
   useEffect(() => {
     if (!propCampaigns || propCampaigns.length === 0) {
@@ -52,30 +46,9 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
         .then((data) => setInternalCampaigns(data || []))
         .catch(() => {});
     }
-    if (typeof propCredits !== 'number') {
-      fetchBillingBalance()
-        .then((data) => {
-          if (data && typeof data.available_credits === 'number') {
-            setInternalCredits(data.available_credits);
-            localStorage.setItem('curoai_credits', String(data.available_credits));
-          }
-        })
-        .catch(() => {});
-    }
-  }, [propCampaigns, propCredits]);
-
-  useEffect(() => {
-    const handleUpdate = (e: CustomEvent<{ credits: number }>) => {
-      if (e.detail && typeof e.detail.credits === 'number') {
-        setInternalCredits(e.detail.credits);
-      }
-    };
-    window.addEventListener('curoai_credits_updated', handleUpdate as EventListener);
-    return () => window.removeEventListener('curoai_credits_updated', handleUpdate as EventListener);
-  }, []);
+  }, [propCampaigns]);
 
   const campaignsList = (propCampaigns && propCampaigns.length > 0) ? propCampaigns : internalCampaigns;
-  const currentCredits = typeof propCredits === 'number' ? propCredits : internalCredits;
 
   // Mask phone number for security & display like the screenshot: +91 84****** 16
   const formatMaskedPhone = (phone?: string) => {
@@ -169,8 +142,6 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
     ? Math.min(100, Math.round((successfulCallsCount / totalCallsCount) * 100))
     : 0;
 
-  // Real Card 4: Credits balance from billing accounts in DB
-  const displayCredits = currentCredits;
 
   const adminName = user?.name || 'CuroAI Admin';
 
@@ -403,9 +374,9 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
           </div>
         </div>
 
-        {/* Card 4: Credits */}
+        {/* Card 4: Total Calls */}
         <div 
-          onClick={() => onTabChange('BILLING')}
+          onClick={() => onTabChange('CALLS')}
           style={{
             background: '#0E121B',
             border: '1px solid rgba(255, 255, 255, 0.07)',
@@ -418,7 +389,7 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
             transition: 'border-color 0.2s, transform 0.2s',
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.borderColor = 'rgba(245, 158, 11, 0.3)';
+            e.currentTarget.style.borderColor = 'rgba(56, 189, 248, 0.3)';
             e.currentTarget.style.transform = 'translateY(-2px)';
           }}
           onMouseLeave={(e) => {
@@ -430,25 +401,25 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
             width: 46,
             height: 46,
             borderRadius: 10,
-            background: 'rgba(245, 158, 11, 0.16)',
-            border: '1px solid rgba(245, 158, 11, 0.28)',
+            background: 'rgba(56, 189, 248, 0.16)',
+            border: '1px solid rgba(56, 189, 248, 0.28)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            color: '#F59E0B',
+            color: '#38BDF8',
             flexShrink: 0,
           }}>
-            <Wallet size={20} />
+            <Phone size={20} />
           </div>
           <div>
             <div style={{ fontSize: '0.82rem', color: '#94A3B8', fontWeight: 500 }}>
-              Credits
+              Total calls
             </div>
             <div style={{ fontSize: '1.7rem', fontWeight: 700, color: '#FFFFFF', lineHeight: 1.2, margin: '2px 0' }}>
-              {displayCredits.toLocaleString()}
+              {totalCallsCount.toLocaleString()}
             </div>
             <div style={{ fontSize: '0.78rem', color: '#64748B' }}>
-              available balance
+              telecom dialed
             </div>
           </div>
         </div>
@@ -614,55 +585,6 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({
                   </div>
                   <div style={{ fontSize: '0.8rem', color: '#94A3B8', marginTop: 2 }}>
                     Search every call
-                  </div>
-                </div>
-              </div>
-              <ChevronRight size={18} color="#64748B" />
-            </div>
-
-            {/* Action 4: Billing */}
-            <div
-              onClick={() => onTabChange('BILLING')}
-              style={{
-                background: '#0E121B',
-                border: '1px solid rgba(255, 255, 255, 0.07)',
-                borderRadius: 14,
-                padding: '16px 20px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                cursor: 'pointer',
-                transition: 'all 0.18s ease',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = '#131825';
-                e.currentTarget.style.borderColor = 'rgba(56, 189, 248, 0.25)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = '#0E121B';
-                e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.07)';
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                <div style={{
-                  width: 42,
-                  height: 42,
-                  borderRadius: 10,
-                  background: 'rgba(56, 189, 248, 0.16)',
-                  border: '1px solid rgba(56, 189, 248, 0.25)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  color: '#38BDF8',
-                }}>
-                  <CreditCard size={19} />
-                </div>
-                <div>
-                  <div style={{ fontSize: '0.92rem', fontWeight: 600, color: '#FFFFFF' }}>
-                    Billing
-                  </div>
-                  <div style={{ fontSize: '0.8rem', color: '#94A3B8', marginTop: 2 }}>
-                    Check your credit balance
                   </div>
                 </div>
               </div>
