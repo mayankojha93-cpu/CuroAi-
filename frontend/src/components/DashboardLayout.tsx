@@ -1,12 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { 
   LayoutGrid, 
   Megaphone, 
   Phone, 
   PhoneCall,
-  CreditCard, 
   Settings, 
-  Wallet, 
   LogOut, 
   Menu, 
   X, 
@@ -15,7 +13,6 @@ import {
   RefreshCw
 } from 'lucide-react';
 import type { TabKey, SystemHealth, AuthUser } from '../types';
-import { fetchBillingBalance } from '../services/api.service';
 
 interface DashboardLayoutProps {
   activeTab: TabKey;
@@ -57,29 +54,6 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [credits, setCredits] = useState<number>(() => {
-    const saved = localStorage.getItem('curoai_credits');
-    return saved ? parseInt(saved, 10) : 21874;
-  });
-
-  useEffect(() => {
-    fetchBillingBalance()
-      .then((data) => {
-        if (data && typeof data.available_credits === 'number') {
-          setCredits(data.available_credits);
-          localStorage.setItem('curoai_credits', String(data.available_credits));
-        }
-      })
-      .catch(() => {});
-
-    const handleUpdate = (e: CustomEvent<{ credits: number }>) => {
-      if (e.detail && typeof e.detail.credits === 'number') {
-        setCredits(e.detail.credits);
-      }
-    };
-    window.addEventListener('curoai_credits_updated', handleUpdate as EventListener);
-    return () => window.removeEventListener('curoai_credits_updated', handleUpdate as EventListener);
-  }, []);
 
   const getBreadcrumbTitle = (tab: TabKey) => {
     switch (tab) {
@@ -116,11 +90,6 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
       id: 'TEST_CALL',
       label: 'Test AI Call',
       icon: <PhoneCall size={18} />,
-    },
-    {
-      id: 'BILLING',
-      label: 'Billing',
-      icon: <CreditCard size={18} />,
     },
     {
       id: 'SETTINGS',
@@ -526,36 +495,6 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
               title="Refresh telemetry"
             >
               <RefreshCw size={13} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} />
-            </button>
-
-            {/* Credit Pill: [wallet icon] 4,874 credits */}
-            <button
-              onClick={() => onTabChange('BILLING')}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                padding: '7px 14px',
-                borderRadius: 8,
-                background: 'rgba(37, 99, 235, 0.12)',
-                border: '1px solid rgba(59, 130, 246, 0.28)',
-                color: '#60A5FA',
-                fontSize: '0.82rem',
-                fontWeight: 600,
-                cursor: 'pointer',
-                transition: 'all 0.15s ease',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = 'rgba(37, 99, 235, 0.2)';
-                e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.45)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'rgba(37, 99, 235, 0.12)';
-                e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.28)';
-              }}
-            >
-              <Wallet size={15} color="#38BDF8" />
-              <span>{credits.toLocaleString()} credits</span>
             </button>
 
             {/* User Avatar & Info */}
