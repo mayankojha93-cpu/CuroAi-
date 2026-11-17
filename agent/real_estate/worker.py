@@ -508,7 +508,7 @@ async def entrypoint(ctx: agents.JobContext):
     preferred_language = "hi" if raw_pref in ("hi", "hindi", "hi-in", "hinglish") else "en"
     lead_id = metadata.get("leadId")
     direction = metadata.get("direction", "outbound")
-    if not raw_loc or raw_loc.lower() in ("delhi, 110011, burari, sant nagar", "none", "null", "undefined"):
+    if not raw_loc or raw_loc.lower() in ("location not specified", "not specified", "delhi, 110011, burari, sant nagar", "none", "null", "undefined", "n/a", "na"):
         property_location = None
     else:
         property_location = raw_loc
