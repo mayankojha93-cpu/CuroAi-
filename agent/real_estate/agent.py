@@ -444,11 +444,35 @@ class RealEstateAgent(Agent):
                 logger.info(f"🏘️ Other property answer = {_ans} (no LLM): '{text}'")
                 ok = False
                 try:
-                    await tools_.has_other_property(has_other=_ans)   # False -> not-interested closing is spoken by the tool
+                    await tools_.has_other_property(has_other=_ans)
                     if _ans:
                         reply = state.direct_reply or ask_new_location_question(state.reply_lang)
                         state.direct_reply = None
                         say_cached(self.session, state, reply, True)
+                    else:
+                        from .prompts import get_closing_text
+                        closing_text = get_closing_text(state)
+                        state.closing_spoken = True
+                        tools_._hangup_scheduled = True
+                        speech = say_cached(self.session, state, closing_text, False)
+                        if tools_.log_dialogue_func:
+                            tools_.log_dialogue_func("assistant", closing_text)
+                        else:
+                            state.add_transcript("assistant", closing_text)
+                            logger.info(f"🤖 [Agent]: \"{closing_text}\"")
+
+                        if tools_.hangup_func:
+                            async def _hangup_after_speech():
+                                try:
+                                    if hasattr(speech, "wait_for_playout"):
+                                        await speech.wait_for_playout()
+                                    else:
+                                        await asyncio.sleep(4.0)
+                                except Exception:
+                                    await asyncio.sleep(3.5)
+                                await asyncio.sleep(0.5)
+                                await tools_.hangup_func()
+                            asyncio.create_task(_hangup_after_speech())
                     ok = True
                 except Exception as e:
                     logger.warning(f"Other-property shortcut failed, falling back to LLM: {e}")

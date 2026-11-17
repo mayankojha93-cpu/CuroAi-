@@ -10,7 +10,7 @@ import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { normalizePhone } from '../utils/csvParser.js';
-import { matchRealEstateDisposition, RealEstateCanonicalDisposition } from '../utils/realEstateDispositions.js';
+import { matchRealEstateDisposition, isTerminalRealEstateDisposition, RealEstateCanonicalDisposition } from '../utils/realEstateDispositions.js';
 import { romanizeTranscript } from '../utils/transliteration.js';
 import { complianceService } from './complianceService.js';
 import { initiateExotelWssCall } from './exotelService.js';
@@ -1056,15 +1056,34 @@ ${dialogueText.slice(0, 4000)}`;
       else if (canonicalDisp === 'Do Not Call') leadStatus = 'DNC';
       else if (canonicalDisp === 'Wrong Number') leadStatus = 'WRONG_NUMBER';
       else if (canonicalDisp === 'Not Connected (No Answer)') leadStatus = 'NO_ANSWER';
+      else if (canonicalDisp === 'Abruptly Disconnected Call') leadStatus = 'DISCONNECTED';
+
+      // Check retry eligibility
+      const isTerminal = isTerminalRealEstateDisposition(canonicalDisp);
+      const leadInfoRes = await query(
+        `SELECT rl.total_attempts, COALESCE(rl.max_attempts, 3) as max_attempts,
+                COALESCE(cam.retry_delay_minutes, 180) as retry_delay_minutes
+         FROM real_estate_leads rl
+         LEFT JOIN campaigns cam ON rl.campaign_id = cam.id
+         WHERE rl.id = $1`,
+        [leadId]
+      );
+      const leadInfo = leadInfoRes.rows[0];
+      const attempts = Number(leadInfo?.total_attempts || 1);
+      const maxAttempts = Number(leadInfo?.max_attempts || 3);
+      const delayMinutes = Number(leadInfo?.retry_delay_minutes || 180);
+
+      const canRetry = !isTerminal && attempts < maxAttempts;
 
       await query(
         `UPDATE real_estate_leads
          SET lead_status = $1,
              current_disposition = $2,
              owner_name = COALESCE($3, owner_name),
+             next_attempt_time = CASE WHEN $5 THEN NOW() + ($6 || ' minutes')::interval ELSE NULL END,
              updated_at = NOW()
          WHERE id = $4`,
-        [leadStatus, canonicalDisp, safeOwnerConfirmed || null, leadId]
+        [leadStatus, canonicalDisp, safeOwnerConfirmed || null, leadId, canRetry, delayMinutes]
       );
     }
 

@@ -747,11 +747,11 @@ export class CampaignService {
       if (reRes.rows.length > 0) {
         return reRes.rows.map((row: any) => ({
           ...row,
-          final_disposition: row.final_disposition || row.current_disposition
-            ? matchRealEstateDisposition(row.final_disposition || row.current_disposition, row.duration_seconds, row.call_status)
+          final_disposition: row.last_call_id && row.final_disposition
+            ? matchRealEstateDisposition(row.final_disposition, row.duration_seconds, row.call_status)
             : null,
-          current_disposition: row.current_disposition
-            ? matchRealEstateDisposition(row.current_disposition)
+          current_disposition: row.last_call_id
+            ? matchRealEstateDisposition(row.final_disposition || row.current_disposition, row.duration_seconds, row.call_status)
             : 'Pending Outreach',
         }));
       }
@@ -804,16 +804,16 @@ export class CampaignService {
     const res = await pool.query(query, [campaignId]);
     return res.rows.map((row: any) => ({
       ...row,
-      final_disposition: row.final_disposition || row.current_disposition
+      final_disposition: row.last_call_id && row.final_disposition
+        ? (isRealEstate
+            ? matchRealEstateDisposition(row.final_disposition, row.duration_seconds, row.call_status)
+            : matchCanonicalDisposition(row.final_disposition, row.duration_seconds, row.call_status))
+        : null,
+      current_disposition: row.last_call_id
         ? (isRealEstate
             ? matchRealEstateDisposition(row.final_disposition || row.current_disposition, row.duration_seconds, row.call_status)
             : matchCanonicalDisposition(row.final_disposition || row.current_disposition, row.duration_seconds, row.call_status))
-        : null,
-      current_disposition: row.current_disposition
-        ? (isRealEstate
-            ? matchRealEstateDisposition(row.current_disposition)
-            : matchCanonicalDisposition(row.current_disposition))
-        : null,
+        : 'Pending Outreach',
     }));
   }
 

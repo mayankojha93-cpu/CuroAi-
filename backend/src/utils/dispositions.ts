@@ -66,6 +66,10 @@ export function matchCanonicalDisposition(
   const statusUpper = (callStatus || '').toUpperCase().replace(/[-_]/g, ' ');
   const duration = Number(durationSeconds) || 0;
 
+  if (upper.includes('PENDING') || (!text && !callStatus)) {
+    return 'Pending Outreach' as any;
+  }
+
   // Direct exact match
   const exactMatch = CANONICAL_DISPOSITIONS.find(
     (c) => c.toLowerCase() === text.toLowerCase() || c.toUpperCase() === upper
