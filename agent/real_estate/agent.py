@@ -35,11 +35,13 @@ def _soften_tts_phrase(s: str) -> str:
     """Soften abrupt single-word affirmations and mid-sentence period stops so the TTS engine speaks smoothly with natural human cadence."""
     # 1. Opening affirmations with trailing period -> comma pause
     s = re.sub(r'^(Achha|Theek hai|Haanji|Haan ji|Samajh gayi|Got it|Sure|Perfect|Noted|Understood|Alright|Right)\.\s*', r'\1, ', s, flags=re.I)
-    # 2. Mid-sentence honorific stops ("got it, Sir. And..." -> "got it, Sir... And...")
+    # 2. Never allow '[Name] Sir' (e.g. 'Raja Sir' -> 'Raja')
+    s = re.sub(r'\b(?!Hello\b|Yes\b|No\b|Thank\b|Thanks\b|Right\b|Sure\b|Sorry\b|Please\b|Okay\b|Alright\b)([A-Z][a-z]+)\s+[Ss]ir\b', r'\1', s)
+    # 3. Mid-sentence honorific stops ("got it, Sir. And..." -> "got it, Sir... And...")
     s = re.sub(r'(,\s*Sir|\bSir|\bji)\.\s+([A-Z])', r'\1... \2', s)
-    # 3. Exclamations to natural breathing pauses
+    # 4. Exclamations to natural breathing pauses
     s = s.replace("!", "... ")
-    # 4. Collapse accidental multiple spaces
+    # 5. Collapse accidental multiple spaces
     s = re.sub(r'[ \t]{2,}', ' ', s)
     return s.strip()
 

@@ -101,6 +101,7 @@ Human Speaking Style & Pacing Rules:
    - NEVER announce what you are about to ask. Do NOT say 'Ab main aapse unit number puchna chahti hoon', 'Now I will ask...', 'Let me ask you'. Just ask it naturally.
    - ASK EXACTLY ONE QUESTION per turn. Never combine two questions in one reply. (Only the category-and-intent step may ask both together.)
    - Use the customer's name at most once in the whole call, when confirming it. After that say only Sir or ji.
+   - STRICT NAME RULE: When addressing the customer by name, NEVER append 'Sir' after their name (NEVER say 'Raja Sir' or '[Name] Sir'). Use either their first name alone (e.g. 'Hello Raja,'), or in Hindi with 'ji' ('Raja ji,'), OR simply say 'Sir' without their name.
    - Do NOT mention valuation, advisor or callback unless the customer asked about price, asked for a human, or asked to talk later.
    - Keep every reply under 25 words.
    - Treat this call as a smooth, consultative phone dialogue with a property owner.
@@ -247,16 +248,18 @@ Politely acknowledge their time, invoke `book_advisor_handoff(reason="Customer i
         salutation_hi = f"Hello {name_call} ji" if name_call != "Sir" else "Hello Sir"
 
         if loc:
+            parts = [p.strip() for p in loc.split(",") if p.strip()]
+            spoken_loc = f"{parts[0]} in {parts[1]}" if len(parts) >= 2 else parts[0]
             intro_text = (
-                f'Initial greeting to speak in English: "{salutation_en}, I’m Priya, calling from My Estate Finder... Actually regarding your property at {loc}, were you considering selling it, or putting it on rent?"'
+                f'Initial greeting to speak in English: "{salutation_en}, Priya this side from My Estate Finder. I\'m calling about your property in {spoken_loc}... Were you looking to sell or rent it out?"'
                 if state.reply_lang == "en"
-                else f'Initial greeting to speak in Hinglish: "{salutation_hi}, main Priya bol rahi hoon My Estate Finder se... Actually {loc} par jo aapki property hai, kya aap use sell ya rent karne ka plan kar rahe hain?"'
+                else f'Initial greeting to speak in Hinglish: "{salutation_hi}, main Priya baat kar rahi hoon My Estate Finder se. Aapki {spoken_loc} wali property ke baare mein call kiya tha... Kya aap use sell karne ka plan kar rahe hain ya rent out?"'
             )
         else:
             intro_text = (
-                f'Initial greeting to speak in English: "{salutation_en}, I’m Priya, calling from My Estate Finder... We connect property owners directly with genuine buyers and tenants. Were you thinking of selling or renting out any property?"'
+                f'Initial greeting to speak in English: "{salutation_en}, Priya this side from My Estate Finder. We connect property owners directly with verified buyers... Were you looking to sell or rent out any property?"'
                 if state.reply_lang == "en"
-                else f'Initial greeting to speak in Hinglish: "{salutation_hi}, main Priya bol rahi hoon My Estate Finder se... Hum property owners ko genuine buyers aur tenants se directly connect karte hain. Kya aap bhi apni koi property sell ya rent out karne ka soch rahe hain?"'
+                else f'Initial greeting to speak in Hinglish: "{salutation_hi}, main Priya baat kar rahi hoon My Estate Finder se. Hum property owners ko direct verified buyers se connect karte hain... Kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"'
             )
         return base + f"""
 Current Step: 1. INTRODUCTION
