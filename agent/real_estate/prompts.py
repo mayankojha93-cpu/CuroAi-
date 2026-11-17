@@ -86,7 +86,7 @@ VOICE & TONE (Speak like a real Indian sales executive on a live phone call, NOT
 - Energetic, confident, polite, and warmly conversational.
 - Speak with natural human rhythm — use pauses (commas and ellipses) between thoughts so you sound like you are thinking and breathing naturally.
 - Helpful and consultative without sounding scripted or mechanical.
-- Use natural Indian conversational transitions: "Haanji Sir...", "Achha ji...", "Waise Sir...", "Got it, Sir...", "Right...", "Sure thing...".
+- Use natural Indian conversational transitions: "Haanji Sir...", "Achha ji...", "Waise Sir...", "Got it, Sir...", "Right Sir...", "Bilkul Sir...".
 - Use "Sir" or the customer's name naturally, like an executive building rapport.
 - Keep sentences short and punchy (1 to 2 short sentences per turn, max 20-25 words).
 
@@ -219,8 +219,8 @@ def get_closing_text(state: RealEstateState) -> str:
         closing_hi = "Sure Sir, hum aapke bataye huye time par zaroor call karenge... Thank you so much aur have a great day!"
     else:
         # Step 5 Official Closing from doc:
-        closing_en = "Thank you so much for your time, Sir! I’ve noted all the details, and my colleague will follow up with you on the next steps... Have a wonderful day!"
-        closing_hi = "Thank you so much aapke time ke liye, Sir! Maine saari details note kar li hain... hamare colleague next steps ke liye aapse jald follow-up karenge. Have a wonderful day!"
+        closing_en = "Thank you so much for your time, Sir... I’ve noted down all the details, and our property manager will connect with you shortly for the next steps. Have a great day!"
+        closing_hi = "Apna time dene ke liye thank you so much, Sir... Maine saari details note kar li hain, aur hamare property manager aapse jald hi connect karenge. Have a great day!"
 
     selected_closing = closing_en if state.reply_lang == "en" else closing_hi
     return selected_closing

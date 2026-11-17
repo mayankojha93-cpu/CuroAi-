@@ -80,7 +80,7 @@ _BHK = re.compile(
 _RK = re.compile(r"\b(\d)\s*rk\b")
 
 
-def _x_bhk(v: str) -> Optional[Dict[str, Any]]:
+def _x_bhk(v: str, open_field: str = "") -> Optional[Dict[str, Any]]:
     if re.search(r"\bstudio\b", v):
         return {"bhk_config": "Studio"}
     m = _BHK.search(v)
@@ -92,6 +92,12 @@ def _x_bhk(v: str) -> Optional[Dict[str, Any]]:
     m = _RK.search(v)
     if m:
         return {"bhk_config": f"{m.group(1)} RK"}
+    # If bhk_config is currently open, bare numbers (e.g. "3", "it's 3", "3 bed") map cleanly
+    if open_field == "bhk_config":
+        _BHK_FILL = {"it", "its", "is", "hai", "hoga", "hogi", "sir", "ji", "bedroom", "bedrooms", "bed", "beds", "yeah", "yes", "haan", "ka", "ke", "ki", "so", "bhi", "basically", "to"}
+        bare = _bare_number(v, _BHK_FILL)
+        if bare and bare in ("1", "2", "3", "4", "5", "6"):
+            return {"bhk_config": f"{bare} BHK"}
     return None
 
 
@@ -268,7 +274,7 @@ def _scan(v: str, open_field: str) -> Dict[str, Any]:
     if open_field == "unit_floor" and is_standalone_from_speech(v):
         return {"unit_floor": {"unit_number": "Standalone", "floor_number": "Ground"}}
     for key, res in (
-        ("bhk_config", _x_bhk(v)),
+        ("bhk_config", _x_bhk(v, open_field)),
         ("approx_area", _x_area(v, open_field)),
         ("furnishing", _x_furnishing(v)),
         ("unit_floor", _x_unit_floor(v)),
