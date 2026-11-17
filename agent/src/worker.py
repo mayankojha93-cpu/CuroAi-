@@ -23,6 +23,10 @@ from src.config import (
     STT_LANGUAGE,
     TTS_LANGUAGE_HI,
     TTS_LANGUAGE_EN,
+    TTS_MODEL,
+    TTS_SPEAKER,
+    TTS_PACE,
+    TTS_TEMPERATURE,
 )
 from src.state import Step, ConversationState
 from src.lang import L
@@ -137,8 +141,10 @@ async def entrypoint(ctx: agents.JobContext):
     initial_tts_lang = TTS_LANGUAGE_EN if language == "en" else TTS_LANGUAGE_HI
     tts = sarvam.TTS(
         target_language_code=initial_tts_lang,
-        model="bulbul:v3",
-        speaker="priya",
+        model=TTS_MODEL,
+        speaker=TTS_SPEAKER,
+        pace=TTS_PACE,
+        temperature=TTS_TEMPERATURE,
         api_key=SARVAM_API_KEY,
     )
 
@@ -147,7 +153,13 @@ async def entrypoint(ctx: agents.JobContext):
         as English (and Hindi as Hindi)."""
         code = TTS_LANGUAGE_EN if lang == "en" else TTS_LANGUAGE_HI
         try:
-            tts.update_options(target_language_code=code)
+            tts.update_options(
+                model=TTS_MODEL,
+                speaker=TTS_SPEAKER,
+                target_language_code=code,
+                pace=TTS_PACE,
+                temperature=TTS_TEMPERATURE,
+            )
             logger.info(f"TTS language -> {code}")
         except Exception as e:  # noqa: BLE001
             logger.warning(f"TTS update_options({code}) failed: {e}")
