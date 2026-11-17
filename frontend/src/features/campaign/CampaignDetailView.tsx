@@ -17,7 +17,8 @@ import {
   Filter,
   CheckCircle2,
   AlertTriangle,
-  RotateCcw
+  RotateCcw,
+  Trash2
 } from 'lucide-react';
 import type { CampaignItem, CallRecord } from '../../types';
 import { parseAudienceCsv, generateCampaignAuditedReportCsv, downloadCampaignAudienceSampleCsv } from '../../utils/csvHelper';
@@ -31,6 +32,7 @@ import {
   fetchCampaignReport,
   initiateCall,
   updateCampaignRetry,
+  deleteCampaign,
   type CampaignContactRecord,
   type CampaignReportRow,
   type DispositionBreakdownItem 
@@ -457,6 +459,7 @@ interface CampaignDetailViewProps {
   campaign: CampaignItem;
   onBack: () => void;
   onSelectCall?: (call: CallRecord) => void;
+  onDeleteSuccess?: () => void;
 }
 
 type SubTab = 'OVERVIEW' | 'CONTACTS' | 'DETAILS';
@@ -465,8 +468,27 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
   campaign,
   onBack,
   onSelectCall,
+  onDeleteSuccess,
 }) => {
   const [currentCampaign, setCurrentCampaign] = useState<CampaignItem>(campaign);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [isDeletingCampaign, setIsDeletingCampaign] = useState(false);
+
+  const handleDeleteCampaign = async () => {
+    setIsDeletingCampaign(true);
+    try {
+      await deleteCampaign(currentCampaign.id);
+      setIsDeleteModalOpen(false);
+      if (onDeleteSuccess) {
+        onDeleteSuccess();
+      } else {
+        onBack();
+      }
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete campaign');
+      setIsDeletingCampaign(false);
+    }
+  };
   const isRealEstateCampaign =
     (currentCampaign as any)?.pipeline === 'real_estate' ||
     (currentCampaign as any)?.name?.toLowerCase()?.includes('estate');
@@ -1418,6 +1440,38 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
               </button>
             </>
           )}
+
+          {/* Delete Campaign Button */}
+          <button
+            type="button"
+            onClick={() => setIsDeleteModalOpen(true)}
+            title="Delete this campaign"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 7,
+              padding: '9px 15px',
+              borderRadius: 8,
+              background: 'rgba(239, 68, 68, 0.08)',
+              border: '1px solid rgba(239, 68, 68, 0.28)',
+              color: '#EF4444',
+              fontSize: '0.84rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.15s ease',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = 'rgba(239, 68, 68, 0.18)';
+              e.currentTarget.style.borderColor = 'rgba(239, 68, 68, 0.5)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'rgba(239, 68, 68, 0.08)';
+              e.currentTarget.style.borderColor = 'rgba(239, 68, 68, 0.28)';
+            }}
+          >
+            <Trash2 size={14} />
+            <span>Delete</span>
+          </button>
         </div>
       </div>
 
@@ -2547,6 +2601,125 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
                     <span>Save Retry Policy</span>
                   </>
                 )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Campaign Confirmation Modal */}
+      {isDeleteModalOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0, 0, 0, 0.75)',
+            backdropFilter: 'blur(4px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+            padding: 16,
+          }}
+          onClick={() => !isDeletingCampaign && setIsDeleteModalOpen(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: '#0E121B',
+              border: '1px solid rgba(239, 68, 68, 0.35)',
+              borderRadius: 14,
+              padding: '24px 28px',
+              width: '100%',
+              maxWidth: 460,
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.8), 0 0 25px rgba(239, 68, 68, 0.1)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 16 }}>
+              <div
+                style={{
+                  width: 42,
+                  height: 42,
+                  borderRadius: 10,
+                  background: 'rgba(239, 68, 68, 0.14)',
+                  border: '1px solid rgba(239, 68, 68, 0.35)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#EF4444',
+                  flexShrink: 0,
+                }}
+              >
+                <Trash2 size={20} />
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700, color: '#FFFFFF' }}>
+                  Delete Campaign
+                </h3>
+                <p style={{ margin: '3px 0 0 0', fontSize: '0.82rem', color: '#94A3B8' }}>
+                  Permanent deletion confirmation
+                </p>
+              </div>
+            </div>
+
+            <p style={{ fontSize: '0.88rem', color: '#CBD5E1', lineHeight: 1.6, marginBottom: 24 }}>
+              Are you sure you want to delete <strong style={{ color: '#FFFFFF' }}>{currentCampaign.name}</strong>?
+              All call records, metrics, and associated campaign data will be permanently removed.
+            </p>
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12 }}>
+              <button
+                type="button"
+                disabled={isDeletingCampaign}
+                onClick={() => setIsDeleteModalOpen(false)}
+                style={{
+                  padding: '9px 18px',
+                  borderRadius: 8,
+                  background: 'rgba(255, 255, 255, 0.05)',
+                  border: '1px solid rgba(255, 255, 255, 0.12)',
+                  color: '#CBD5E1',
+                  fontSize: '0.85rem',
+                  fontWeight: 600,
+                  cursor: isDeletingCampaign ? 'not-allowed' : 'pointer',
+                  transition: 'all 0.15s ease',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)')}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingCampaign}
+                onClick={handleDeleteCampaign}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '9px 20px',
+                  borderRadius: 8,
+                  background: '#EF4444',
+                  border: 'none',
+                  color: '#FFFFFF',
+                  fontSize: '0.85rem',
+                  fontWeight: 600,
+                  cursor: isDeletingCampaign ? 'not-allowed' : 'pointer',
+                  boxShadow: '0 4px 14px rgba(239, 68, 68, 0.35)',
+                  transition: 'all 0.15s ease',
+                  opacity: isDeletingCampaign ? 0.7 : 1,
+                }}
+                onMouseEnter={(e) => {
+                  if (!isDeletingCampaign) e.currentTarget.style.background = '#DC2626';
+                }}
+                onMouseLeave={(e) => {
+                  if (!isDeletingCampaign) e.currentTarget.style.background = '#EF4444';
+                }}
+              >
+                <Trash2 size={15} />
+                <span>{isDeletingCampaign ? 'Deleting...' : 'Delete Campaign'}</span>
               </button>
             </div>
           </div>
