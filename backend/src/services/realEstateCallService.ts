@@ -1124,11 +1124,14 @@ ${dialogueText.slice(0, 4000)}`;
         );
       }
 
-      // Immediately trigger next available campaign slot
+      // Immediately trigger next available campaign slot if campaign is active
       setTimeout(async () => {
         try {
-          const { campaignService } = await import('./campaignService.js');
-          await campaignService.startCampaign(campId);
+          const campRes = await query(`SELECT status FROM campaigns WHERE id = $1`, [campId]);
+          if (campRes.rows[0]?.status === 'RUNNING') {
+            const { campaignService } = await import('./campaignService.js');
+            await campaignService.startCampaign(campId, false);
+          }
         } catch (_) {}
       }, 500);
     }

@@ -239,6 +239,8 @@ Politely acknowledge their time, invoke `book_advisor_handoff(reason="Customer i
 
     if step == RealEstateStep.INTRODUCTION:
         loc = state.initial_property_location
+        if loc and loc.strip().lower() in ("location not specified", "not specified", "n/a", "na", "none", "unknown", "null"):
+            loc = None
         name_call = _owner_call_name(state)
         salutation_en = f"Hello {name_call}" if name_call != "Sir" else "Hello Sir"
         salutation_hi = f"Hello {name_call} ji" if name_call != "Sir" else "Hello Sir"

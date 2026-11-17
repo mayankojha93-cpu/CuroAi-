@@ -132,8 +132,8 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
   const [selectedScriptId, setSelectedScriptId] = useState<string>(() =>
     isRealEstate ? REAL_ESTATE_SCRIPT_PRESETS[0].id : 'delhi-routine'
   );
-  const [language, setLanguage] = useState(() => (isRealEstate ? 'hi-IN' : 'hi-IN'));
-  const [voicePipeline, setVoicePipeline] = useState(() => 'Sarvam AI (Priya - hi-IN)');
+  const [language, setLanguage] = useState(() => (isRealEstate ? 'en-IN' : 'hi-IN'));
+  const [voicePipeline, setVoicePipeline] = useState(() => (isRealEstate ? 'Sarvam AI (Priya - en-IN)' : 'Sarvam AI (Priya - hi-IN)'));
 
   // Schedule
   const [scheduleStartTime, setScheduleStartTime] = useState('09:00');

@@ -820,11 +820,22 @@ export class CampaignService {
   /**
    * Start campaign and dispatch pending calls according to rate limits and schedule.
    */
-  async startCampaign(campaignId: string): Promise<{ campaign: CampaignDbRow; dispatchedCount: number }> {
+  async startCampaign(campaignId: string, forceStart: boolean = false): Promise<{ campaign: CampaignDbRow; dispatchedCount: number }> {
     if (CampaignService.activeCampaignDispatches.has(campaignId)) {
       logger.warn({ campaignId }, 'Campaign dispatch already executing in another task, skipping duplicate dispatch');
       const existingCamp = await this.getCampaign(campaignId);
       return { campaign: existingCamp || ({} as any), dispatchedCount: 0 };
+    }
+
+    const existingCamp = await this.getCampaign(campaignId);
+    if (!existingCamp) {
+      return { campaign: {} as any, dispatchedCount: 0 };
+    }
+
+    // Never auto-start or unpause a campaign that was paused, completed, or cancelled unless explicitly requested by user
+    if (!forceStart && (existingCamp.status === 'PAUSED' || existingCamp.status === 'COMPLETED' || existingCamp.status === 'CANCELLED')) {
+      logger.info({ campaignId, status: existingCamp.status }, 'Campaign is paused or inactive, skipping auto-start');
+      return { campaign: existingCamp, dispatchedCount: 0 };
     }
 
     CampaignService.activeCampaignDispatches.add(campaignId);
