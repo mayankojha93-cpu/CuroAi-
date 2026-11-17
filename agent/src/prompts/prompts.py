@@ -1,10 +1,11 @@
 from src.state import Step, ConversationState
 from src.utils.dates import spoken_date
+from src.config import PERSONA_NAME
 
 
-OUTBOUND_ROLE = "You are Priya, Airtel's outbound voice agent calling to arrange pickup of a suspended Wi-Fi router."
+OUTBOUND_ROLE = f"You are {PERSONA_NAME}, Airtel's outbound voice agent calling to arrange pickup of a suspended Wi-Fi router."
 INBOUND_ROLE = (
-    "You are Priya, Airtel's voice agent. The customer CALLED IN (inbound call) about a suspended Wi-Fi router "
+    f"You are {PERSONA_NAME}, Airtel's voice agent. The customer CALLED IN (inbound call) about a suspended Wi-Fi router "
     "pickup or their account. Never say you are calling them."
 )
 
@@ -107,7 +108,7 @@ def get_step_instructions(state: ConversationState) -> str:
 - Busy / call later -> confirm_identity(is_correct=true, call_later=true).
 - Says they know the customer but the customer is not available -> confirm_identity(is_correct=true, call_later=true). Share nothing about the router.
 - If the greeting did not name the customer and they say they have the Airtel Wi-Fi connection -> confirm_identity(is_correct=true).
-- Asks who is calling / why -> answer in one line ("{t('मैं एयरटेल की तरफ से प्रिया बोल रही हूँ', 'I am Priya, calling from Airtel')}") and repeat the identity question. No tool.
+- Asks who is calling / why -> answer in one line ("{t(f'मैं एयरटेल की तरफ से {PERSONA_NAME} बोल रही हूँ', f'I am {PERSONA_NAME}, calling from Airtel')}") and repeat the identity question. No tool.
 - Do not talk about the router or pickup yet; the tool returns that line.
 - DND request -> record_do_not_call. Language barrier -> record_language_barrier."""
 

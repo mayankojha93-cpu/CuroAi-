@@ -6,6 +6,7 @@ from livekit.agents import AgentSession
 
 from src.state import Step, ConversationState
 from src.lang import L
+from src.config import PERSONA_NAME
 from src.tools.api import post_outcome_to_backend
 
 logger = logging.getLogger("agent-watchdog")
@@ -99,7 +100,7 @@ async def clean_hangup(ctx: agents.JobContext, session: AgentSession, state: Con
         print(f"  Customer: {getattr(state, 'customer_name', 'Customer')} | Phone: {getattr(state, 'phone', 'N/A')}", flush=True)
         print("-" * 70, flush=True)
         for t in state.transcript:
-            role_label = "\033[1;36m🤖 Priya   \033[0m" if t.get("role") in ("assistant", "agent") else "\033[1;32m🗣️ Customer\033[0m"
+            role_label = f"\033[1;36m🤖 {PERSONA_NAME:<7}\033[0m" if t.get("role") in ("assistant", "agent") else "\033[1;32m🗣️ Customer\033[0m"
             print(f"  {role_label}: {t.get('text')}", flush=True)
         print("-" * 70, flush=True)
         print(f"  Disposition: \033[1;33m{state.final_disposition}\033[0m | Duration: {mins}m {secs}s", flush=True)
