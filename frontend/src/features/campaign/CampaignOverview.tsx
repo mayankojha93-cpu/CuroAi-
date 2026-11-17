@@ -676,9 +676,6 @@ export const CampaignOverview: React.FC<CampaignOverviewProps> = ({
                   borderTop: '1px solid rgba(255, 255, 255, 0.05)',
                   marginBottom: 12,
                 }}>
-                  <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#38BDF8' }}>
-                    {camp.credits_used ?? 0} / {(camp.total_credits || camp.total_contacts).toLocaleString()} credits
-                  </div>
                   <div style={{ fontSize: '0.78rem', color: '#64748B' }}>
                     {camp.execution_date || 'October 2026'}
                   </div>
