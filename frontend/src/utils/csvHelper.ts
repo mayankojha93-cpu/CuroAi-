@@ -302,6 +302,7 @@ export interface ParsedAudienceContact {
   check_status?: string;
   check?: string;
   product_name?: string;
+  category?: string;
 }
 
 export interface AudienceParseResult {
@@ -324,7 +325,7 @@ export function parseAudienceCsv(csvText: string, isRealEstate?: boolean): Audie
 
   const rawHeaders = rows[0];
   const normalizedHeaders = rawHeaders.map((h) =>
-    h.trim().toLowerCase().replace(/[\s\._\-]/g, '')
+    h.trim().toLowerCase().replace(/[\s\._\-\/]/g, '')
   );
 
   let rDateCol = -1;
@@ -344,6 +345,7 @@ export function parseAudienceCsv(csvText: string, isRealEstate?: boolean): Audie
   let pincodeCol = -1;
   let zoneCol = -1;
   let allocatedToCol = -1;
+  let categoryCol = -1;
   const phoneCols: number[] = [];
 
   normalizedHeaders.forEach((header, index) => {
@@ -353,7 +355,7 @@ export function parseAudienceCsv(csvText: string, isRealEstate?: boolean): Audie
       subsDelNoCol = index;
     } else if (header.includes('serviceend') || header.includes('enddate')) {
       serviceEndCol = index;
-    } else if (header.includes('address') || header === 'addr') {
+    } else if (header.includes('address') || header === 'addr' || header.includes('location') || header.includes('propertylocation')) {
       addressCol = index;
     } else if (header.includes('servicecity') || header === 'city') {
       serviceCityCol = index;
@@ -373,7 +375,9 @@ export function parseAudienceCsv(csvText: string, isRealEstate?: boolean): Audie
       allocatedToCol = index;
     } else if (header.includes('email') || header.includes('mail')) {
       emailCol = index;
-    } else if (header.includes('subsname') || header.includes('subscribername') || header.includes('customername') || header === 'name' || header === 'subs_name') {
+    } else if (header.includes('category') || header === 'cat' || header.includes('proptype') || header.includes('propertytype') || header.includes('propertycategory') || header.includes('typeofproperty') || header.includes('propertysubtype') || header === 'type' || header === 'property') {
+      categoryCol = index;
+    } else if (header.includes('owner') || header.includes('occupier') || header.includes('subsname') || header.includes('subscribername') || header.includes('customername') || header === 'name' || header === 'subs_name') {
       nameCol = index;
     } else if (header.includes('customerident') || header.includes('custident') || header.includes('identifier')) {
       identifierCol = index;
@@ -484,10 +488,25 @@ export function parseAudienceCsv(csvText: string, isRealEstate?: boolean): Audie
     const rawPincode = pincodeCol >= 0 ? row[pincodeCol] : '';
     const rawZone = zoneCol >= 0 ? row[zoneCol] : '';
     const rawAllocatedTo = allocatedToCol >= 0 ? row[allocatedToCol] : '';
+    const rawCategory = categoryCol >= 0 ? row[categoryCol] : '';
 
     const cleanAddress = rawAddress ? rawAddress.trim().replace(/^["']|["']$/g, '') : (isRealEstate ? 'Location Not Specified' : 'Address On Record');
     const pincode = rawPincode ? rawPincode.trim().replace(/^["']|["']$/g, '') : (extractPincode(cleanAddress) || undefined);
     const defaultName = isRealEstate ? `Property Owner ${primaryPhone.slice(-4)}` : `Subscriber ${primaryPhone.slice(-4)}`;
+
+    let cleanCategory: string | undefined = undefined;
+    if (rawCategory && rawCategory.trim()) {
+      const catTrim = rawCategory.trim().replace(/^["']|["']$/g, '');
+      const catLow = catTrim.toLowerCase();
+      if (catLow.includes('comm') || catLow.includes('office') || catLow.includes('shop') || catLow.includes('retail') || catLow.includes('showroom') || catLow.includes('warehouse') || catLow.includes('godown')) {
+        cleanCategory = 'Commercial';
+      } else if (catLow.includes('res') || catLow.includes('flat') || catLow.includes('apt') || catLow.includes('house') || catLow.includes('villa') || catLow.includes('plot') || catLow.includes('builder')) {
+        cleanCategory = 'Residential';
+      } else {
+        cleanCategory = catTrim.charAt(0).toUpperCase() + catTrim.slice(1);
+      }
+    }
+    // Never assume or default category — use only what is present in the file
 
     valid.push({
       phone: primaryPhone,
@@ -495,6 +514,7 @@ export function parseAudienceCsv(csvText: string, isRealEstate?: boolean): Audie
       alternate_phone: alternatePhones[0] || undefined,
       name: rawName ? rawName.trim().replace(/^["']|["']$/g, '') : defaultName,
       address: cleanAddress,
+      category: cleanCategory,
       cust_email: rawEmail ? rawEmail.trim().replace(/^["']|["']$/g, '') : undefined,
       customer_identifier: rawIdentifier ? rawIdentifier.trim().replace(/^["']|["']$/g, '') : undefined,
       account_no: rawAccountNo ? rawAccountNo.trim().replace(/^["']|["']$/g, '') : (rawIdentifier ? rawIdentifier.trim().replace(/^["']|["']$/g, '') : undefined),
@@ -560,11 +580,17 @@ export function downloadSampleCsv(): void {
 export function getCampaignAudienceSampleCsvContent(isRealEstate?: boolean): string {
   if (isRealEstate) {
     return [
-      'Customer Name,Mobile,Email,Address',
-      'Vikramaditya Singhania,9811122233,vikram@example.com,"DLF The Camellias, Golf Course Road, Gurgaon Sector 42"',
-      'Ananya Deshmukh,9845012345,ananya@example.com,"100ft Road, Indiranagar, Bengaluru"',
-      'Rajesh Khandelwal,9820098765,rajesh@example.com,"Tower 4, Purvanchal Royal City, Greater Noida"',
-      'Mayank Ojha,7412034540,mayank@example.com,"Estate Green, JMD Megapolis Sector 81, Gurgaon"',
+      'Owner/Occupier Name,Mobile No.,Category,Location 1',
+      'Sangeeta Ashok Lalwani,2016754570,Residential,"GURUGRAM, Surat Nagar Phase 2"',
+      'Shubhra Goel,2016825538,Residential,"GURUGRAM, Uppal Southend"',
+      'Divya Kumar,2019176626,Residential,"GURUGRAM, ATS Kocoon"',
+      'Parminder Singh Pental,2062556344,Residential,"GURUGRAM, Sector 66"',
+      'Priya Bains,2064869288,Residential,"GURUGRAM, Sector 66"',
+      'Vinesh Kumar Tyagi,2242299025,Residential,"GURUGRAM, SECTOR 45"',
+      'Chandra Shekhar,2245204066,Residential,"GURUGRAM, Heritage One"',
+      'Nalin Kishore,2406882581,Residential,"GURUGRAM, South City 1"',
+      'Srilatha Nana,3025210194,Residential,"GURUGRAM, Sushant Lok Phase 3"',
+      'Sandeep Mohan,3065015440,Residential,"GURUGRAM, Uniworld Garden-II"',
     ].join('\n');
   }
 

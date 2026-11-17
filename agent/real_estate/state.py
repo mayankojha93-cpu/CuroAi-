@@ -31,6 +31,7 @@ class RealEstateState:
         preferred_language: str = "en",
         direction: str = "outbound",
         property_location: str = "",
+        category: Optional[str] = None,
     ):
         self.call_id = call_id
         self.lead_id = lead_id
@@ -73,9 +74,6 @@ class RealEstateState:
         # High-level intent & category
         # intent: 'sale' | 'lease' | None
         self.intent: Optional[str] = None
-        # category: 'residential' | 'commercial' | None
-        self.category: Optional[str] = None
-
         # Property detail slots (matching script 4.1 - 4.4)
         self.unit_number: Optional[str] = None
         self.floor_number: Optional[str] = None
@@ -88,6 +86,22 @@ class RealEstateState:
         self.is_currently_leased: Optional[bool] = None
         self.current_rent_received: Optional[str] = None
         self.immediate_occupancy: Optional[bool] = None
+
+        # category: 'residential' | 'commercial' | None (strictly from file or explicit caller confirmation)
+        cat_clean = str(category).lower().strip() if category else None
+        if cat_clean and cat_clean not in ("none", "null", "undefined", ""):
+            if any(k in cat_clean for k in ("comm", "office", "shop", "retail", "showroom", "warehouse", "godown")):
+                self.category = "commercial"
+                for ct in ("office space", "office", "retail shop", "shop", "showroom", "warehouse", "godown"):
+                    if ct in cat_clean:
+                        self.commercial_type = ct.title()
+                        break
+            elif any(k in cat_clean for k in ("res", "flat", "apartment", "house", "villa", "plot", "kothi", "bhk", "studio")):
+                self.category = "residential"
+            else:
+                self.category = cat_clean
+        else:
+            self.category = None
 
         # Details the customer said they don't know / can't share (never re-asked)
         self.skipped_fields: set = set()

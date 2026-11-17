@@ -5,6 +5,8 @@ export interface RealEstateLead {
   phone: string;
   alternate_phone?: string | null;
   email?: string | null;
+  property_location?: string | null;
+  category?: string | null;
   preferred_language: string;
   lead_status: string;
   current_disposition?: string | null;

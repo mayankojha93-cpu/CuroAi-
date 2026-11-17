@@ -471,8 +471,9 @@ async def entrypoint(ctx: agents.JobContext):
     phone = metadata.get("phone", "")
     owner_name = metadata.get("customerName") or metadata.get("ownerName", "")
     raw_loc = (metadata.get("propertyLocation") or metadata.get("address") or metadata.get("location") or metadata.get("customerAddress") or "").strip()
+    raw_category = (metadata.get("category") or metadata.get("propertyCategory") or "").strip()
 
-    if call_id and (not phone or not owner_name or not raw_loc):
+    if call_id and (not phone or not owner_name or not raw_loc or not raw_category):
         def _fetch_call_info():
             try:
                 res = requests.get(
@@ -493,6 +494,9 @@ async def entrypoint(ctx: agents.JobContext):
             backend_loc = (c_data.get("property_location") or c_data.get("propertyLocation") or c_data.get("customer_address") or c_data.get("address") or "").strip()
             if backend_loc and not raw_loc:
                 raw_loc = backend_loc
+            backend_cat = (c_data.get("re_category") or c_data.get("category") or "").strip()
+            if backend_cat and not raw_category:
+                raw_category = backend_cat
 
     clean_owner = (owner_name or "").strip()
     if not clean_owner or clean_owner.lower() in ("property owner", "test subscriber", "test customer", "none", "null", "undefined", "customer"):
@@ -624,6 +628,7 @@ async def entrypoint(ctx: agents.JobContext):
         preferred_language=preferred_language,
         direction=direction,
         property_location=property_location,
+        category=raw_category,
     )
 
     recorder = RoomAudioRecorder(call_id=call_id) if call_id else None

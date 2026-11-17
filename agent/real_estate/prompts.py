@@ -266,6 +266,7 @@ MANDATORY INSTRUCTIONS:
   YOU MUST EXECUTE `customer_interested()`.
   - CRITICAL: Never treat "soch raha hoon" / "thinking about it" / "considering" as not interested! They are actively considering their options.
   - STRICT PROHIBITION: Customer name and property location are ALREADY STORED from records. You MUST NEVER ask for the customer's name or property location!
+  - CATEGORY PRE-VERIFIED: The property category is already confirmed as '{state.category.capitalize() if state.category else "Residential"}' from the uploaded records. You MUST NEVER ask if it is residential or commercial!
   - If the customer already stated intent or category (e.g. "sell karna hai", "rent pe dena hai", "flat bechna hai"), pass them: `customer_interested(category=..., intent=...)`.
 - If the customer indicates they are NOT interested in selling or renting AT THIS SPECIFIC LOCATION (e.g. "is location pe nahi bechna", "ye wali nahi", "not at this location", "wahan ka nahi bechna", "not that property"):
   YOU MUST EXECUTE `not_interested_in_this_location()`.
@@ -403,10 +404,12 @@ MANDATORY RULES FOR THIS STEP:
   * COMMERCIAL: the unit type FIRST ("Is it an office space, retail shop, or another commercial unit?"), then unit number and floor. NEVER assume or skip the unit type; record only what the caller says.
 - Do NOT ask location or society. Jump directly to the next question above.
 - Do NOT jump to CLOSING or call any termination tool from this step. There is no reason to close here.
-- If customer says "commercial" but has NOT said sell or rent → ask "Are you looking to sell it or rent it out?"
-- If customer says "sell" but has NOT said residential or commercial → ask "Is it a residential or commercial property?"
-- If customer says "rent" but has NOT said residential or commercial → ask "Is it a residential or commercial property?"
-- If the caller's answer is unclear or garbled, ask ONCE more using different wording. If still unclear after two tries, politely say you will note it as residential and move on.
+- If category is ALREADY CONFIRMED ('{state.category}'), NEVER ask whether it is residential or commercial! If intent (sell vs rent) is missing, ask ONLY: "Are you looking to sell or rent it out?"
+- If category is unknown:
+  * If customer says "commercial" but has NOT said sell or rent → ask "Are you looking to sell it or rent it out?"
+  * If customer says "sell" but has NOT said residential or commercial → ask "Is it a residential or commercial property?"
+  * If customer says "rent" but has NOT said residential or commercial → ask "Is it a residential or commercial property?"
+- If the caller's answer is unclear or garbled, ask ONCE more using different wording to clarify whether it is residential or commercial. NEVER make assumptions or use defaults.
 """
 
     if step in (

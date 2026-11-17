@@ -65,6 +65,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
   const [propertyLocation, setPropertyLocation] = useState(() =>
     isRealEstate ? 'DLF Phase 5, Sector 54, Gurgaon' : ''
   );
+  const [propertyCategory, setPropertyCategory] = useState<'Residential' | 'Commercial' | 'Not Specified'>('Residential');
   const [companyName, setCompanyName] = useState(() =>
     isRealEstate ? 'My Estate Finder' : 'Airtel Telecom'
   );
@@ -191,6 +192,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
         voice_pipeline: selectedPipeline,
         property_location: propertyLocation.trim() || undefined,
         address: propertyLocation.trim() || undefined,
+        category: isRealEstate && propertyCategory !== 'Not Specified' ? propertyCategory : undefined,
       });
 
       setFeedback({
@@ -668,7 +670,37 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                 />
               </div>
 
-
+              {/* Field: Property Category (Real Estate Pipeline) */}
+              {isRealEstate && (
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.82rem', color: '#38BDF8', fontWeight: 600, marginBottom: 8 }}>
+                    Property Category
+                  </label>
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    {(['Residential', 'Commercial', 'Not Specified'] as const).map((cat) => (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() => setPropertyCategory(cat)}
+                        style={{
+                          flex: 1,
+                          padding: '9px 10px',
+                          borderRadius: 8,
+                          background: propertyCategory === cat ? 'rgba(56, 189, 248, 0.2)' : '#070A12',
+                          border: propertyCategory === cat ? '1px solid #38BDF8' : '1px solid rgba(255, 255, 255, 0.1)',
+                          color: propertyCategory === cat ? '#38BDF8' : '#94A3B8',
+                          fontSize: '0.82rem',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          transition: 'all 0.15s ease',
+                        }}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Two columns: Script and Language */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
