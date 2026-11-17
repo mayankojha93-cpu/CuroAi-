@@ -176,6 +176,7 @@ const testCallSchema = {
     service_end_date: z.string().optional().default('2026-08-27'),
     r_date: z.string().optional().default('2026-08-29'),
     language: z.string().optional().default('en'),
+    category: z.string().optional(),
   }),
 };
 
@@ -224,6 +225,7 @@ callsRouter.post(
           language: req.body.language,
           property_location: propertyLocation,
           address: propertyLocation,
+          category: req.body.category ? String(req.body.category).trim() : undefined,
           notes: `Test Call: ${req.body.script || 'My Estate Finder'}${propertyLocation ? ` | Location: ${propertyLocation}` : ''}`,
         });
 

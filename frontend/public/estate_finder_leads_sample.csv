@@ -1,6 +1,11 @@
-Customer Name,Mobile,Email,Address
-Vikramaditya Singhania,9811122233,vikram@example.com,"DLF The Camellias, Golf Course Road, Gurgaon Sector 42"
-Ananya Deshmukh,9845012345,ananya@example.com,"100ft Road, Indiranagar, Bengaluru"
-Rajesh Khandelwal,9820098765,rajesh@example.com,"Tower 4, Purvanchal Royal City, Greater Noida"
-Mayank Ojha,7412034540,mayank@example.com,"Estate Green, JMD Megapolis Sector 81, Gurgaon"
-
+Owner/Occupier Name,Mobile No.,Category,Location 1
+Sangeeta Ashok Lalwani,2016754570,Residential,"GURUGRAM, Surat Nagar Phase 2"
+Shubhra Goel,2016825538,Residential,"GURUGRAM, Uppal Southend"
+Divya Kumar,2019176626,Residential,"GURUGRAM, ATS Kocoon"
+Parminder Singh Pental,2062556344,Residential,"GURUGRAM, Sector 66"
+Priya Bains,2064869288,Residential,"GURUGRAM, Sector 66"
+Vinesh Kumar Tyagi,2242299025,Residential,"GURUGRAM, SECTOR 45"
+Chandra Shekhar,2245204066,Residential,"GURUGRAM, Heritage One"
+Nalin Kishore,2406882581,Residential,"GURUGRAM, South City 1"
+Srilatha Nana,3025210194,Residential,"GURUGRAM, Sushant Lok Phase 3"
+Sandeep Mohan,3065015440,Residential,"GURUGRAM, Uniworld Garden-II"

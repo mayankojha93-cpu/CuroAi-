@@ -898,7 +898,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
                 }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(56, 189, 248, 0.2)')}
                 onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)')}
-                title={isRealEstate ? "Download Estate Finder CSV format sample (Customer Name, Mobile, Email, Address)" : "Download CSV format template"}
+                title={isRealEstate ? "Download Estate Finder CSV format sample (Owner/Occupier Name, Mobile No., Category, Location 1)" : "Download CSV format template"}
               >
                 <Download size={13} />
                 <span>Download CSV Format</span>

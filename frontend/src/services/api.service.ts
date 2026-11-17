@@ -124,6 +124,7 @@ export interface TestCallInput {
   voice_pipeline?: string;
   address?: string;
   property_location?: string;
+  category?: string;
   account_no?: string;
   subs_del_no?: string;
   service_end_date?: string;

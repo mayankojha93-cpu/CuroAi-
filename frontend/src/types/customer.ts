@@ -22,6 +22,7 @@ export interface Customer {
   allocated_to?: string | null;
   check_status?: string | null;
   product_name?: string | null;
+  category?: string | null;
   total_attempts: number;
   max_attempts: number;
   next_attempt_time?: string | null;
@@ -54,4 +55,5 @@ export interface CustomerCreateInput {
   circle_new20?: string;
   allocated_to?: string;
   product_name?: string;
+  category?: string;
 }

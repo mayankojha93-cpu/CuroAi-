@@ -99,6 +99,7 @@ export class RealEstateCallService {
     property_location?: string;
     address?: string;
     notes?: string;
+    category?: string | null;
   }) {
     const normalizedPhone = normalizePhone(data.phone);
     if (!normalizedPhone || normalizedPhone.replace(/\D/g, '').length < 10) {
@@ -142,6 +143,12 @@ export class RealEstateCallService {
     const rawLang = (data.language || 'en').trim().toLowerCase();
     const cleanLang = (rawLang === 'hi' || rawLang === 'hindi' || rawLang.startsWith('hi-') || rawLang === 'hinglish') ? 'hi' : 'en';
 
+    const rawCat = (data.category || '').trim();
+    let cleanCat: string | null = null;
+    if (rawCat) {
+      cleanCat = rawCat.toLowerCase().includes('comm') ? 'commercial' : (rawCat.toLowerCase().includes('res') ? 'residential' : rawCat.slice(0, 32));
+    }
+
     // Reuse existing lead or create new lead
     const existingLead = await query(`SELECT * FROM real_estate_leads WHERE phone = $1 LIMIT 1`, [normalizedPhone]);
     let lead: any;
@@ -162,20 +169,21 @@ export class RealEstateCallService {
          SET owner_name = COALESCE($1, owner_name),
              preferred_language = $2,
              notes = COALESCE($3, notes),
+             category = COALESCE($4, category),
              total_attempts = COALESCE(total_attempts, 0) + 1,
              last_called_at = NOW(),
              updated_at = NOW()
-         WHERE id = $4
+         WHERE id = $5
          RETURNING *`,
-        [ownerName, cleanLang, data.notes || 'Developer Test Call', existingLead.rows[0].id]
+        [ownerName, cleanLang, data.notes || 'Developer Test Call', cleanCat, existingLead.rows[0].id]
       );
       lead = upd.rows[0];
     } else {
       const ins = await query(
-        `INSERT INTO real_estate_leads (owner_name, phone, preferred_language, notes, total_attempts, max_attempts, last_called_at)
-         VALUES ($1, $2, $3, $4, 1, 3, NOW())
+        `INSERT INTO real_estate_leads (owner_name, phone, preferred_language, notes, category, total_attempts, max_attempts, last_called_at)
+         VALUES ($1, $2, $3, $4, $5, 1, 3, NOW())
          RETURNING *`,
-        [ownerName || 'Property Owner', normalizedPhone, cleanLang, data.notes || 'Developer Test Call']
+        [ownerName || 'Property Owner', normalizedPhone, cleanLang, data.notes || 'Developer Test Call', cleanCat]
       );
       lead = ins.rows[0];
     }
@@ -186,12 +194,12 @@ export class RealEstateCallService {
     const insertCall = await query(
       `INSERT INTO calls (
          id, re_lead_id, status, call_status, attempt_number, room_name, direction,
-         script, company_name, voice_pipeline, is_test_call, pipeline, language, initial_language, language_switched
+         script, company_name, voice_pipeline, is_test_call, pipeline, language, initial_language, language_switched, category
        )
        VALUES ($1, $2, 'initiated', 'initiated', $3, $4, 'outbound',
-               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Priya - hi/en)', TRUE, 'real_estate', $5, $5, FALSE)
+               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Priya - hi/en)', TRUE, 'real_estate', $5, $5, FALSE, $6)
        RETURNING *`,
-      [callId, lead?.id || null, lead?.total_attempts || 1, roomName, cleanLang]
+      [callId, lead?.id || null, lead?.total_attempts || 1, roomName, cleanLang, lead?.category || cleanCat]
     );
     const call = insertCall.rows[0];
 
@@ -254,17 +262,17 @@ export class RealEstateCallService {
        RETURNING total_attempts`,
       [leadId]
     );
-    const attempt = updLead.rows[0].total_attempts;
+    const attempt = updLead.rows[0]?.total_attempts ?? (Number(lead.total_attempts || 0) + 1);
 
     const insCall = await query(
       `INSERT INTO calls (
          id, re_lead_id, campaign_id, status, call_status, attempt_number, room_name, direction,
-         script, company_name, voice_pipeline, pipeline, language, initial_language, language_switched
+         script, company_name, voice_pipeline, pipeline, language, initial_language, language_switched, category
        )
        VALUES ($1, $2, $3, 'initiated', 'initiated', $4, $5, 'outbound',
-               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Priya - hi/en)', 'real_estate', $6, $6, FALSE)
+               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Priya - hi/en)', 'real_estate', $6, $6, FALSE, $7)
        RETURNING *`,
-      [callId, leadId, lead.campaign_id, attempt, roomName, lead.preferred_language || 'en']
+      [callId, leadId, lead.campaign_id, attempt, roomName, lead.preferred_language || 'en', lead.category || null]
     );
     const call = insCall.rows[0];
 
@@ -295,6 +303,7 @@ export class RealEstateCallService {
         : null;
 
       const effectiveLocation = (propertyLocation || lead?.property_location || '').trim() || null;
+      const effectiveCategory = lead?.category || null;
 
       const metaPayload = JSON.stringify({
         callId,
@@ -308,6 +317,8 @@ export class RealEstateCallService {
         address: effectiveLocation,
         location: effectiveLocation,
         customerAddress: effectiveLocation,
+        category: effectiveCategory,
+        propertyCategory: effectiveCategory,
       });
 
       await this.roomService.createRoom({

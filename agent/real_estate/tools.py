@@ -486,11 +486,24 @@ class RealEstateTools:
         # Location is known! Check if category and intent are established
         if not (self.state.category and self.state.intent):
             await self._go(RealEstateStep.CATEGORY_SELECT)
-            q = (
-                "Is it a residential or commercial property? And are you looking to sell or rent it out?"
-                if self.state.reply_lang == "en"
-                else "Ye residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
-            )
+            if self.state.category and not self.state.intent:
+                q = (
+                    "Are you looking to sell or rent it out?"
+                    if self.state.reply_lang == "en"
+                    else "Aap ise sell karna chahte hain, ya rent par dena?"
+                )
+            elif self.state.intent and not self.state.category:
+                q = (
+                    "Is it a residential or commercial property?"
+                    if self.state.reply_lang == "en"
+                    else "Ye residential property hai ya commercial?"
+                )
+            else:
+                q = (
+                    "Is it a residential or commercial property? And are you looking to sell or rent it out?"
+                    if self.state.reply_lang == "en"
+                    else "Ye residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
+                )
             return self._fast(q, f"Ask category and intent: '{q}'", ack=None)
 
         # Location, category, and intent are all established -> Proceed to intake branch and ask unit/floor
@@ -593,7 +606,10 @@ class RealEstateTools:
             )
 
         await self._go(RealEstateStep.CATEGORY_SELECT)
-        if self.state.intent:
+        if self.state.category and not self.state.intent:
+            int_q = "Are you looking to sell or rent it out?" if self.state.reply_lang == "en" else "Aap ise sell karna chahte hain, ya rent par dena?"
+            return self._fast(int_q, f"Recorded owner name: {self.state.owner_name_confirmed}. Property category is {self.state.category}. Now ask intent: '{int_q}'", ack="auto")
+        if self.state.intent and not self.state.category:
             return f"Recorded owner name: {self.state.owner_name_confirmed}. Now ask if the property is residential or commercial."
         return f"Recorded owner name: {self.state.owner_name_confirmed}. Now ask if the property is residential or commercial, and whether they want to sell or rent it."
 

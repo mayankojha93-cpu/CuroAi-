@@ -1451,7 +1451,9 @@ export class CallService {
                   OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%flat%'
                   OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%apartment%'
                   THEN 'residential'
-                ELSE NULL
+                WHEN LOWER(COALESCE(rl.category, c.category, '')) = 'commercial' THEN 'commercial'
+                WHEN LOWER(COALESCE(rl.category, c.category, '')) = 'residential' THEN 'residential'
+                ELSE COALESCE(rl.category, c.category, NULL)
               END as re_category,
               rp.intent as re_intent,
               rp.project_or_society as re_project_or_society, rp.sector_or_location as re_sector_or_location,
@@ -1611,7 +1613,9 @@ export class CallService {
                   OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%flat%'
                   OR LOWER(COALESCE(ro.agent_summary, '')) LIKE '%apartment%'
                   THEN 'residential'
-                ELSE NULL
+                WHEN LOWER(COALESCE(rl.category, c.category, '')) = 'commercial' THEN 'commercial'
+                WHEN LOWER(COALESCE(rl.category, c.category, '')) = 'residential' THEN 'residential'
+                ELSE COALESCE(rl.category, c.category, NULL)
               END as re_category,
               rp.intent as re_intent,
               rp.project_or_society as re_project_or_society, rp.sector_or_location as re_sector_or_location,

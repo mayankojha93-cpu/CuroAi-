@@ -316,14 +316,21 @@ export class CampaignService {
           const allocatedTo = item.allocated_to || null;
           const checkStatus = item.check_status || item.check || null;
 
+          const rawCategory = (item.category || '').trim();
+          let category: string | null = null;
+          if (rawCategory) {
+            const low = rawCategory.toLowerCase();
+            category = low.includes('comm') ? 'commercial' : (low.includes('res') ? 'residential' : rawCategory.slice(0, 32));
+          }
+
           const productName = campaignPipeline === 'real_estate' ? 'My Estate Finder' : 'Airtel IP TV';
           await pool.query(
             `INSERT INTO customers (
                name, phone, address, language, total_attempts, max_attempts, next_attempt_time, campaign_id,
                subs_del_no, cust_email, customer_identifier, service_end_date, r_date, alternate_phones, alternate_phone,
-               account_no, pincode, zone, town_flag, service_city, disconnection_reason, circle_new, circle_new20, allocated_to, check_status, product_name
+               account_no, pincode, zone, town_flag, service_city, disconnection_reason, circle_new, circle_new20, allocated_to, check_status, product_name, category
              )
-             VALUES ($1, $2, $3, $4, 0, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+             VALUES ($1, $2, $3, $4, 0, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
              ON CONFLICT (phone)
              DO UPDATE SET
                campaign_id = EXCLUDED.campaign_id,
@@ -334,6 +341,7 @@ export class CampaignService {
                next_attempt_time = NOW(),
                name = CASE WHEN EXCLUDED.name != 'Airtel Subscriber' AND EXCLUDED.name NOT LIKE 'Contact %' THEN EXCLUDED.name ELSE customers.name END,
                address = CASE WHEN EXCLUDED.address != 'Address On Record' THEN EXCLUDED.address ELSE customers.address END,
+               category = COALESCE(EXCLUDED.category, customers.category),
                subs_del_no = COALESCE(EXCLUDED.subs_del_no, customers.subs_del_no),
                cust_email = COALESCE(EXCLUDED.cust_email, customers.cust_email),
                customer_identifier = COALESCE(EXCLUDED.customer_identifier, customers.customer_identifier),
@@ -377,6 +385,7 @@ export class CampaignService {
               allocatedTo,
               checkStatus,
               productName,
+              category,
             ]
           );
 
@@ -385,14 +394,15 @@ export class CampaignService {
               `INSERT INTO real_estate_leads (
                  id, campaign_id, owner_name, phone, alternate_phone, email, preferred_language,
                  lead_status, current_disposition, total_attempts, max_attempts, next_attempt_time,
-                 property_location, notes
+                 property_location, category, notes
                )
-               VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'NEW', 'Pending Outreach', 0, $7, NOW(), $8, $9)
+               VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'NEW', 'Pending Outreach', 0, $7, NOW(), $8, $9, $10)
                ON CONFLICT (phone)
                DO UPDATE SET
                  campaign_id = EXCLUDED.campaign_id,
                  owner_name = CASE WHEN EXCLUDED.owner_name IS NOT NULL AND TRIM(EXCLUDED.owner_name) != '' AND EXCLUDED.owner_name != 'Airtel Subscriber' AND EXCLUDED.owner_name NOT LIKE 'Contact %' THEN EXCLUDED.owner_name ELSE real_estate_leads.owner_name END,
                  property_location = CASE WHEN EXCLUDED.property_location IS NOT NULL AND TRIM(EXCLUDED.property_location) != '' THEN EXCLUDED.property_location ELSE real_estate_leads.property_location END,
+                 category = COALESCE(EXCLUDED.category, real_estate_leads.category),
                  preferred_language = EXCLUDED.preferred_language,
                  max_attempts = EXCLUDED.max_attempts,
                  email = COALESCE(EXCLUDED.email, real_estate_leads.email),
@@ -411,6 +421,7 @@ export class CampaignService {
                 custLang,
                 retryAttempts,
                 address,
+                category,
                 `Imported into Real Estate Campaign: ${campaign.name || 'Property Intake'}`,
               ]
             );
@@ -692,6 +703,7 @@ export class CampaignService {
           rl.phone as contact_phone,
           COALESCE(rl.property_location, 'Real Estate Owner') as contact_ref,
           COALESCE(rl.property_location, 'Location On Record') as address,
+          rl.category as category,
           rl.email,
           COALESCE(rl.preferred_language, 'en') as language,
           COALESCE(call_counts.count, 0)::INT as attempts,
@@ -975,14 +987,21 @@ export class CampaignService {
         const allocatedTo = entry.allocated_to || null;
         const checkStatus = entry.check_status || entry.check || null;
 
+        const rawCategory = (entry.category || '').trim();
+        let category: string | null = null;
+        if (rawCategory) {
+          const low = rawCategory.toLowerCase();
+          category = low.includes('comm') ? 'commercial' : (low.includes('res') ? 'residential' : rawCategory.slice(0, 32));
+        }
+
         const productName = campaign.pipeline === 'real_estate' ? 'My Estate Finder' : 'Airtel IP TV';
         const ins = await pool.query(
           `INSERT INTO customers (
              name, phone, address, language, total_attempts, max_attempts, next_attempt_time, campaign_id,
              subs_del_no, cust_email, customer_identifier, service_end_date, r_date, alternate_phones, alternate_phone,
-             account_no, pincode, zone, town_flag, service_city, disconnection_reason, circle_new, circle_new20, allocated_to, check_status, product_name
+             account_no, pincode, zone, town_flag, service_city, disconnection_reason, circle_new, circle_new20, allocated_to, check_status, product_name, category
            )
-           VALUES ($1, $2, $3, $4, 0, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+           VALUES ($1, $2, $3, $4, 0, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
            ON CONFLICT (phone)
            DO UPDATE SET
              campaign_id = EXCLUDED.campaign_id,
@@ -993,6 +1012,7 @@ export class CampaignService {
              next_attempt_time = NOW(),
              name = CASE WHEN EXCLUDED.name != 'Airtel Subscriber' AND EXCLUDED.name NOT LIKE 'Contact %' THEN EXCLUDED.name ELSE customers.name END,
              address = CASE WHEN EXCLUDED.address != 'Address On Record' THEN EXCLUDED.address ELSE customers.address END,
+             category = COALESCE(EXCLUDED.category, customers.category),
              subs_del_no = COALESCE(EXCLUDED.subs_del_no, customers.subs_del_no),
              cust_email = COALESCE(EXCLUDED.cust_email, customers.cust_email),
              customer_identifier = COALESCE(EXCLUDED.customer_identifier, customers.customer_identifier),
@@ -1037,6 +1057,7 @@ export class CampaignService {
             allocatedTo,
             checkStatus,
             productName,
+            category,
           ]
         );
 
@@ -1045,14 +1066,15 @@ export class CampaignService {
             `INSERT INTO real_estate_leads (
                id, campaign_id, owner_name, phone, alternate_phone, email, preferred_language,
                lead_status, current_disposition, total_attempts, max_attempts, next_attempt_time,
-               property_location, notes
+               property_location, category, notes
              )
-             VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'NEW', 'Pending Outreach', 0, $7, NOW(), $8, $9)
+             VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'NEW', 'Pending Outreach', 0, $7, NOW(), $8, $9, $10)
              ON CONFLICT (phone)
              DO UPDATE SET
                campaign_id = EXCLUDED.campaign_id,
                owner_name = CASE WHEN EXCLUDED.owner_name IS NOT NULL AND TRIM(EXCLUDED.owner_name) != '' AND EXCLUDED.owner_name != 'Airtel Subscriber' AND EXCLUDED.owner_name NOT LIKE 'Contact %' THEN EXCLUDED.owner_name ELSE real_estate_leads.owner_name END,
                property_location = CASE WHEN EXCLUDED.property_location IS NOT NULL AND TRIM(EXCLUDED.property_location) != '' THEN EXCLUDED.property_location ELSE real_estate_leads.property_location END,
+               category = COALESCE(EXCLUDED.category, real_estate_leads.category),
                preferred_language = EXCLUDED.preferred_language,
                max_attempts = EXCLUDED.max_attempts,
                email = COALESCE(EXCLUDED.email, real_estate_leads.email),
@@ -1071,6 +1093,7 @@ export class CampaignService {
               custLang,
               retryAttempts,
               address,
+              category,
               `Imported into Real Estate Campaign: ${campaign.name || 'Property Intake'}`,
             ]
           );
@@ -1129,7 +1152,7 @@ export class CampaignService {
           rl.current_disposition,
           rl.total_attempts,
           rl.created_at as lead_created_at,
-          rp.category,
+          COALESCE(rp.category, rl.category) as category,
           rp.intent,
           rp.project_or_society,
           rp.sector_or_location,
