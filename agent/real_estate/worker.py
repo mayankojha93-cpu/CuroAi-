@@ -343,13 +343,13 @@ def _apply_disconnect_disposition(state: RealEstateState):
         state.agent_summary = state.agent_summary or "Call disconnected before the customer answered"
         return
     state.callee_connected = True
-    if state.final_disposition in ("Abruptly Disconnected Call", "Not Connected (No Answer)"):
-        if state.is_interested:
-            state.final_disposition = "Interested (Disconnected)"
-        elif state.project_or_society or state.category:
-            state.final_disposition = "Partial Details Captured (Disconnected)"
-        else:
-            state.final_disposition = "Abruptly Disconnected Call"
+    if state.final_disposition in (
+        "Abruptly Disconnected Call",
+        "Not Connected (No Answer)",
+        "Interested (Disconnected)",
+        "Partial Details Captured (Disconnected)",
+    ):
+        state.final_disposition = "Abruptly Disconnected Call"
 
 
 def post_re_outcome_sync(state: RealEstateState) -> bool:

@@ -1056,6 +1056,7 @@ ${dialogueText.slice(0, 4000)}`;
       else if (canonicalDisp === 'Do Not Call') leadStatus = 'DNC';
       else if (canonicalDisp === 'Wrong Number') leadStatus = 'WRONG_NUMBER';
       else if (canonicalDisp === 'Not Connected (No Answer)') leadStatus = 'NO_ANSWER';
+      else if (canonicalDisp === 'Abruptly Disconnected Call') leadStatus = 'DISCONNECTED';
 
       await query(
         `UPDATE real_estate_leads

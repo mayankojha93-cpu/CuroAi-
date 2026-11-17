@@ -143,17 +143,31 @@ export function matchRealEstateDisposition(
     return 'Not Interested';
   }
 
-  // 7. Qualified Lead: requires positive interest and complete qualification
-  // NEVER classify as Qualified Lead simply because "residential" or "commercial" appeared in text
+  // 7. Abrupt Disconnect (Runs BEFORE Qualified Lead: if call was disconnected/hung up early, it is NEVER a qualified lead!)
   if (
-    upper.includes('QUALIFIED') ||
+    upper.includes('DISCONNECT') ||
+    upper.includes('ABRUPT') ||
+    upper.includes('DROPPED') ||
+    upper.includes('HANGUP') ||
+    upper.includes('HUNG UP') ||
+    upper.includes('PARTIAL') ||
+    upper.includes('CUT')
+  ) {
+    return 'Abruptly Disconnected Call';
+  }
+
+  // 8. Qualified Lead: requires positive interest and complete qualification without early disconnect
+  // NEVER classify as Qualified Lead simply because "residential", "commercial", or partial details appeared
+  if (
+    upper === 'QUALIFIED LEAD' ||
+    upper === 'QUALIFIED' ||
     upper.includes('INTAKE COMPLETE') ||
-    upper.includes('DETAILS CAPTURED')
+    upper === 'ALL DETAILS CAPTURED'
   ) {
     return 'Qualified Lead';
   }
 
-  // 8. Technical: Not Connected / No Answer (only when call duration is 0s)
+  // 9. Technical: Not Connected / No Answer (only when call duration is 0s)
   if (
     duration === 0 && (
       statusUpper === 'NO ANSWER' ||
@@ -167,16 +181,6 @@ export function matchRealEstateDisposition(
     )
   ) {
     return 'Not Connected (No Answer)';
-  }
-
-  // 9. Abrupt Disconnect
-  if (
-    upper.includes('DISCONNECT') ||
-    upper.includes('ABRUPT') ||
-    upper.includes('DROPPED') ||
-    upper.includes('PARTIAL')
-  ) {
-    return 'Abruptly Disconnected Call';
   }
 
   // Safe fallback based on call duration:
