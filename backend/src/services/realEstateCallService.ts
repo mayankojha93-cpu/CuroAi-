@@ -1095,8 +1095,8 @@ ${dialogueText.slice(0, 4000)}`;
           `UPDATE campaigns
            SET successful_calls = successful_calls + 1,
                remaining_calls = GREATEST(0, remaining_calls - 1),
-               unique_called = (SELECT COUNT(DISTINCT COALESCE(re_lead_id::text, customer_id::text, phone)) FROM calls WHERE campaign_id = $1),
-               progress_percent = LEAST(100, ROUND(((SELECT COUNT(DISTINCT COALESCE(re_lead_id::text, customer_id::text, phone)) FROM calls WHERE campaign_id = $1)::numeric / GREATEST(total_contacts, 1)::numeric) * 100)),
+               unique_called = (SELECT COUNT(DISTINCT COALESCE(re_lead_id::text, customer_id::text, id::text)) FROM calls WHERE campaign_id = $1),
+               progress_percent = LEAST(100, ROUND(((SELECT COUNT(DISTINCT COALESCE(re_lead_id::text, customer_id::text, id::text)) FROM calls WHERE campaign_id = $1)::numeric / GREATEST(total_contacts, 1)::numeric) * 100)),
                updated_at = NOW()
            WHERE id = $1`,
           [campId]
@@ -1106,8 +1106,8 @@ ${dialogueText.slice(0, 4000)}`;
           `UPDATE campaigns
            SET failed_calls = failed_calls + 1,
                remaining_calls = GREATEST(0, remaining_calls - 1),
-               unique_called = (SELECT COUNT(DISTINCT COALESCE(re_lead_id::text, customer_id::text, phone)) FROM calls WHERE campaign_id = $1),
-               progress_percent = LEAST(100, ROUND(((SELECT COUNT(DISTINCT COALESCE(re_lead_id::text, customer_id::text, phone)) FROM calls WHERE campaign_id = $1)::numeric / GREATEST(total_contacts, 1)::numeric) * 100)),
+               unique_called = (SELECT COUNT(DISTINCT COALESCE(re_lead_id::text, customer_id::text, id::text)) FROM calls WHERE campaign_id = $1),
+               progress_percent = LEAST(100, ROUND(((SELECT COUNT(DISTINCT COALESCE(re_lead_id::text, customer_id::text, id::text)) FROM calls WHERE campaign_id = $1)::numeric / GREATEST(total_contacts, 1)::numeric) * 100)),
                updated_at = NOW()
            WHERE id = $1`,
           [campId]
@@ -1115,8 +1115,8 @@ ${dialogueText.slice(0, 4000)}`;
       } else {
         await query(
           `UPDATE campaigns
-           SET unique_called = (SELECT COUNT(DISTINCT COALESCE(re_lead_id::text, customer_id::text, phone)) FROM calls WHERE campaign_id = $1),
-               progress_percent = LEAST(100, ROUND(((SELECT COUNT(DISTINCT COALESCE(re_lead_id::text, customer_id::text, phone)) FROM calls WHERE campaign_id = $1)::numeric / GREATEST(total_contacts, 1)::numeric) * 100)),
+           SET unique_called = (SELECT COUNT(DISTINCT COALESCE(re_lead_id::text, customer_id::text, id::text)) FROM calls WHERE campaign_id = $1),
+               progress_percent = LEAST(100, ROUND(((SELECT COUNT(DISTINCT COALESCE(re_lead_id::text, customer_id::text, id::text)) FROM calls WHERE campaign_id = $1)::numeric / GREATEST(total_contacts, 1)::numeric) * 100)),
                updated_at = NOW()
            WHERE id = $1`,
           [campId]
