@@ -166,18 +166,18 @@ def is_standalone_from_speech(text: Any) -> bool:
 def other_property_question(lang: str) -> str:
     """Scenario B: asked right after the caller refuses the property at the given location."""
     return (
-        "Understood. Do you have any other property you would like to sell or rent?"
+        "Understood, Sir... Do you have any other property in mind that you might want to sell or rent out?"
         if lang == "en"
-        else "Ji, samajh gayi. Kya aapki koi doosri property hai, jise aap sell ya rent karna chahte hain?"
+        else "Samajh gayi Sir... Kya aapki koi doosri property hai, jise aap sell ya rent out karna chahte hain?"
     )
 
 
 def ask_new_location_question(lang: str) -> str:
     """Scenario B2: asked when the caller says they have another property."""
     return (
-        "Great! Which area or sector is that property in?"
+        "Great, Sir! Which area or sector is that property in?"
         if lang == "en"
-        else "Achha, wo property kis area ya sector mein hai?"
+        else "Achha ji... wo property kis area ya sector mein hai?"
     )
 
 
@@ -219,11 +219,31 @@ class RealEstateTools:
         self._last_ack = ""
 
     # ── Fast reply helper (skips the 2nd LLM call after a tool) ─────────────
-    # Human feel: a wider pool, picked at random but never the same word twice in a row.
-    _ACK_HI = ("Achha.", "Theek hai.", "Okay.", "Haan ji.", "Samajh gayi.", "Got it.", "Ji, noted.", "Bilkul.", "Achha, theek hai.")
-    _ACK_EN = ("Got it.", "Sure.", "Okay.", "Alright.", "Understood.", "Great.", "Okay, noted.", "Right.", "Thanks.")
-    _SHORT_ACK_HI = ("achha", "theek hai", "perfect", "noted", "great", "bilkul")
-    _SHORT_ACK_EN = ("got it", "perfect", "noted", "great", "okay", "alright")
+    # Human feel: natural Indian sales affirmations with breathing pauses (commas/ellipses)
+    # Never ends with a blunt period, so TTS doesn't drop pitch mechanically.
+    _ACK_HI = (
+        "Achha ji, ",
+        "Haanji Sir... ",
+        "Theek hai ji, ",
+        "Samajh gayi Sir... ",
+        "Ji noted Sir, ",
+        "Bilkul Sir, ",
+        "Achha, theek hai ji... ",
+        "Right Sir, noted... ",
+        "Perfect Sir, ",
+    )
+    _ACK_EN = (
+        "Got it, Sir... ",
+        "Sure thing, ",
+        "Alright, Sir... ",
+        "Understood, Sir... ",
+        "Great, Sir! ",
+        "Right, noted Sir... ",
+        "Perfect, Sir... ",
+        "Okay, great... ",
+    )
+    _SHORT_ACK_HI = ("achha ji", "theek hai ji", "perfect Sir", "noted ji", "great Sir", "bilkul Sir")
+    _SHORT_ACK_EN = ("got it, Sir", "perfect, Sir", "noted, Sir", "great, Sir", "alright, Sir")
 
     def _pick(self, pool):
         """Random choice that never repeats the previous acknowledgement (same opening word every turn
@@ -242,9 +262,9 @@ class RealEstateTools:
             return fallback
         en = self.state.reply_lang == "en"
         if echo:
-            # "3 BHK, achha." / "704 on 7th floor, perfect."  -> sounds like someone actually listened
+            # "3 BHK... perfect Sir. " / "704 on 7th floor... noted Sir. " -> sounds like an attentive real person
             short = self._pick(self._SHORT_ACK_EN if en else self._SHORT_ACK_HI)
-            ack = f"{echo[:1].upper()}{echo[1:]}, {short}."
+            ack = f"{echo[:1].upper()}{echo[1:]}... {short}."
         elif ack == "auto":
             ack = self._pick(self._ACK_EN if en else self._ACK_HI)
         text = f"{ack} {question}".strip() if ack else question
