@@ -41,6 +41,10 @@ SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
 STT_LANGUAGE = os.getenv("STT_LANGUAGE", "hi-IN").strip() or "hi-IN"
 TTS_LANGUAGE_HI = os.getenv("TTS_LANGUAGE_HI", "hi-IN")
 TTS_LANGUAGE_EN = os.getenv("TTS_LANGUAGE_EN", "en-IN")
+TTS_MODEL = os.getenv("TTS_MODEL", "bulbul:v3")
+TTS_SPEAKER = os.getenv("TTS_SPEAKER", "priya")
+TTS_PACE = float(os.getenv("TTS_PACE", "1.02"))
+TTS_TEMPERATURE = float(os.getenv("TTS_TEMPERATURE", "0.6"))
 
 
 DIRECT_SPEAK = os.getenv("DIRECT_SPEAK", "1") == "1"
