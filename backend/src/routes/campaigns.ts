@@ -76,6 +76,12 @@ const updateRetrySchema = {
   }),
 };
 
+const deleteCampaignSchema = {
+  params: z.object({
+    id: z.string().uuid({ message: 'Campaign ID must be a valid UUID' }),
+  }),
+};
+
 /**
  * GET /api/campaigns - List all voice campaigns with optional status and search filtering
  */
@@ -306,19 +312,23 @@ campaignsRouter.get('/api/campaigns/:id/dispositions', async (req: Request, res:
 /**
  * DELETE /api/campaigns/:id - Delete campaign
  */
-campaignsRouter.delete('/api/campaigns/:id', async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const id = String(req.params.id);
-    const existing = await campaignService.getCampaign(id, req.user?.assigned_pipeline);
-    if (!existing) {
-      return res.status(404).json({ error: 'Campaign not found' });
+campaignsRouter.delete(
+  '/api/campaigns/:id',
+  validateRequest(deleteCampaignSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = String(req.params.id);
+      const existing = await campaignService.getCampaign(id, req.user?.assigned_pipeline);
+      if (!existing) {
+        return res.status(404).json({ error: 'Campaign not found' });
+      }
+      const deleted = await campaignService.deleteCampaign(id);
+      if (!deleted) {
+        return res.status(404).json({ error: 'Campaign not found' });
+      }
+      return res.json({ success: true, message: 'Campaign deleted successfully' });
+    } catch (err) {
+      return next(err);
     }
-    const deleted = await campaignService.deleteCampaign(id);
-    if (!deleted) {
-      return res.status(404).json({ error: 'Campaign not found' });
-    }
-    return res.json({ success: true, message: 'Campaign deleted successfully' });
-  } catch (err) {
-    return next(err);
   }
-});
+);
