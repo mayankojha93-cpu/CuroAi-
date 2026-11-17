@@ -60,13 +60,13 @@ TTS_SPEAKER    = os.getenv("REAL_ESTATE_TTS_SPEAKER",    "priya")
 TTS_SPEAKER_HI = os.getenv("REAL_ESTATE_TTS_SPEAKER_HI", TTS_SPEAKER)
 TTS_SPEAKER_EN = os.getenv("REAL_ESTATE_TTS_SPEAKER_EN", TTS_SPEAKER)
 
-DEFAULT_LANGUAGE = os.getenv("REAL_ESTATE_DEFAULT_LANGUAGE", "en")
+DEFAULT_LANGUAGE = os.getenv("REAL_ESTATE_DEFAULT_LANGUAGE", "hi")
 
 # TTS Delivery Dynamics
-# 0.98 = natural, human-paced conversational flow. Tune with REAL_ESTATE_TTS_PACE.
-TTS_PACE = float(os.getenv("REAL_ESTATE_TTS_PACE", "0.98"))
-# 0.85 = expressive natural variation in intonation (less monotone / robotic)
-TTS_TEMPERATURE = float(os.getenv("REAL_ESTATE_TTS_TEMPERATURE", "0.85"))
+# Pace: 1.0–1.05 (1.02 = natural, human-paced conversational flow). Tune with REAL_ESTATE_TTS_PACE.
+TTS_PACE = float(os.getenv("REAL_ESTATE_TTS_PACE", "1.02"))
+# Temperature: 0.6 (crisp, focused synthesis). Tune with REAL_ESTATE_TTS_TEMPERATURE.
+TTS_TEMPERATURE = float(os.getenv("REAL_ESTATE_TTS_TEMPERATURE", "0.6"))
 
 # ── LLM provider ──────────────────────────────────────────────────────────────
 # LLM TTFT is the biggest part of a turn. OpenRouter adds a routing hop and its TTFT swings 0.7-2.4s.
