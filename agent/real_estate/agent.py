@@ -31,6 +31,11 @@ def _call_open(buf: str) -> bool:
     return any(buf.count(a) > buf.count(b) for a, b in (("(", ")"), ("{", "}"), ("<", ">")))
 
 
+def _soften_tts_phrase(s: str) -> str:
+    """Soften abrupt single-word affirmations so the TTS engine speaks smoothly with natural breathing pauses."""
+    return re.sub(r'^(Achha|Theek hai|Haanji|Haan ji|Samajh gayi|Got it|Sure|Perfect|Noted|Understood|Alright|Right)\.\s*', r'\1, ', s, flags=re.I)
+
+
 logger = logging.getLogger("real-estate-agent")
 
 # ── Recovery for "tool call typed as plain text" ──────────────────────────────
@@ -908,13 +913,13 @@ class RealEstateAgent(Agent):
             async for chunk in text:
                 buf += chunk
                 if not _call_open(buf) and buf.rstrip().endswith((".", "?", "!", "\u0964")):
-                    out, buf = _clean_leaks(buf), ""
+                    out, buf = _soften_tts_phrase(_clean_leaks(buf)), ""
                     if out.strip():
                         _q = _extract_question(out)
                         if _q:
                             self._re_state.last_agent_question = _q   # for "repeat that"
                         yield out
-            out = _clean_leaks(buf)
+            out = _soften_tts_phrase(_clean_leaks(buf))
             if out.strip():
                 _q = _extract_question(out)
                 if _q:
