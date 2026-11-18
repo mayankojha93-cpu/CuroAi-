@@ -33,6 +33,7 @@ for _name in ("livekit.plugins.sarvam", "livekit.plugins.sarvam.log", "livekit.p
 
 # Agent Name registered on LiveKit Server
 AGENT_NAME = os.getenv("REAL_ESTATE_AGENT_NAME", "my-estate-finder-agent")
+AGENT_PERSONA_NAME = os.getenv("REAL_ESTATE_PERSONA_NAME", "Kavitha")
 
 # LLM Configuration
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
@@ -53,10 +54,10 @@ TTS_LANGUAGE_HI = os.getenv("TTS_LANGUAGE_HI", "hi-IN")
 TTS_LANGUAGE_EN = os.getenv("TTS_LANGUAGE_EN", "en-IN")
 
 # TTS Model & Speaker
-# Using bulbul:v3 with speaker 'priya' (verified 100% Indian female voice, same as 1st pipeline)
-# In bulbul:v3, 'priya' and 'simran' natively speak both Hindi ('hi-IN') and English ('en-IN')
-TTS_MODEL      = os.getenv("REAL_ESTATE_TTS_MODEL",      "bulbul:v3")
-TTS_SPEAKER    = os.getenv("REAL_ESTATE_TTS_SPEAKER",    "priya")
+# Using bulbul:v4-flash for ultra-fast conversational response (sub-250ms TTFB)
+# Speaker 'kavitha_te_conversation' delivers natural, expressive Indian female delivery for both English & Hindi
+TTS_MODEL      = os.getenv("REAL_ESTATE_TTS_MODEL",      "bulbul:v4-flash")
+TTS_SPEAKER    = os.getenv("REAL_ESTATE_TTS_SPEAKER",    "kavitha_te_conversation")
 TTS_SPEAKER_HI = os.getenv("REAL_ESTATE_TTS_SPEAKER_HI", TTS_SPEAKER)
 TTS_SPEAKER_EN = os.getenv("REAL_ESTATE_TTS_SPEAKER_EN", TTS_SPEAKER)
 

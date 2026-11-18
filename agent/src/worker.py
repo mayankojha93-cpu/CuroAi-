@@ -25,6 +25,7 @@ from src.config import (
     TTS_LANGUAGE_EN,
     TTS_MODEL,
     TTS_SPEAKER,
+    PERSONA_NAME,
     TTS_PACE,
     TTS_TEMPERATURE,
 )
@@ -527,7 +528,7 @@ async def entrypoint(ctx: agents.JobContext):
                 if content_str and not is_raw_tool_json(content_str):
                     timing_tracker["last_activity_time"] = time.time()
                     logger.info(f"🤖 [Agent]: \"{content_str}\"")
-                    print(f"\n\033[1;36m[{datetime.now().strftime('%H:%M:%S')}] 🤖 [Agent (Priya)]:\033[0m \033[1;37m{content_str}\033[0m\n", flush=True)
+                    print(f"\n\033[1;36m[{datetime.now().strftime('%H:%M:%S')}] 🤖 [Agent ({PERSONA_NAME})]:\033[0m \033[1;37m{content_str}\033[0m\n", flush=True)
                     state.add_transcript("assistant", content_str)
 
                 # Terminal state reached and the LLM (not a direct-speak tool) spoke the closing line:
@@ -625,27 +626,27 @@ async def entrypoint(ctx: agents.JobContext):
         if state.reply_lang == "en":
             if not is_generic:
                 opening_line = (
-                    f"Hello {customer_name}, welcome to Airtel. I am Priya. Have you called regarding your Wi-Fi router pickup or account?"
+                    f"Hello {customer_name}, welcome to Airtel. I am {PERSONA_NAME}. Have you called regarding your Wi-Fi router pickup or account?"
                 )
             else:
                 opening_line = (
-                    "Hello, welcome to Airtel. I am Priya. How may I assist you today?"
+                    f"Hello, welcome to Airtel. I am {PERSONA_NAME}. How may I assist you today?"
                 )
         else:
             if not is_generic:
                 opening_line = (
-                    f"नमस्ते {customer_name} जी, एयरटेल में आपका स्वागत है। मैं प्रिया बोल रही हूँ। क्या आपने अपने वाई-फाई राउटर पिकअप या अकाउंट के संबंध में कॉल किया है?"
+                    f"नमस्ते {customer_name} जी, एयरटेल में आपका स्वागत है। मैं {PERSONA_NAME} बोल रही हूँ। क्या आपने अपने वाई-फाई राउटर पिकअप या अकाउंट के संबंध में कॉल किया है?"
                 )
             else:
                 opening_line = (
-                    "नमस्ते, एयरटेल में आपका स्वागत है। मैं प्रिया बोल रही हूँ। मैं आपकी क्या मदद कर सकती हूँ?"
+                    f"नमस्ते, एयरटेल में आपका स्वागत है। मैं {PERSONA_NAME} बोल रही हूँ। मैं आपकी क्या मदद कर सकती हूँ?"
                 )
     else:
         _n = (customer_name or "").lower().strip()
         if state.reply_lang == "en":
             who = "the registered Airtel Wi-Fi customer" if not _n or any(t in _n for t in ["customer", "subscriber", "user", "airtel", "client"]) else f"{customer_name}"
             opening_line = (
-                f"Hello, I am Priya calling from Airtel. Am I speaking with {who}?"
+                f"Hello, I am {PERSONA_NAME} calling from Airtel. Am I speaking with {who}?"
             )
         else:
             if not _n or any(t in _n for t in ["customer", "subscriber", "user", "airtel", "client"]):
@@ -653,7 +654,7 @@ async def entrypoint(ctx: agents.JobContext):
             else:
                 who = f"{customer_name} जी"
             opening_line = (
-                f"नमस्ते, मैं प्रिया बोल रही हूँ, एयरटेल की तरफ से। क्या मैं {who} से बात कर रही हूँ?"
+                f"नमस्ते, मैं {PERSONA_NAME} बोल रही हूँ, एयरटेल की तरफ से। क्या मैं {who} से बात कर रही हूँ?"
             )
 
     # 6. Start the session. The greeting is queued immediately, so the TTS request goes out the moment the audio
@@ -665,7 +666,7 @@ async def entrypoint(ctx: agents.JobContext):
 
     logger.info(f"Speaking opening line ({direction}): {opening_line}")
     state.add_transcript("assistant", opening_line)
-    print(f"\n\033[1;36m[{datetime.now().strftime('%H:%M:%S')}] 🤖 [Agent (Priya)]:\033[0m \033[1;37m{opening_line}\033[0m\n", flush=True)
+    print(f"\n\033[1;36m[{datetime.now().strftime('%H:%M:%S')}] 🤖 [Agent ({PERSONA_NAME})]:\033[0m \033[1;37m{opening_line}\033[0m\n", flush=True)
     # Uninterruptible: a hold/IVR announcement or early 'hello' must not cut the greeting off mid-sentence.
     opening_speech = session.say(opening_line, allow_interruptions=False)
 

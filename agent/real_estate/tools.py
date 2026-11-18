@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Any, Union
 from livekit.agents import function_tool
 from .state import RealEstateState, RealEstateStep
 from .prompts import get_step_instructions, get_closing_text
-from .config import FAST_TOOL_REPLY
+from .config import FAST_TOOL_REPLY, AGENT_PERSONA_NAME
 
 logger = logging.getLogger("real-estate-tools")
 
@@ -361,7 +361,7 @@ class RealEstateTools:
             self.log_dialogue_func("assistant", text)
         else:
             self.state.add_transcript("assistant", text)
-            print(f"\n\033[1;36m🤖 [Agent (Priya)]:\033[0m {text}\n", flush=True)
+            print(f"\n\033[1;36m🤖 [Agent ({AGENT_PERSONA_NAME})]:\033[0m {text}\n", flush=True)
             logger.info(f"🤖 [Agent]: \"{text}\"")
 
         async def _run():
