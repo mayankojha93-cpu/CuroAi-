@@ -351,11 +351,17 @@ def _apply_disconnect_disposition(state: RealEstateState):
     if getattr(state, "ivr_detected", False):
         _apply_ivr_disposition(state)
         return
+
+    is_answered = getattr(state, "answered_at", None) is not None or getattr(state, "callee_connected", False)
     has_customer_speech = any(t.get("role") == "customer" for t in state.transcript)
-    if not has_customer_speech:
+
+    # Only mark "No Answer" if the callee never answered the phone (ringing timeout / rejected while ringing)
+    if not is_answered and not has_customer_speech:
         state.final_disposition = "Not Connected (No Answer)"
-        state.agent_summary = state.agent_summary or "Call disconnected before customer answered"
+        state.agent_summary = state.agent_summary or "Call unanswered by recipient within timeout period"
         return
+
+    # Callee answered the phone (connected, duration > 0)
     state.callee_connected = True
     if state.final_disposition in (
         "Abruptly Disconnected Call",
@@ -364,6 +370,10 @@ def _apply_disconnect_disposition(state: RealEstateState):
         "Partial Details Captured (Disconnected)",
     ):
         state.final_disposition = "Abruptly Disconnected Call"
+        if not has_customer_speech:
+            state.agent_summary = state.agent_summary or "Customer answered the call but hung up during introduction"
+        else:
+            state.agent_summary = state.agent_summary or "Customer hung up abruptly during the call"
 
 
 def post_re_outcome_sync(state: RealEstateState) -> bool:
