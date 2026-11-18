@@ -1021,6 +1021,9 @@ ${dialogueText.slice(0, 4000)}`;
     } else if (canonicalDisp === 'Wrong Number') {
       mappedStatus = 'failed';
       failureReason = failureReason || 'Wrong Number';
+    } else if (canonicalDisp === 'Voicemail or IVR Detected') {
+      mappedStatus = 'failed';
+      failureReason = failureReason || 'IVR / voicemail detected: no human answered';
     }
 
     await query(
@@ -1067,7 +1070,7 @@ ${dialogueText.slice(0, 4000)}`;
       else if (canonicalDisp === 'Not Interested') leadStatus = 'NOT_INTERESTED';
       else if (canonicalDisp === 'Do Not Call') leadStatus = 'DNC';
       else if (canonicalDisp === 'Wrong Number') leadStatus = 'WRONG_NUMBER';
-      else if (canonicalDisp === 'Not Connected (No Answer)') leadStatus = 'NO_ANSWER';
+      else if (canonicalDisp === 'Not Connected (No Answer)' || canonicalDisp === 'Voicemail or IVR Detected') leadStatus = 'NO_ANSWER';
       else if (canonicalDisp === 'Abruptly Disconnected Call') leadStatus = 'DISCONNECTED';
 
       // Check retry eligibility

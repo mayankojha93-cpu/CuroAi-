@@ -13,6 +13,7 @@ export const REAL_ESTATE_CANONICAL_DISPOSITIONS = [
   'Wrong Number',
   'Not Connected (No Answer)',
   'Abruptly Disconnected Call',
+  'Voicemail or IVR Detected',
 ] as const;
 
 export type RealEstateCanonicalDisposition = typeof REAL_ESTATE_CANONICAL_DISPOSITIONS[number];
@@ -37,6 +38,7 @@ export const ACTIONABLE_RE_DISPOSITIONS: RealEstateCanonicalDisposition[] = [
   'WhatsApp Info Requested',
   'Not Connected (No Answer)',
   'Abruptly Disconnected Call',
+  'Voicemail or IVR Detected',
 ];
 
 /**
@@ -66,16 +68,24 @@ export function matchRealEstateDisposition(
     return 'Pending Outreach' as any;
   }
 
-  // If call connected and lasted 5+ seconds, it is not "No Answer" even if caller hung up silently
-  if (duration >= 5 && (upper === 'NOT CONNECTED (NO ANSWER)' || upper.includes('NO ANSWER') || upper.includes('NOT CONNECTED'))) {
-    return 'Abruptly Disconnected Call';
-  }
-
   // Exact canonical match check
   const exact = REAL_ESTATE_CANONICAL_DISPOSITIONS.find(
     (c) => c.toLowerCase() === text.toLowerCase() || c.toUpperCase() === upper
   );
   if (exact) return exact;
+
+  // 0. Voicemail / IVR / carrier announcement (no human on the line)
+  if (
+    upper.includes('VOICEMAIL') ||
+    upper.includes('VOICE MAIL') ||
+    /\bIVR\b/.test(upper) ||
+    upper.includes('ANSWERING MACHINE') ||
+    upper.includes('CARRIER ANNOUNCEMENT') ||
+    upper.includes('CARRIER MESSAGE') ||
+    upper.includes('AUTOMATED MESSAGE')
+  ) {
+    return 'Voicemail or IVR Detected';
+  }
 
   // 1. Do Not Call (DNC) - Highest priority suppression check
   if (
@@ -200,4 +210,3 @@ export function matchRealEstateDisposition(
 
   return 'Not Connected (No Answer)';
 }
-
