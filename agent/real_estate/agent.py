@@ -10,6 +10,24 @@ from .state import RealEstateState, RealEstateStep as _Step
 from .config import CHAT_CTX_MAX_ITEMS, FAST_TOOL_REPLY, FASTPATH_ENABLED
 from .fastpath import extract as _fastpath_extract
 
+# Extra IVR / voicemail phrases (English + Hinglish + Devanagari). Used IN ADDITION to src.carrier_filter so that
+# menus / voicemail prompts the carrier filter misses are still caught instead of being answered by the LLM.
+_IVR_EXTRA = re.compile(
+    r"(after\s+the\s+(tone|beep)|at\s+the\s+tone|leave\s+(a\s+|your\s+)*(message|voicemail)|record\s+your\s+message|"
+    r"voice\s*mail|mail\s*box|press\s+(star|hash|pound|\d)|to\s+(repeat|go\s+back)\s+press|"
+    r"is\s+not\s+(available|reachable|answering)|not\s+reachable|switched\s+off|currently\s+(busy|unavailable)|"
+    r"please\s+(stay|hold|wait)\s+on\s+the\s+line|(beep|tone)\s+ke\s+baad|sandesh\s+(chhod|record)|message\s+record|"
+    r"(abhi|is\s*samay)\s+(vyast|uplabdh)|dabayein|dabaye|"
+    r"\u092c\u0940\u092a|\u091f\u094b\u0928\s*\u0915\u0947\s*\u092c\u093e\u0926|"
+    r"\u0909\u092a\u0932\u092c\u094d\u0927\s*\u0928\u0939\u0940\u0902|\u092a\u0939\u0941\u0902\u091a\s*\u0938\u0947\s*\u092c\u093e\u0939\u0930|\u0938\u094d\u0935\u093f\u091a\s*\u0911\u092b)",
+    re.I,
+)
+# A real person answering the greeting rarely speaks this many words twice in a row; a looping IVR menu does.
+_IVR_LONG_WORDS = 30
+# While the IVR drop timer is running, only a SHORT reply counts as a human (long text is more IVR).
+_IVR_HUMAN_MAX_WORDS = 15
+
+
 # Leak patterns for tool-call text that the LLM sometimes types instead of calling the tool.
 _LEAK_PATTERNS = [
     re.compile(r'<function[^>]*>.*?(?:</function>|$)', re.S),               # <function=x>{...}</function>
@@ -407,6 +425,7 @@ class RealEstateAgent(Agent):
         self.on_language_change = None
         self._ivr_task: Optional[asyncio.Task] = None
         self._ivr_kind: Optional[str] = None
+        self._ivr_long_turns = 0
         super().__init__(
             instructions=get_step_instructions(state),
             tools=tools_instance.tools_for_step(state.step),
@@ -449,6 +468,16 @@ class RealEstateAgent(Agent):
             raise StopResponse()
         text = (getattr(new_message, "text_content", None) or "").strip()
         kind = classify_carrier_message(text)
+        if not kind and _IVR_EXTRA.search(text):
+            kind = "voicemail"
+        if not kind:
+            # Looping IVR menus / voicemail greetings: long speech turns back to back while still at the intro
+            if len(text.split()) >= _IVR_LONG_WORDS and self._re_state.step == _Step.INTRODUCTION:
+                self._ivr_long_turns += 1
+            else:
+                self._ivr_long_turns = 0
+            if self._ivr_long_turns >= 2:
+                kind = "voicemail"
         if kind:
             logger.warning(f"📵 Carrier announcement ({kind}) detected: '{text[:100]}'")
             if self._ivr_task is None or self._ivr_task.done():
@@ -457,6 +486,9 @@ class RealEstateAgent(Agent):
             raise StopResponse()
 
         if self._ivr_task and not self._ivr_task.done():
+            if len(text.split()) > _IVR_HUMAN_MAX_WORDS:
+                logger.info(f"📵 Long speech while IVR timer is running - treating as IVR, staying silent: '{text[:80]}'")
+                raise StopResponse()
             logger.info("🗣️ Human speech detected; cancelling 5s IVR drop timer.")
             self._ivr_task.cancel()
             self._ivr_task = None
