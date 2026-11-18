@@ -1,6 +1,7 @@
 import json
 import time
 import asyncio
+from typing import Optional
 from datetime import datetime
 from livekit import agents
 from livekit.agents import AgentSession, Agent, AgentServer, TurnHandlingOptions
@@ -319,21 +320,42 @@ async def entrypoint(ctx: agents.JobContext):
 
     tools_instance.on_terminal = _hangup_after
 
-    def _end_as_voicemail(text: str):
-        """A voicemail / not-reachable greeting answered: no human to talk to. Close as VOICEMAIL (backend retries)."""
+    ivr_drop_task: Optional[asyncio.Task] = None
+
+    def _schedule_ivr_drop(kind: str, text: str):
+        nonlocal ivr_drop_task
         if state.is_completed:
             return
-        state.is_completed = True
-        state.final_disposition = "VOICEMAIL"
-        state.customer_note = f"Voicemail / not-reachable announcement detected: {text[:120]}"
-        state.transition_to(Step.TERMINATED)
-        _cancel_timers()
-        logger.warning("📼 Voicemail / not-reachable announcement detected. Ending call as VOICEMAIL.")
-        try:
-            session.interrupt(force=True)  # do not keep talking into a voicemail box
-        except Exception:
-            pass
-        asyncio.create_task(clean_hangup(ctx, session, state))
+        if ivr_drop_task and not ivr_drop_task.done():
+            return
+
+        async def _do_drop():
+            try:
+                logger.info(f"⏳ Waiting 5s before dropping call due to carrier IVR ({kind})...")
+                await asyncio.sleep(5.0)
+                if state.is_completed:
+                    return
+                logger.warning(f"⏰ 5s IVR wait completed for ({kind}). Ending call.")
+                state.is_completed = True
+                if kind == "hold":
+                    state.final_disposition = "DISCONNECTED"
+                    state.customer_note = "Call placed on hold by subscriber; timed out after 5s waiting for human."
+                else:
+                    state.final_disposition = "VOICEMAIL"
+                    state.customer_note = f"Voicemail / not-reachable announcement detected: {text[:120]}"
+                state.transition_to(Step.TERMINATED)
+                _cancel_timers()
+                try:
+                    session.interrupt(force=True)
+                except Exception:
+                    pass
+                await clean_hangup(ctx, session, state)
+            except asyncio.CancelledError:
+                logger.info(f"IVR 5s drop timer cancelled for ({kind}).")
+            except Exception as e:
+                logger.warning(f"Error in IVR drop task: {e}")
+
+        ivr_drop_task = asyncio.create_task(_do_drop())
 
     # Transcripts & Metrics Hooks
     @session.on("user_input_transcribed")
@@ -349,11 +371,17 @@ async def entrypoint(ctx: agents.JobContext):
         carrier_kind = classify_carrier_message(raw_text)
         if carrier_kind:
             if is_final:
-                logger.warning(f"📵 Carrier announcement ({carrier_kind}) ignored: \"{raw_text.strip()[:120]}\"")
+                logger.warning(f"📵 Carrier announcement ({carrier_kind}) detected: \"{raw_text.strip()[:120]}\"")
                 state.add_transcript("system", f"[carrier announcement: {carrier_kind}] {raw_text.strip()}")
-                if carrier_kind == "voicemail":
-                    _end_as_voicemail(raw_text)
+                _schedule_ivr_drop(carrier_kind, raw_text)
             return
+
+        # Legitimate human speech arrived: cancel pending IVR drop timer
+        nonlocal ivr_drop_task
+        if ivr_drop_task and not ivr_drop_task.done():
+            logger.info("🗣️ Human speech detected! Cancelling 5s IVR drop timer.")
+            ivr_drop_task.cancel()
+            ivr_drop_task = None
 
         timing_tracker["last_activity_time"] = time.time()
 

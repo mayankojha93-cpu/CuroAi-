@@ -249,8 +249,9 @@ Politely acknowledge their time, invoke `book_advisor_handoff(reason="Customer i
         salutation_hi = f"Hello {name_call} ji" if name_call != "Sir" else "Hello Sir"
 
         if loc:
-            parts = [p.strip() for p in loc.split(",") if p.strip()]
-            spoken_loc = f"{parts[0]} in {parts[1]}" if len(parts) >= 2 else parts[0]
+            clean_loc = loc.split(";")[0].strip()
+            parts = [p.strip() for p in clean_loc.split(",") if p.strip()]
+            spoken_loc = f"{parts[1]}, {parts[0]}" if len(parts) >= 2 else (parts[0] if parts else clean_loc)
             intro_text = (
                 f'Initial greeting to speak in English: "{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. I\'m calling about your property in {spoken_loc}... Were you looking to sell or rent it out?"'
                 if state.reply_lang == "en"
