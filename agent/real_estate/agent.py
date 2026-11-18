@@ -2,6 +2,7 @@ import re
 import json
 import asyncio
 import logging
+from typing import Optional
 from livekit.agents import Agent, StopResponse
 from src.carrier_filter import classify_carrier_message
 from .prompts import get_step_instructions
@@ -404,10 +405,33 @@ class RealEstateAgent(Agent):
         self._re_state = state
         self._re_tools = tools_instance
         self.on_language_change = None
+        self._ivr_task: Optional[asyncio.Task] = None
+        self._ivr_kind: Optional[str] = None
         super().__init__(
             instructions=get_step_instructions(state),
             tools=tools_instance.tools_for_step(state.step),
         )
+
+    async def _wait_and_drop_ivr(self, kind: str, text: str):
+        try:
+            logger.info(f"⏳ Waiting 5s before dropping call due to carrier IVR ({kind})...")
+            await asyncio.sleep(5.0)
+            if self._re_state.hangup_started:
+                return
+            logger.warning(f"⏰ 5s IVR wait completed for ({kind}). Dropping call now.")
+            if kind == "hold":
+                self._re_state.final_disposition = "Abruptly Disconnected Call"
+                self._re_state.agent_summary = "Call placed on hold by callee; timed out after 5s waiting for human."
+            else:
+                self._re_state.final_disposition = "Not Connected (No Answer)"
+                self._re_state.agent_summary = f"Carrier announcement / voicemail detected: {text[:100]}"
+
+            if self._re_tools.hangup_func:
+                await self._re_tools.hangup_func()
+        except asyncio.CancelledError:
+            logger.info(f"IVR 5s drop timer cancelled for ({kind}).")
+        except Exception as e:
+            logger.warning(f"Error in IVR drop task: {e}")
 
     async def sync_step(self):
         """Sync instructions and available tools when step changes."""
@@ -426,8 +450,17 @@ class RealEstateAgent(Agent):
         text = (getattr(new_message, "text_content", None) or "").strip()
         kind = classify_carrier_message(text)
         if kind:
-            logger.warning(f"📵 Carrier announcement ({kind}) ignored: '{text[:100]}'")
+            logger.warning(f"📵 Carrier announcement ({kind}) detected: '{text[:100]}'")
+            if self._ivr_task is None or self._ivr_task.done():
+                self._ivr_kind = kind
+                self._ivr_task = asyncio.create_task(self._wait_and_drop_ivr(kind, text))
             raise StopResponse()
+
+        if self._ivr_task and not self._ivr_task.done():
+            logger.info("🗣️ Human speech detected; cancelling 5s IVR drop timer.")
+            self._ivr_task.cancel()
+            self._ivr_task = None
+            self._ivr_kind = None
 
         state = self._re_state
         state.last_user_text = text

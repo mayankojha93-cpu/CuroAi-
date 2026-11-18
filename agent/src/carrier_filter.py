@@ -23,7 +23,7 @@ _HOLD_PATTERNS = [
     r"please (stay|remain|hold) on the line",
     r"stay on the line",
     r"please hold the line",
-    # Hindi / Marathi announcement forms
+    # Hindi / Marathi announcement forms (Devanagari and Latin script)
     r"कॉल को होल्ड",
     r"कॉल होल्ड",
     r"होल्ड (पे|पर) रखा",
@@ -31,6 +31,10 @@ _HOLD_PATTERNS = [
     r"लाईनवर रहा",
     r"लाइन पर बने रहें",
     r"कृपया लाइन पर",
+    r"line par bane rahe",
+    r"kripya line par",
+    r"call (ko )?hold par",
+    r"hold (pe|par) rakha",
 ]
 
 _VOICEMAIL_PATTERNS = [
@@ -44,7 +48,8 @@ _VOICEMAIL_PATTERNS = [
     r"number you (have )?(dialed|dialled|called)",
     r"person you (are|have) (calling|called|dialed|dialled)",
     r"is currently (unavailable|not available)",
-    # Hindi
+    r"temporarily (unavailable|disconnected|out of service)",
+    # Hindi / Regional (Devanagari and Latin script)
     r"पहुँच से बाहर",
     r"पहुंच से बाहर",
     r"स्विच(्ड)? ऑफ",
@@ -54,6 +59,10 @@ _VOICEMAIL_PATTERNS = [
     r"संदेश छोड़",
     r"बीप के बाद",
     r"कृपया अपना संदेश",
+    r"network (kshetra|area) se bahar",
+    r"pahunch se bahar",
+    r"beep ke baad",
+    r"sandesh chhod",
 ]
 
 _HOLD_RE = re.compile("|".join(f"(?:{p})" for p in _HOLD_PATTERNS), re.IGNORECASE)

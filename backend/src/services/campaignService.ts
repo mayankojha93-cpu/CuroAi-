@@ -404,7 +404,7 @@ export class CampaignService {
                DO UPDATE SET
                  campaign_id = EXCLUDED.campaign_id,
                  owner_name = CASE WHEN EXCLUDED.owner_name IS NOT NULL AND TRIM(EXCLUDED.owner_name) != '' AND EXCLUDED.owner_name != 'Airtel Subscriber' AND EXCLUDED.owner_name NOT LIKE 'Contact %' THEN EXCLUDED.owner_name ELSE real_estate_leads.owner_name END,
-                 property_location = CASE WHEN EXCLUDED.property_location IS NOT NULL AND TRIM(EXCLUDED.property_location) != '' THEN EXCLUDED.property_location ELSE real_estate_leads.property_location END,
+                 property_location = CASE WHEN EXCLUDED.property_location IS NOT NULL AND TRIM(EXCLUDED.property_location) != '' AND EXCLUDED.property_location NOT IN ('Location Not Specified', 'Address On Record') THEN EXCLUDED.property_location ELSE real_estate_leads.property_location END,
                  category = COALESCE(EXCLUDED.category, real_estate_leads.category),
                  preferred_language = EXCLUDED.preferred_language,
                  max_attempts = EXCLUDED.max_attempts,
@@ -1123,7 +1123,7 @@ export class CampaignService {
              current_disposition = 'Pending Outreach',
              next_attempt_time = NOW(),
              name = CASE WHEN EXCLUDED.name != 'Airtel Subscriber' AND EXCLUDED.name NOT LIKE 'Contact %' THEN EXCLUDED.name ELSE customers.name END,
-             address = CASE WHEN EXCLUDED.address != 'Address On Record' THEN EXCLUDED.address ELSE customers.address END,
+             address = CASE WHEN EXCLUDED.address != 'Address On Record' AND EXCLUDED.address != 'Location Not Specified' THEN EXCLUDED.address ELSE customers.address END,
              category = COALESCE(EXCLUDED.category, customers.category),
              subs_del_no = COALESCE(EXCLUDED.subs_del_no, customers.subs_del_no),
              cust_email = COALESCE(EXCLUDED.cust_email, customers.cust_email),
@@ -1185,7 +1185,7 @@ export class CampaignService {
              DO UPDATE SET
                campaign_id = EXCLUDED.campaign_id,
                owner_name = CASE WHEN EXCLUDED.owner_name IS NOT NULL AND TRIM(EXCLUDED.owner_name) != '' AND EXCLUDED.owner_name != 'Airtel Subscriber' AND EXCLUDED.owner_name NOT LIKE 'Contact %' THEN EXCLUDED.owner_name ELSE real_estate_leads.owner_name END,
-               property_location = CASE WHEN EXCLUDED.property_location IS NOT NULL AND TRIM(EXCLUDED.property_location) != '' THEN EXCLUDED.property_location ELSE real_estate_leads.property_location END,
+               property_location = CASE WHEN EXCLUDED.property_location IS NOT NULL AND TRIM(EXCLUDED.property_location) != '' AND EXCLUDED.property_location NOT IN ('Location Not Specified', 'Address On Record') THEN EXCLUDED.property_location ELSE real_estate_leads.property_location END,
                category = COALESCE(EXCLUDED.category, real_estate_leads.category),
                preferred_language = EXCLUDED.preferred_language,
                max_attempts = EXCLUDED.max_attempts,

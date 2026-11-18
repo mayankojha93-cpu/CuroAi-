@@ -175,12 +175,14 @@ export function parseTelecomCsv(csvText: string): CsvParseResult {
       if (headerMap['customer_identifier'] === undefined) headerMap['customer_identifier'] = index;
     } else if (header.includes('serviceend') || header.includes('enddate') || header === 'serviceend') {
       headerMap['service_end_date'] = index;
-    } else if (header.includes('address') || header.includes('addr')) {
+    } else if (header.includes('address') || header.includes('addr') || header.includes('location') || header.includes('propertylocation') || header.includes('sector')) {
       headerMap['address'] = index;
     } else if (header.includes('email') || header.includes('mail')) {
       headerMap['cust_email'] = index;
-    } else if (header.includes('subsname') || header.includes('subscribername') || header.includes('customername') || header === 'name' || header === 'subs_name') {
+    } else if (header.includes('owner') || header.includes('occupier') || header.includes('subsname') || header.includes('subscribername') || header.includes('customername') || header === 'name' || header === 'subs_name') {
       headerMap['name'] = index;
+    } else if (header.includes('category') || header === 'cat' || header.includes('proptype') || header.includes('propertytype')) {
+      headerMap['category'] = index;
     } else if (header.includes('check')) {
       headerMap['check'] = index;
     }

@@ -57,6 +57,7 @@ from .tools import RealEstateTools
 from .prompts import _owner_call_name
 from .audio_recorder import RoomAudioRecorder
 from src.transliteration import romanize_hindi
+from src.carrier_filter import classify_carrier_message
 
 server = AgentServer(job_executor_type=JobExecutorType.THREAD)
 
@@ -339,9 +340,9 @@ async def _wait_for_answer(ctx, state: RealEstateState, timeout: float) -> bool:
 
 def _apply_disconnect_disposition(state: RealEstateState):
     has_customer_speech = any(t.get("role") == "customer" for t in state.transcript)
-    if getattr(state, "answered_at", None) is None and not has_customer_speech:
+    if not has_customer_speech:
         state.final_disposition = "Not Connected (No Answer)"
-        state.agent_summary = state.agent_summary or "Call disconnected before the customer answered"
+        state.agent_summary = state.agent_summary or "Call disconnected before customer answered"
         return
     state.callee_connected = True
     if state.final_disposition in (
@@ -921,6 +922,11 @@ async def entrypoint(ctx: agents.JobContext):
         raw_text = getattr(ev, "transcript", None) or getattr(ev, "text", "")
         is_final = getattr(ev, "is_final", True)
         if is_final and raw_text and raw_text.strip():
+            carrier_kind = classify_carrier_message(raw_text)
+            if carrier_kind:
+                logger.warning(f"📵 Carrier announcement ({carrier_kind}) on audio stream: '{raw_text.strip()[:100]}'")
+                state.add_transcript("system", f"[carrier announcement: {carrier_kind}] {raw_text.strip()}")
+                return
             romanized_text = romanize_hindi(raw_text.strip())
             log_dialogue("customer", romanized_text)
 
@@ -948,6 +954,9 @@ async def entrypoint(ctx: agents.JobContext):
                     content_str = part_s
 
             if role in ("user", "customer") and content_str:
+                carrier_kind = classify_carrier_message(content_str)
+                if carrier_kind:
+                    return
                 log_dialogue("customer", romanize_hindi(content_str.strip()))
 
             elif role == "assistant" and content_str:
@@ -995,8 +1004,9 @@ async def entrypoint(ctx: agents.JobContext):
         salutation_en = f"Hello {name_call}" if name_call != "Sir" else "Hello Sir"
         salutation_hi = f"Hello {name_call} ji" if name_call != "Sir" else "Hello Sir"
         if loc:
-            parts = [p.strip() for p in loc.split(",") if p.strip()]
-            spoken_loc = f"{parts[0]} in {parts[1]}" if len(parts) >= 2 else parts[0]
+            clean_loc = loc.split(";")[0].strip()
+            parts = [p.strip() for p in clean_loc.split(",") if p.strip()]
+            spoken_loc = f"{parts[1]}, {parts[0]}" if len(parts) >= 2 else (parts[0] if parts else clean_loc)
             return (
                 f"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. I'm calling about your property in {spoken_loc}... Were you looking to sell or rent it out?"
                 if state.reply_lang == "en"
@@ -1115,13 +1125,13 @@ async def entrypoint(ctx: agents.JobContext):
             _cancel_prerender()
     if pre_frames:
         try:
-            opening_speech = session.say(greeting, audio=_replay_frames(pre_frames), allow_interruptions=False)
+            opening_speech = session.say(greeting, audio=_replay_frames(pre_frames), allow_interruptions=True)
             logger.info("⚡ Greeting played from pre-rendered audio (TTS wait skipped)")
         except Exception as e:
             logger.warning(f"Pre-rendered greeting failed ({e}); synthesising normally")
             opening_speech = None
     if opening_speech is None:
-        opening_speech = session.say(greeting, allow_interruptions=False)
+        opening_speech = session.say(greeting, allow_interruptions=True)
     log_dialogue("assistant", greeting)
     state.last_agent_question = greeting
 
