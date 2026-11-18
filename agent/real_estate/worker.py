@@ -338,17 +338,24 @@ async def _wait_for_answer(ctx, state: RealEstateState, timeout: float) -> bool:
     return _check_participants() is True
 
 
-def _apply_disconnect_disposition(state: RealEstateState):
-    has_customer_speech = any(t.get("role") == "customer" for t in state.transcript)
-    is_answered = getattr(state, "answered_at", None) is not None
+def _apply_ivr_disposition(state: RealEstateState):
+    """IVR / voicemail was detected and no human took over: record it as such (never as a plain no-answer)."""
+    if getattr(state, "ivr_detected", False) and state.final_disposition in (
+        "Not Connected (No Answer)", "Abruptly Disconnected Call", "Voicemail or IVR Detected",
+    ):
+        state.final_disposition = "Voicemail or IVR Detected"
+        state.agent_summary = state.agent_summary or "Carrier announcement / voicemail / IVR detected; no human answered"
 
-    # Call was never answered (ringing timeout / busy / rejected before pickup)
-    if not is_answered and not has_customer_speech:
+
+def _apply_disconnect_disposition(state: RealEstateState):
+    if getattr(state, "ivr_detected", False):
+        _apply_ivr_disposition(state)
+        return
+    has_customer_speech = any(t.get("role") == "customer" for t in state.transcript)
+    if not has_customer_speech:
         state.final_disposition = "Not Connected (No Answer)"
         state.agent_summary = state.agent_summary or "Call disconnected before customer answered"
         return
-
-    # Call was answered by callee (phone connected, audio recorded)
     state.callee_connected = True
     if state.final_disposition in (
         "Abruptly Disconnected Call",
@@ -357,10 +364,6 @@ def _apply_disconnect_disposition(state: RealEstateState):
         "Partial Details Captured (Disconnected)",
     ):
         state.final_disposition = "Abruptly Disconnected Call"
-        if not has_customer_speech:
-            state.agent_summary = state.agent_summary or "Customer answered the call but hung up during introduction"
-        else:
-            state.agent_summary = state.agent_summary or "Customer hung up abruptly during the call"
 
 
 def post_re_outcome_sync(state: RealEstateState) -> bool:
@@ -403,6 +406,10 @@ def post_re_outcome_sync(state: RealEstateState) -> bool:
         comm_val = state.commercial_type
 
     median_ms = int(statistics.median(state.latency_samples) * 1000) if state.latency_samples else None
+
+    # Last line of defence: whatever path ended the call (silence watchdog, hangup, disconnect), an IVR call
+    # is saved as IVR.
+    _apply_ivr_disposition(state)
 
     payload = {
         "lead_id": state.lead_id,

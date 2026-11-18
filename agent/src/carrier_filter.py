@@ -65,8 +65,45 @@ _VOICEMAIL_PATTERNS = [
     r"sandesh chhod",
 ]
 
+# IVR menus / auto-attendants and recorded voicemail greetings. A human never says these, so they are
+# classified as "voicemail" (no human will answer -> end the call, backend schedules a retry).
+# Deliberately NOT included: first-person phrases a real person might say ("I can't take your call now",
+# "main busy hoon", "I'm not available").
+_IVR_PATTERNS = [
+    r"press (star|hash|pound|zero|one|two|three|four|five|\d)\b",
+    r"\bdial (star|hash|pound|zero|\d)\b",
+    r"to (repeat|go back)( this)?( menu| message)?,? press",
+    r"for (english|hindi)[, ]+press",
+    r"(all|our) (agents|executives|representatives|customer care|lines) are (busy|engaged)",
+    r"(is|are) (busy|engaged) on (another|an?other) call",
+    r"your call is (important|being (transferred|forwarded|connected))",
+    r"this call (may be|is being) recorded",
+    r"(thank you for|welcome to) (calling|contacting)",
+    r"you('ve| have) reached",
+    r"(is|are) (currently )?(not available|unable) to (take|answer) your call",
+    r"(mail ?box|voice ?mail box) is (full|not (set up|available))",
+    r"record your message",
+    r"number you (have )?(dialed|dialled|called) (is|does|doesn't|does not)",
+    r"(number|call) (does not|doesn't) exist",
+    r"(is|has been) (incorrect|invalid|not in service|barred)",
+    # Hindi / Hinglish (Devanagari and Latin script)
+    r"दबाएं",
+    r"दबाइए",
+    r"कृपया प्रतीक्षा",
+    r"आपका कॉल (महत्वपूर्ण|हमारे)",
+    r"यह नंबर (मौजूद|उपलब्ध) नहीं",
+    r"व्यस्त (हैं|है) कृपया",
+    r"dabayein",
+    r"dabaiye",
+    r"kripya (pratiksha|intezaar|intezar)",
+    r"aapka call (mahatvapurn|important)",
+    r"(abhi|is samay) (vyast|uplabdh nahi)",
+    r"yeh number (maujood|uplabdh) nahi",
+]
+
 _HOLD_RE = re.compile("|".join(f"(?:{p})" for p in _HOLD_PATTERNS), re.IGNORECASE)
 _VOICEMAIL_RE = re.compile("|".join(f"(?:{p})" for p in _VOICEMAIL_PATTERNS), re.IGNORECASE)
+_IVR_RE = re.compile("|".join(f"(?:{p})" for p in _IVR_PATTERNS), re.IGNORECASE)
 
 
 def classify_carrier_message(text: Optional[str]) -> Optional[str]:
@@ -77,6 +114,8 @@ def classify_carrier_message(text: Optional[str]) -> Optional[str]:
         return None
     # Voicemail first: it is the stronger signal ("...not reachable. Please stay on the line" etc.)
     if _VOICEMAIL_RE.search(t):
+        return "voicemail"
+    if _IVR_RE.search(t):
         return "voicemail"
     if _HOLD_RE.search(t):
         return "hold"
