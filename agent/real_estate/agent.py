@@ -438,11 +438,11 @@ class RealEstateAgent(Agent):
             if self._re_state.hangup_started:
                 return
             logger.warning(f"⏰ 5s IVR wait completed for ({kind}). Dropping call now.")
+            self._re_state.ivr_detected = True
+            self._re_state.final_disposition = "Voicemail or IVR Detected"
             if kind == "hold":
-                self._re_state.final_disposition = "Abruptly Disconnected Call"
                 self._re_state.agent_summary = "Call placed on hold by callee; timed out after 5s waiting for human."
             else:
-                self._re_state.final_disposition = "Voicemail or IVR Detected"
                 self._re_state.agent_summary = f"Carrier announcement / voicemail detected: {text[:100]}"
 
             if self._re_tools.hangup_func:
@@ -480,8 +480,7 @@ class RealEstateAgent(Agent):
                 kind = "voicemail"
         if kind:
             logger.warning(f"📵 Carrier announcement ({kind}) detected: '{text[:100]}'")
-            if kind != "hold":
-                self._re_state.ivr_detected = True
+            self._re_state.ivr_detected = True
             if self._ivr_task is None or self._ivr_task.done():
                 self._ivr_kind = kind
                 self._ivr_task = asyncio.create_task(self._wait_and_drop_ivr(kind, text))

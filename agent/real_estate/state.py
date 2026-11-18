@@ -126,6 +126,7 @@ class RealEstateState:
         self.last_agent_question: str = ""
         self.hangup_started: bool = False
         self.outcome_posted: bool = False
+        self.ivr_detected: bool = False
         self.silence_count: int = 0
 
         # Objections, callbacks & handoff tracking

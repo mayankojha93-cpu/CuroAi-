@@ -720,7 +720,7 @@ export class CampaignService {
     );
     return res.rows.map((row: any) => {
       const canonical = isRealEstate
-        ? (row.call_result ? matchRealEstateDisposition(row.call_result, row.duration_seconds, row.status) : null)
+        ? (row.call_result ? matchRealEstateDisposition(row.call_result, row.duration_seconds, row.status, null, row.call_outcome) : null)
         : (row.call_result ? matchCanonicalDisposition(row.call_result, row.duration_seconds, row.status) : null);
       return {
         ...row,
@@ -790,10 +790,10 @@ export class CampaignService {
         return reRes.rows.map((row: any) => ({
           ...row,
           final_disposition: row.last_call_id && row.final_disposition
-            ? matchRealEstateDisposition(row.final_disposition, row.duration_seconds, row.call_status)
+            ? matchRealEstateDisposition(row.final_disposition, row.duration_seconds, row.call_status, null, row.call_outcome)
             : null,
           current_disposition: row.last_call_id
-            ? matchRealEstateDisposition(row.final_disposition || row.current_disposition, row.duration_seconds, row.call_status)
+            ? matchRealEstateDisposition(row.final_disposition || row.current_disposition, row.duration_seconds, row.call_status, null, row.call_outcome)
             : 'Pending Outreach',
         }));
       }
@@ -848,12 +848,12 @@ export class CampaignService {
       ...row,
       final_disposition: row.last_call_id && row.final_disposition
         ? (isRealEstate
-            ? matchRealEstateDisposition(row.final_disposition, row.duration_seconds, row.call_status)
+            ? matchRealEstateDisposition(row.final_disposition, row.duration_seconds, row.call_status, null, row.call_outcome)
             : matchCanonicalDisposition(row.final_disposition, row.duration_seconds, row.call_status))
         : null,
       current_disposition: row.last_call_id
         ? (isRealEstate
-            ? matchRealEstateDisposition(row.final_disposition || row.current_disposition, row.duration_seconds, row.call_status)
+            ? matchRealEstateDisposition(row.final_disposition || row.current_disposition, row.duration_seconds, row.call_status, null, row.call_outcome)
             : matchCanonicalDisposition(row.final_disposition || row.current_disposition, row.duration_seconds, row.call_status))
         : 'Pending Outreach',
     }));
@@ -1351,7 +1351,7 @@ export class CampaignService {
             const call = calls[i];
             const rawDisp = call.outcome_disposition || call.disposition || call.call_status || '';
             const matched = rawDisp
-              ? matchRealEstateDisposition(rawDisp, call.duration_seconds, call.call_status)
+              ? matchRealEstateDisposition(rawDisp, call.duration_seconds, call.call_status, null, call.call_summary)
               : '';
             const attemptNum = typeof call.attempt_number === 'number' && call.attempt_number >= 1
               ? call.attempt_number
@@ -1373,7 +1373,7 @@ export class CampaignService {
           const lastRecordingUrl = calls.slice().reverse().find((c: any) => c.recording_url)?.recording_url || '';
 
           const rawFinalDisp = lastCall?.outcome_disposition || lastCall?.disposition || lead.current_disposition || '';
-          const finalDisposition = rawFinalDisp ? matchRealEstateDisposition(rawFinalDisp, lastCall?.duration_seconds, lastCall?.call_status) : '';
+          const finalDisposition = rawFinalDisp ? matchRealEstateDisposition(rawFinalDisp, lastCall?.duration_seconds, lastCall?.call_status, null, lastCall?.call_summary || lead.notes) : '';
 
           let overallStatus = 'Pending';
           if (lead.is_closed || isTerminalRealEstateDisposition(finalDisposition)) {

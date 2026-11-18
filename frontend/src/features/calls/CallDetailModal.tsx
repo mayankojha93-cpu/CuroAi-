@@ -91,7 +91,15 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
   const rawDisp = ((activeCall as any).final_disposition || (activeCall as any).call_result || activeCall.call_status || '').toLowerCase();
 
   let canonicalStatus: 'COMPLETED' | 'FAILED' | 'NO_ANSWER' = 'COMPLETED';
-  if (rawStatus === 'no_answer' || rawStatus === 'no answer' || rawDisp.includes('no answer') || rawDisp.includes('timeout') || rawDisp.includes('ringing')) {
+  if (
+    rawStatus === 'no_answer' ||
+    rawStatus === 'no answer' ||
+    rawDisp.includes('no answer') ||
+    rawDisp.includes('timeout') ||
+    rawDisp.includes('ringing') ||
+    rawDisp.includes('voicemail') ||
+    rawDisp.includes('ivr')
+  ) {
     canonicalStatus = 'NO_ANSWER';
   } else if (rawStatus === 'failed' || rawDisp.includes('dropped') || rawDisp.includes('barrier') || rawDisp.includes('wrong number') || rawDisp.includes('not connected')) {
     canonicalStatus = 'FAILED';

@@ -339,16 +339,17 @@ async def _wait_for_answer(ctx, state: RealEstateState, timeout: float) -> bool:
 
 
 def _apply_ivr_disposition(state: RealEstateState):
-    """IVR / voicemail was detected and no human took over: record it as such (never as a plain no-answer)."""
-    if getattr(state, "ivr_detected", False) and state.final_disposition in (
-        "Not Connected (No Answer)", "Abruptly Disconnected Call", "Voicemail or IVR Detected",
-    ):
-        state.final_disposition = "Voicemail or IVR Detected"
-        state.agent_summary = state.agent_summary or "Carrier announcement / voicemail / IVR detected; no human answered"
+    """IVR / voicemail was detected and no human took over: record it as such (never as a plain no-answer or abruptly disconnected)."""
+    state.final_disposition = "Voicemail or IVR Detected"
+    state.agent_summary = state.agent_summary or "Carrier announcement / voicemail / IVR detected; no human answered"
 
 
 def _apply_disconnect_disposition(state: RealEstateState):
-    if getattr(state, "ivr_detected", False):
+    if (
+        getattr(state, "ivr_detected", False)
+        or state.final_disposition == "Voicemail or IVR Detected"
+        or (state.agent_summary and ("timed out after 5s waiting for human" in state.agent_summary.lower() or "carrier announcement" in state.agent_summary.lower()))
+    ):
         _apply_ivr_disposition(state)
         return
 

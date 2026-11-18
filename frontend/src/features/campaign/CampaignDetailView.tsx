@@ -136,6 +136,7 @@ export const REAL_ESTATE_CANONICAL_DISPOSITIONS = [
   'Wrong Number',
   'Not Connected (No Answer)',
   'Abruptly Disconnected Call',
+  'Voicemail or IVR Detected',
 ] as const;
 
 export const matchCanonicalDisposition = (
@@ -212,11 +213,15 @@ export const matchCanonicalDisposition = (
   // 12. Voicemail or IVR Detected
   if (
     upper.includes('VOICEMAIL') ||
-    upper.includes('IVR') ||
+    upper.includes('VOICE MAIL') ||
+    /\bIVR\b/.test(upper) ||
     upper.includes('ANSWERING MACHINE') ||
     upper.includes('MACHINE DETECTED') ||
     upper.includes('CARRIER MESSAGE') ||
-    upper.includes('AUTOMATED MESSAGE')
+    upper.includes('CARRIER ANNOUNCEMENT') ||
+    upper.includes('AUTOMATED MESSAGE') ||
+    upper.includes('WAITING FOR HUMAN') ||
+    (upper.includes('HOLD') && (upper.includes('CALLEE') || upper.includes('SUBSCRIBER') || upper.includes('TIMED OUT')))
   ) {
     return 'Voicemail or IVR Detected';
   }
@@ -449,7 +454,7 @@ const getDispositionColor = (key: string): string => {
   if (norm.includes('LANGUAGE BARRIER')) return '#D946EF'; // Fuchsia
   if (norm.includes('DO NOT CALL')) return '#DC2626'; // Dark Red
   if (norm.includes('ABRUPTLY DISCONNECTED')) return '#F97316'; // Orange
-  if (norm.includes('VOICEMAIL')) return '#84CC16'; // Lime
+  if (norm.includes('VOICEMAIL') || norm.includes('IVR')) return '#84CC16'; // Lime
   if (norm.includes('NO ANSWER')) return '#64748B'; // Slate
   if (norm.includes('FAILED')) return '#991B1B'; // Crimson
   return '#3B82F6';

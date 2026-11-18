@@ -953,7 +953,8 @@ ${dialogueText.slice(0, 4000)}`;
       data.final_disposition,
       data.duration_seconds,
       call.status,
-      data.is_interested
+      data.is_interested,
+      data.agent_summary
     );
 
     // 3. Save real_estate_outcomes (ensure customer dialogue is saved in clean Romanized Hindi)
@@ -1027,7 +1028,7 @@ ${dialogueText.slice(0, 4000)}`;
       mappedStatus = 'failed';
       failureReason = failureReason || 'Wrong Number';
     } else if (canonicalDisp === 'Voicemail or IVR Detected') {
-      mappedStatus = 'failed';
+      mappedStatus = 'no_answer';
       failureReason = failureReason || 'IVR / voicemail detected: no human answered';
     }
 
