@@ -93,12 +93,42 @@ _FIELD_TO_PARAMS = {
 _NEUTRAL_UTTERANCES = {
     "hello", "hi", "hey", "helo", "hallo", "ok", "okay", "yes", "no", "hmm", "haan", "han", "ji",
     "haanji", "haan ji", "हेलो", "हैलो", "हेल्लो", "हाँ", "हां", "जी", "हम्म", "ओके",
+    "ya", "yeah", "yep", "yup", "ha", "yes yes", "yes yes yes", "haan haan", "han han", "ji ji",
+    "ok ok", "okay okay", "yes sir", "ji haan", "haan ji haan", "hmm hmm", "hello hello",
 }
 
 
 def _is_neutral_utterance(text: str) -> bool:
     t = re.sub(r"[\s.,?!\u0964]+", " ", (text or "").lower()).strip()
     return t in _NEUTRAL_UTTERANCES
+
+
+def _simplified_reask(en: bool, kind: str, n: int):
+    """Never repeat the identical question word-for-word: a caller who answered 'yes, yes' to an either/or
+    question needs it rephrased as a plain choice. n = 1 for the first re-ask, 2 for the second."""
+    table = {
+        ("intent", True): ("Just to confirm, is it for sale, or for rent?",
+                           "Sorry Sir, would you like to sell it, or give it on rent?"),
+        ("intent", False): ("Bas confirm karna tha, sale ke liye hai ya rent ke liye?",
+                            "Maaf kijiye Sir, aap ise bechna chahte hain ya kiraye par dena?"),
+        ("category", True): ("Just to confirm, is it a flat or house, or a shop or office?",
+                             "Sorry Sir, is it a home, or a commercial place like a shop or office?"),
+        ("category", False): ("Bas confirm karna tha, ye ghar ya flat hai, ya dukaan ya office?",
+                              "Maaf kijiye Sir, ye rehne ki property hai, ya commercial jaise dukaan ya office?"),
+    }
+    opts = table.get((kind, en))
+    if not opts:
+        return None
+    return opts[min(n, len(opts)) - 1]
+
+
+def _bump_reask(state, key: str) -> int:
+    """Count consecutive re-asks of the SAME open question (a different question resets the count)."""
+    if state.reask_key == key:
+        state.reask_count += 1
+    else:
+        state.reask_key, state.reask_count = key, 1
+    return state.reask_count
 
 
 # ── Scenario B helpers (deterministic, no LLM) ────────────────────────────────
@@ -438,11 +468,11 @@ class RealEstateAgent(Agent):
             if self._re_state.hangup_started:
                 return
             logger.warning(f"⏰ 5s IVR wait completed for ({kind}). Dropping call now.")
+            self._re_state.ivr_detected = True
+            self._re_state.final_disposition = "Voicemail or IVR Detected"
             if kind == "hold":
-                self._re_state.final_disposition = "Abruptly Disconnected Call"
                 self._re_state.agent_summary = "Call placed on hold by callee; timed out after 5s waiting for human."
             else:
-                self._re_state.final_disposition = "Voicemail or IVR Detected"
                 self._re_state.agent_summary = f"Carrier announcement / voicemail detected: {text[:100]}"
 
             if self._re_tools.hangup_func:
@@ -480,8 +510,7 @@ class RealEstateAgent(Agent):
                 kind = "voicemail"
         if kind:
             logger.warning(f"📵 Carrier announcement ({kind}) detected: '{text[:100]}'")
-            if kind != "hold":
-                self._re_state.ivr_detected = True
+            self._re_state.ivr_detected = True
             if self._ivr_task is None or self._ivr_task.done():
                 self._ivr_kind = kind
                 self._ivr_task = asyncio.create_task(self._wait_and_drop_ivr(kind, text))
@@ -593,6 +622,7 @@ class RealEstateAgent(Agent):
         if state.step in _intake or state.step == _S.CATEGORY_SELECT:
             _neutral = _is_neutral_utterance(text)
             _reask = None
+            _kind = None
             if state.step == _S.CATEGORY_SELECT and (_asks_repeat(text) or _neutral):
                 # A bare "haan"/"ji" does not answer "residential or commercial? sell or rent?"
                 # (often it is just a backchannel that interrupted the question).
@@ -605,20 +635,41 @@ class RealEstateAgent(Agent):
                         pass
                     elif state.category and not state.intent:
                         _reask = "Are you looking to sell or rent it out?" if en else "Aap ise sell karna chahte hain, ya rent par dena?"
+                        _kind = "intent"
                     elif state.intent and not state.category:
                         _reask = "Is it a residential or commercial property?" if en else "Ye residential property hai ya commercial?"
+                        _kind = "category"
                     else:
                         _reask = (
                             "Is it a residential or commercial property? And are you looking to sell or rent it out?"
                             if en else
                             "Ye residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
                         )
+                        _kind = "category"
             elif state.step in _intake and _asks_repeat(text):
                 _missing = state.get_missing_fields()
                 if _missing:
                     _reask = _missing[0]["question_en"] if state.reply_lang == "en" else _missing[0]["question_hi"]
+            _no_lead = False
             if _reask:
-                lead = "Sure, " if state.reply_lang == "en" else "Ji, "
+                _n = _bump_reask(state, f"{state.step.value}|{_reask}")
+                if (state.is_interested or state.step in _intake) and _n >= 3:
+                    logger.info(f"🤝 After 2 failed attempts on same question ({_n}) -> offering advisor callback and closing")
+                    try:
+                        await self._re_tools.book_advisor_handoff(reason="Could not understand caller after 2 failed attempts on same question")
+                    except Exception as e:
+                        logger.warning(f"Advisor handoff failed: {e}")
+                    raise StopResponse()
+                elif _n >= 3:
+                    logger.info(f"🔁 Same question re-asked {_n}x -> handing this turn to the LLM instead of looping")
+                    _reask = None
+                elif _kind and not (_asks_repeat(text) and not _neutral):
+                    # the caller did not ask us to repeat; they gave an unusable answer -> ask it in simpler words
+                    _alt = _simplified_reask(state.reply_lang == "en", _kind, _n)
+                    if _alt:
+                        _reask, _no_lead = _alt, True
+            if _reask:
+                lead = "" if _no_lead else ("Sure, " if state.reply_lang == "en" else "Ji, ")
                 logger.info(f"🔁 Repeat/backchannel -> re-asking open question (no LLM): '{_reask}'")
                 try:
                     self.session.say(lead + _reask, allow_interruptions=True)
@@ -634,15 +685,33 @@ class RealEstateAgent(Agent):
             if loc:
                 _rep = f"The property is at {loc}. Are you considering selling or renting it out?" if en else f"{loc} par jo aapki property hai. Kya aap use sell ya rent karne ka soch rahe hain?"
             else:
-                _rep = "Are you considering selling or renting out a property?" if en else "Kya aap apni koi property sell ya rent karne ka soch rahe hain?"
-            lead = "Sure, " if en else "Ji, "
-            logger.info(f"🔁 Repeat / location clarification at intro -> repeating property details: '{_rep}'")
-            try:
-                self.session.say(lead + _rep, allow_interruptions=True)
-            except Exception as e:
-                logger.warning(f"Intro repeat failed: {e}")
-            else:
+                # No address on record: say so honestly instead of re-reading the same question.
+                _rep = (
+                    "I don't have a specific address on my side, Sir. I'm just checking whether you own any property "
+                    "you'd like to sell or rent out. Do you?"
+                    if en else
+                    "Sir, mere paas koi specific address nahi hai. Main bas yeh pooch rahi hoon ki kya aapki koi property hai "
+                    "jise aap sell ya rent karna chahte hain?"
+                )
+            lead = "" if not loc else ("Sure, " if en else "Ji, ")
+            _n = _bump_reask(state, f"INTRO|{'loc' if loc else 'noloc'}")
+            if state.is_interested and _n >= 3:
+                logger.info("🤝 After 2 failed attempts on intro question -> offering advisor callback and closing")
+                try:
+                    await self._re_tools.book_advisor_handoff(reason="Could not understand caller after 2 failed attempts on same question")
+                except Exception as e:
+                    logger.warning(f"Advisor handoff failed: {e}")
                 raise StopResponse()
+            elif _n >= 3:
+                logger.info("🔁 Intro clarification asked 3x -> letting the LLM handle it")
+            else:
+                logger.info(f"🔁 Repeat / location clarification at intro -> '{_rep}'")
+                try:
+                    self.session.say(lead + _rep, allow_interruptions=True)
+                except Exception as e:
+                    logger.warning(f"Intro repeat failed: {e}")
+                else:
+                    raise StopResponse()
 
         # Caller indicates they are thinking/considering at INTRODUCTION step (e.g. "Sochata rahun", "Soch raha hoon")
         if state.step == _S.INTRODUCTION and _is_considering(text):
@@ -919,6 +988,7 @@ class RealEstateAgent(Agent):
 
         full = "".join(_chunk_text(c) or "" for c in held)
         if saw_tool:
+            self._re_state.record_question_success()
             if full.strip():
                 logger.info(f"🔇 Dropped LLM text that came with a tool call (avoids double question): {full.strip()[:140]!r}")
             return
@@ -932,6 +1002,21 @@ class RealEstateAgent(Agent):
             if recovered:
                 yield recovered
             return
+
+        # No tool was called: LLM is responding with speech because it did not understand / get the answer
+        q_key = self._re_state.get_active_question_key()
+        fail_count = self._re_state.record_question_failure(q_key)
+        logger.info(f"❓ Question '{q_key}' not understood by LLM (failure count: {fail_count})")
+        from .state import RealEstateStep
+        if (self._re_state.is_interested or self._re_state.step in (
+            RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.RESIDENTIAL_LEASE,
+            RealEstateStep.COMMERCIAL_SALE, RealEstateStep.COMMERCIAL_LEASE,
+            RealEstateStep.CATEGORY_SELECT,
+        )) and fail_count > 2:
+            logger.info(f"🤝 After 2 failed attempts on '{q_key}' (count: {fail_count}) -> booking advisor callback handoff")
+            await self._re_tools.book_advisor_handoff(reason="Could not understand caller after 2 failed attempts on same question")
+            return
+
         for c in held:
             yield c
 
@@ -974,6 +1059,18 @@ class RealEstateAgent(Agent):
             return reply
 
         # Nothing usable -> never stay silent: re-ask the question that is currently open.
+        q_key = state.get_active_question_key()
+        fail_count = state.record_question_failure(q_key)
+        from .state import RealEstateStep
+        if (state.is_interested or state.step in (
+            RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.RESIDENTIAL_LEASE,
+            RealEstateStep.COMMERCIAL_SALE, RealEstateStep.COMMERCIAL_LEASE,
+            RealEstateStep.CATEGORY_SELECT,
+        )) and fail_count > 2:
+            logger.info(f"🤝 After 2 failed attempts on '{q_key}' in recovery -> booking advisor callback handoff")
+            await self._re_tools.book_advisor_handoff(reason="Could not understand caller after 2 failed attempts on same question")
+            return None
+
         missing = state.get_missing_fields()
         en = state.reply_lang == "en"
         if missing:
@@ -1005,4 +1102,3 @@ class RealEstateAgent(Agent):
                 yield out
 
         return Agent.default.tts_node(self, guard(), model_settings)
-        

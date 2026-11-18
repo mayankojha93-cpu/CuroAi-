@@ -57,15 +57,38 @@ export function matchRealEstateDisposition(
   rawInput?: string | null,
   durationSeconds?: number | null,
   callStatus?: string | null,
-  isInterested?: boolean | null
+  isInterested?: boolean | null,
+  agentSummary?: string | null
 ): RealEstateCanonicalDisposition {
   const text = (rawInput || '').trim();
   const upper = text.toUpperCase().replace(/[-_]/g, ' ');
   const statusUpper = (callStatus || '').toUpperCase().replace(/[-_]/g, ' ');
+  const summaryUpper = (agentSummary || '').toUpperCase().replace(/[-_]/g, ' ');
   const duration = Number(durationSeconds) || 0;
 
   if (upper.includes('PENDING') || (!text && !callStatus)) {
     return 'Pending Outreach' as any;
+  }
+
+  // 0. Voicemail / IVR / carrier announcement / hold timeout (no human on the line)
+  // Check this BEFORE checking duration or exact matches to prevent IVR calls with duration from becoming Abruptly Disconnected Call
+  if (
+    upper.includes('VOICEMAIL') ||
+    upper.includes('VOICE MAIL') ||
+    /\bIVR\b/.test(upper) ||
+    upper.includes('ANSWERING MACHINE') ||
+    upper.includes('CARRIER ANNOUNCEMENT') ||
+    upper.includes('CARRIER MESSAGE') ||
+    upper.includes('AUTOMATED MESSAGE') ||
+    upper.includes('WAITING FOR HUMAN') ||
+    summaryUpper.includes('WAITING FOR HUMAN') ||
+    summaryUpper.includes('VOICEMAIL') ||
+    /\bIVR\b/.test(summaryUpper) ||
+    summaryUpper.includes('CARRIER ANNOUNCEMENT') ||
+    (upper.includes('HOLD') && (upper.includes('CALLEE') || upper.includes('SUBSCRIBER') || upper.includes('TIMED OUT'))) ||
+    (summaryUpper.includes('HOLD') && (summaryUpper.includes('CALLEE') || summaryUpper.includes('SUBSCRIBER') || summaryUpper.includes('TIMED OUT')))
+  ) {
+    return 'Voicemail or IVR Detected';
   }
 
   // If call connected and lasted > 0 seconds, it is not "No Answer" even if caller hung up silently
@@ -78,19 +101,6 @@ export function matchRealEstateDisposition(
     (c) => c.toLowerCase() === text.toLowerCase() || c.toUpperCase() === upper
   );
   if (exact) return exact;
-
-  // 0. Voicemail / IVR / carrier announcement (no human on the line)
-  if (
-    upper.includes('VOICEMAIL') ||
-    upper.includes('VOICE MAIL') ||
-    /\bIVR\b/.test(upper) ||
-    upper.includes('ANSWERING MACHINE') ||
-    upper.includes('CARRIER ANNOUNCEMENT') ||
-    upper.includes('CARRIER MESSAGE') ||
-    upper.includes('AUTOMATED MESSAGE')
-  ) {
-    return 'Voicemail or IVR Detected';
-  }
 
   // 1. Do Not Call (DNC) - Highest priority suppression check
   if (

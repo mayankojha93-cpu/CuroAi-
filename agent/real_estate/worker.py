@@ -339,16 +339,17 @@ async def _wait_for_answer(ctx, state: RealEstateState, timeout: float) -> bool:
 
 
 def _apply_ivr_disposition(state: RealEstateState):
-    """IVR / voicemail was detected and no human took over: record it as such (never as a plain no-answer)."""
-    if getattr(state, "ivr_detected", False) and state.final_disposition in (
-        "Not Connected (No Answer)", "Abruptly Disconnected Call", "Voicemail or IVR Detected",
-    ):
-        state.final_disposition = "Voicemail or IVR Detected"
-        state.agent_summary = state.agent_summary or "Carrier announcement / voicemail / IVR detected; no human answered"
+    """IVR / voicemail was detected and no human took over: record it as such (never as a plain no-answer or abruptly disconnected)."""
+    state.final_disposition = "Voicemail or IVR Detected"
+    state.agent_summary = state.agent_summary or "Carrier announcement / voicemail / IVR detected; no human answered"
 
 
 def _apply_disconnect_disposition(state: RealEstateState):
-    if getattr(state, "ivr_detected", False):
+    if (
+        getattr(state, "ivr_detected", False)
+        or state.final_disposition == "Voicemail or IVR Detected"
+        or (state.agent_summary and ("timed out after 5s waiting for human" in state.agent_summary.lower() or "carrier announcement" in state.agent_summary.lower()))
+    ):
         _apply_ivr_disposition(state)
         return
 
@@ -1039,7 +1040,7 @@ async def entrypoint(ctx: agents.JobContext):
                 else f"{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se. Aapki {spoken_loc} wali property ke baare mein call kiya tha... Kya aap use sell karne ka plan kar rahe hain ya rent out?"
             )
         return (
-            f"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. We connect property owners directly with verified buyers... Were you looking to sell or rent out any property?"
+            f"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. We connect property owners directly with verified buyers... Do you own any property that you'd like to sell or rent out?"
             if state.reply_lang == "en"
             else f"{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se. Hum property owners ko direct verified buyers se connect karte hain... Kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"
         )
@@ -1165,11 +1166,15 @@ async def entrypoint(ctx: agents.JobContext):
     async def silence_watchdog():
         consecutive_silence = 0
         while not state.hangup_started:
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(0.5)
             if state.hangup_started:
                 break
+            if getattr(session, "agent_state", "idle") in ("speaking", "thinking"):
+                state.last_activity_time = time.time()
+                continue
             idle = time.time() - state.last_activity_time
-            if idle > 22.0:
+            threshold = 4.0 if consecutive_silence == 0 else 3.0
+            if idle > threshold:
                 consecutive_silence += 1
                 state.last_activity_time = time.time()
                 if consecutive_silence == 1:
@@ -1203,7 +1208,7 @@ async def entrypoint(ctx: agents.JobContext):
                     state.hangup_started = True
                     await _save_and_shutdown()
                     break
-            elif idle < 3.0:
+            elif idle < 1.0:
                 consecutive_silence = 0
 
     asyncio.create_task(silence_watchdog())

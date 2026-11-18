@@ -1533,7 +1533,7 @@ export class CallService {
     }
 
     const finalDisp = isRealEstate
-      ? matchRealEstateDisposition(row.final_disposition || row.call_status || row.status, row.duration_seconds, row.status)
+      ? matchRealEstateDisposition(row.final_disposition || row.call_status || row.status, row.duration_seconds, row.status, null, row.customer_note)
       : matchCanonicalDisposition(row.final_disposition || row.call_status || row.status, row.duration_seconds, row.status);
 
     let recUrl = row.recording_url;
@@ -1741,7 +1741,7 @@ export class CallService {
       );
 
       const finalDisp = isRealEstate
-        ? matchRealEstateDisposition(row.final_disposition || row.call_status || row.status, row.duration_seconds, row.status)
+        ? matchRealEstateDisposition(row.final_disposition || row.call_status || row.status, row.duration_seconds, row.status, null, row.customer_note)
         : matchCanonicalDisposition(row.final_disposition || row.call_status || row.status, row.duration_seconds, row.status);
 
       return {

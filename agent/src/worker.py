@@ -338,7 +338,7 @@ async def entrypoint(ctx: agents.JobContext):
                 logger.warning(f"⏰ 5s IVR wait completed for ({kind}). Ending call.")
                 state.is_completed = True
                 if kind == "hold":
-                    state.final_disposition = "DISCONNECTED"
+                    state.final_disposition = "VOICEMAIL"
                     state.customer_note = "Call placed on hold by subscriber; timed out after 5s waiting for human."
                 else:
                     state.final_disposition = "VOICEMAIL"
