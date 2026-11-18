@@ -1,3 +1,4 @@
+import re
 import time
 from enum import Enum
 from typing import Optional, List, Dict, Any
@@ -128,6 +129,11 @@ class RealEstateState:
         self.outcome_posted: bool = False
         self.ivr_detected: bool = False
         self.silence_count: int = 0
+        # Same-question loop guard: how many times in a row the SAME open question was re-asked
+        self.reask_key: str = ""
+        self.reask_count: int = 0
+        # Language-switch evidence (one garbled Hindi-looking turn must not flip an English call)
+        self._lang_votes: List[str] = []
 
         # Objections, callbacks & handoff tracking
         self.callback_time_slot: Optional[str] = None
@@ -160,9 +166,23 @@ class RealEstateState:
             return False
 
         lang = detect_language(text)
-        if lang and lang != self.reply_lang:
+        if not lang:
+            return False
+        if lang == self.reply_lang:
+            self._lang_votes.clear()  # caller is still in the current language -> reset the streak
+            return False
+
+        # A switch needs real evidence: two non-neutral turns in a row in the other language, or one long,
+        # clearly-scripted turn (Devanagari for Hindi, 5+ words for English). A single short or garbled
+        # utterance (e.g. STT noise like "Ke TV cotton chal raha hai kya?") never flips the call.
+        words = re.findall(r"[A-Za-z\u0900-\u097F']+", text or "")
+        has_dev = bool(re.search(r"[\u0900-\u097F]", text or ""))
+        self._lang_votes.append(lang)
+        strong = len(words) >= 5 and (has_dev or lang == "en")
+        if strong or (len(self._lang_votes) >= 2 and all(v == lang for v in self._lang_votes[-2:])):
             self.reply_lang = lang
             self.language_switched = True
+            self._lang_votes.clear()
             return True
         return False
 

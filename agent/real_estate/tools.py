@@ -76,19 +76,69 @@ def classify_category(val: Any) -> Optional[str]:
     return None
 
 
-_LEASE_WORDS = ("rent", "rented", "renting", "lease", "leasing", "kiraya", "kiraye", "kirayedar", "किराया", "किराए", "रेंट")
-_SALE_WORDS = ("sell", "selling", "sale", "bechna", "bechni", "bechne", "bechu", "bech", "बेचना", "बेचनी", "सेल")
+_LEASE_WORDS = (
+    "rent", "rented", "renting", "rent out", "to rent", "for rent", "rental", "rentals",
+    "lease", "leasing", "leased", "lease out", "to lease", "for lease", "look to lease", "looking to lease",
+    "let out", "to let", "letting",
+    "kiraya", "kiraye", "kirayedar", "kiraye pe", "kiraye par", "kiraya pe", "kiraya par",
+    "bhada", "bhaada", "bhade", "bhade pe", "bhade par",
+    "किराया", "किराए", "किराये", "रेंट", "लीज", "भाड़ा", "भाड़े", "किराए पर", "लीज पर"
+)
+_SALE_WORDS = (
+    "sell", "selling", "sale", "sales", "sell out", "to sell", "for sale", "looking to sell",
+    "bechna", "bechni", "bechne", "bechu", "bech", "bech rahe", "bechna chahte",
+    "bikau", "bikaau",
+    "बेचना", "बेचनी", "बेचने", "सेल", "बिकाऊ"
+)
+
+
+# Phone-line STT often turns "lease out" into "leave out" / "please out" / "lees out".
+_LEASE_STT = re.compile(
+    r"(?<![a-z])(?:leave|leaf|lees|leece|leas|liz|lis|please|pleas)\s*(?:it\s*)?out(?![a-z])"
+    r"|(?<![a-z])(?:lees|leece|leaze)(?![a-z])"
+)
 
 
 def classify_intent(val: Any) -> Optional[str]:
     if not val:
         return None
     val_low = str(val).lower().strip()
-    if _kw_in(val_low, _LEASE_WORDS):
+    is_lease = _kw_in(val_low, _LEASE_WORDS) or bool(_LEASE_STT.search(val_low))
+    is_sale = _kw_in(val_low, _SALE_WORDS)
+    if is_lease and is_sale:
+        return None  # ambiguous (e.g. the caller echoing "sell or rent") -> never guess
+    if is_lease:
         return "lease"
-    if _kw_in(val_low, _SALE_WORDS):
+    if is_sale:
         return "sale"
     return None
+
+
+# ── Explicitness guards: a tool that ENDS the call must be backed by the caller's own words ──
+_DNC_LATIN = re.compile(
+    r"(call\s*mat|mat\s*call|call\s*(na|nahi|nhi)\s*(karo|karna|kijiye|karein)|do\s*not\s*call|don'?t\s*call"
+    r"|stop\s*call|no\s*more\s*calls?|never\s*call|\bdn[dc]\b|remove\s*(my|this|the)?\s*(number|name|contact)"
+    r"|number\s*(remove|hata|delete)|list\s*(se|me|mein)\s*(nikal|hata|remove)|take\s*me\s*off|unsubscribe"
+    r"|phone\s*mat|dobara\s*call\s*mat)",
+    re.I,
+)
+_DNC_DEV = re.compile(r"(कॉल\s*मत|मत\s*कॉल|कॉल\s*न\s*कर|नंबर\s*(हटा|रिमूव|डिलीट)|रिमूव|डू\s*नॉट\s*कॉल|डीएनडी|परेशान\s*मत)")
+_REFUSAL_LATIN = re.compile(
+    r"\b(no|nope|nahi|nhi|nahin|nai|never|mat|don'?t|do\s*not|dont)\b"
+    r"|\bnot\s+(interested|looking|selling|renting|leasing|want|planning|thinking|at\s+all)",
+    re.I,
+)
+_REFUSAL_DEV = re.compile(r"(नहीं|नही|मत|नो\b)")
+
+
+def explicit_dnc_request(text: Any) -> bool:
+    t = str(text or "")
+    return bool(_DNC_LATIN.search(t) or _DNC_DEV.search(t))
+
+
+def explicit_refusal(text: Any) -> bool:
+    t = str(text or "")
+    return bool(_REFUSAL_LATIN.search(t) or _REFUSAL_DEV.search(t))
 
 
 _DONT_KNOW_RE = re.compile(
@@ -203,7 +253,9 @@ def _grounded(category, intent, heard):
     said it, it is read from their own words; with no transcript at all the LLM value is the only source."""
     heard = (heard or "").strip()
     if heard:
-        return classify_category(heard), classify_intent(heard)
+        c = classify_category(heard)
+        i = classify_intent(heard)
+        return c or classify_category(category), i or classify_intent(intent)
     return classify_category(category), classify_intent(intent)
 
 
@@ -388,7 +440,7 @@ class RealEstateTools:
         category: Optional[str] = None,
         intent: Optional[str] = None,
     ) -> str:
-        """Call when customer confirms interest OR indicates they are thinking about / considering selling or renting (e.g. 'soch raha hoon', 'sochata rahun', 'thinking about it', 'considering it', 'plan hai').
+        """Call when customer confirms interest OR indicates they are thinking about / considering selling, renting, or leasing out (e.g. 'looking to lease out', 'lease out', 'lease', 'rent out', 'sell', 'soch raha hoon', 'sochata rahun', 'thinking about it', 'considering it', 'plan hai').
         Optionally accepts category ('residential'/'commercial') or intent ('sale'/'lease'/'rent') if mentioned."""
         self.state.is_interested = True
         self._apply_standalone()
@@ -903,6 +955,13 @@ class RealEstateTools:
     @function_tool
     async def mark_not_interested(self) -> str:
         """Call ONLY when customer clearly and explicitly confirms they are NOT interested (e.g. 'nahi bechna', 'no', 'not interested', 'nahi chahiye'). NEVER call this if the customer says they are thinking about it, considering, or undecided (e.g. 'soch raha hoon', 'thinking about it', 'maybe')."""
+        heard = (self.state.last_user_text or "").strip()
+        if heard and not explicit_refusal(heard):
+            logger.warning(f"🛑 mark_not_interested rejected (no explicit refusal in caller words): '{heard}'")
+            return (
+                "REJECTED: the caller did NOT clearly refuse. Do NOT end the call. "
+                "Re-ask the current open question in simple words."
+            )
         self.state.is_interested = False
         self.state.final_disposition = "Not Interested"
         if not self.state.agent_summary:
@@ -959,7 +1018,14 @@ class RealEstateTools:
         self,
         reason: Optional[str] = None,
     ) -> str:
-        """Call when customer says 'mujhe call mat karna', requests Do Not Call, or asks to remove their number."""
+        """Call ONLY when the customer's own words explicitly say 'mujhe call mat karna', 'do not call me', or ask to remove their number. NEVER call it just because the caller is confused or frustrated."""
+        heard = (self.state.last_user_text or "").strip()
+        if not explicit_dnc_request(heard):
+            logger.warning(f"🛑 DNC tool call rejected (caller did not ask for it): '{heard}'")
+            return (
+                "REJECTED: the caller did NOT ask to stop calls or remove their number. Do NOT end the call. "
+                "Re-ask the current open question in simple words."
+            )
         self.state.is_dnc = True
         self.state.final_disposition = "Do Not Call"
         self.state.agent_summary = f"Customer added to DNC list ({reason or 'Customer requested no further calls'})"

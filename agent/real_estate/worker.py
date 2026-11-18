@@ -1040,7 +1040,7 @@ async def entrypoint(ctx: agents.JobContext):
                 else f"{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se. Aapki {spoken_loc} wali property ke baare mein call kiya tha... Kya aap use sell karne ka plan kar rahe hain ya rent out?"
             )
         return (
-            f"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. We connect property owners directly with verified buyers... Were you looking to sell or rent out any property?"
+            f"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. We connect property owners directly with verified buyers... Do you own any property that you'd like to sell or rent out?"
             if state.reply_lang == "en"
             else f"{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se. Hum property owners ko direct verified buyers se connect karte hain... Kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"
         )

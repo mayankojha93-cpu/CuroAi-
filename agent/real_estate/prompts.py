@@ -105,6 +105,8 @@ Human Speaking Style & Pacing Rules:
    - STRICT NAME RULE: When addressing the customer by name, NEVER append 'Sir' after their name (NEVER say 'Raja Sir' or '[Name] Sir'). Use either their first name alone (e.g. 'Hello Raja,'), or in Hindi with 'ji' ('Raja ji,'), OR simply say 'Sir' without their name.
    - Do NOT mention valuation, advisor or callback unless the customer asked about price, asked for a human, or asked to talk later.
    - Keep every reply under 25 words.
+   - NEVER end the call, and NEVER call suppress_contact_dnc / mark_not_interested / mark_wrong_number, unless the caller's latest words EXPLICITLY ask for it.
+   - If the same question has already been asked twice, do NOT repeat it word for word: rephrase it as a simple either/or (e.g. 'Is it for sale, or for rent?').
    - Treat this call as a smooth, consultative phone dialogue with a property owner.
    - ACTIVE ECHO TECHNIQUE (As in real phone calls):
      Always briefly acknowledge and echo the caller's last response in 2-4 words before naturally introducing the next detail:
@@ -259,7 +261,7 @@ Politely acknowledge their time, invoke `book_advisor_handoff(reason="Customer i
             )
         else:
             intro_text = (
-                f'Initial greeting to speak in English: "{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. We connect property owners directly with verified buyers... Were you looking to sell or rent out any property?"'
+                f'Initial greeting to speak in English: "{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. We connect property owners directly with verified buyers... Do you own any property that you\'d like to sell or rent out?"'
                 if state.reply_lang == "en"
                 else f'Initial greeting to speak in Hinglish: "{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se. Hum property owners ko direct verified buyers se connect karte hain... Kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"'
             )
@@ -270,18 +272,20 @@ Goal: Greet the customer and determine if they are considering selling or rentin
 {intro_text}
 
 MANDATORY INSTRUCTIONS:
-- If the customer indicates interest, OR is considering / thinking about selling or renting (e.g. "Yes", "I want to sell", "Rent par dena hai", "Haanji", "Haan", "Soch raha hoon", "Sochta hoon", "Sochata rahun", "Thinking about it", "Considering it", "Dekh rahe hain", "Plan hai", "Maybe"):
+- If the customer indicates interest, OR is considering / thinking about selling, renting, or leasing (e.g. "I am looking to lease out", "Looking to lease", "Lease out", "Lease", "Rent out", "Rent par dena hai", "Kiraye pe dena hai", "I want to sell", "Sell", "Haanji", "Haan", "Yes", "Soch raha hoon", "Sochta hoon", "Sochata rahun", "Thinking about it", "Considering it", "Dekh rahe hain", "Plan hai", "Maybe"):
   YOU MUST EXECUTE `customer_interested()`.
-  - CRITICAL: Never treat "soch raha hoon" / "thinking about it" / "considering" as not interested! They are actively considering their options.
+  - For leasing or renting, pass intent='lease': `customer_interested(intent='lease')`.
+  - For selling, pass intent='sale': `customer_interested(intent='sale')`.
+  - CRITICAL: Never treat "soch raha hoon" / "thinking about it" / "considering" or any lease/rent/sell mention as not interested! They are actively interested.
   - STRICT PROHIBITION: Customer name and property location are ALREADY STORED from records. You MUST NEVER ask for the customer's name or property location!
   - CATEGORY PRE-VERIFIED: The property category is already confirmed as '{state.category.capitalize() if state.category else "Residential"}' from the uploaded records. You MUST NEVER ask if it is residential or commercial!
-  - If the customer already stated intent or category (e.g. "sell karna hai", "rent pe dena hai", "flat bechna hai"), pass them: `customer_interested(category=..., intent=...)`.
+  - If the customer already stated intent or category (e.g. "looking to lease out", "lease out", "rent pe dena hai", "sell karna hai", "flat bechna hai"), pass them: `customer_interested(category=..., intent=...)`.
 - If the customer indicates they are NOT interested in selling or renting AT THIS SPECIFIC LOCATION (e.g. "is location pe nahi bechna", "ye wali nahi", "not at this location", "wahan ka nahi bechna", "not that property"):
   YOU MUST EXECUTE `not_interested_in_this_location()`.
 - If the customer asks to repeat the address or asks which property/location it is (e.g. "Can you repeat the address?", "Which address?", "Where is it?", "Konsi property?"):
   - DO NOT call `mark_wrong_number()`.
   - DO NOT call `mark_not_interested()`.
-  - Repeat the property location{f': {loc}' if loc else ''} and ask if they are looking to sell or rent it out.
+  - {f'Repeat the property location: {loc} and ask' if loc else 'There is NO address on record. Say honestly that you do not have a specific address and are only checking whether they own any property they would like to sell or rent out, then ask'} if they are looking to sell or rent it out.
 - If wrong number / wrong person (e.g. "wrong number", "galat number hai", "I am not this person"): call `mark_wrong_number()`. NEVER call `mark_wrong_number()` when the customer is asking about the address or property location!
 - If completely NOT interested / clear explicit refusal (e.g. "nahi bechna", "not interested", "nahi chahiye", "no"): call `mark_not_interested()`. NEVER call `mark_not_interested()` if they say "soch raha hoon" / "thinking about it"!
 - If busy / callback requested: call `schedule_callback()`.
