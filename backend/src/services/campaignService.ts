@@ -113,6 +113,25 @@ function normalizePhoneNumber(raw: string): string | null {
   return cleaned;
 }
 
+/**
+ * Resolves the property location / address from an uploaded contact row.
+ * CSV headers differ between uploads ("Location", "Property Location", "Address", ...), so accept any of them.
+ */
+function resolveContactAddress(item: any): string {
+  if (!item || typeof item !== 'object') return '';
+  const direct = [item.address, item.location, item.property_location, item.propertyLocation, item.Location, item.Address];
+  for (const v of direct) {
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  for (const [k, v] of Object.entries(item)) {
+    const key = k.toLowerCase().replace(/[^a-z]/g, '');
+    if ((key.includes('location') || key.includes('address')) && typeof v === 'string' && v.trim()) {
+      return v.trim();
+    }
+  }
+  return '';
+}
+
 export class CampaignService {
   private static activeCampaignDispatches = new Set<string>();
   /**
@@ -305,7 +324,7 @@ export class CampaignService {
             : (item.alternate_phone ? [item.alternate_phone] : null);
           const primaryAlt = item.alternate_phone || (altPhones && altPhones[0]) || null;
           const name = item.name && item.name.trim() ? item.name.trim() : `Contact ${item.phone.slice(-4)}`;
-          const address = item.address && item.address.trim() ? item.address.trim() : 'Address On Record';
+          const address = resolveContactAddress(item) || 'Address On Record';
           const custId = item.customer_identifier || null;
           const subsDel = item.subs_del_no || null;
           const accountNo = item.account_no || custId || null;
@@ -423,7 +442,7 @@ export class CampaignService {
                 email,
                 custLang,
                 retryAttempts,
-                address,
+                address === 'Address On Record' ? null : address,
                 category,
                 `Imported into Real Estate Campaign: ${campaign.name || 'Property Intake'}`,
               ]
@@ -1085,7 +1104,7 @@ export class CampaignService {
           : (entry.alternate_phone ? [entry.alternate_phone] : null);
         const primaryAlt = entry.alternate_phone || (altPhones && altPhones[0]) || null;
         const name = entry.name && entry.name.trim() ? entry.name.trim() : `Contact ${entry.phone.slice(-4)}`;
-        const address = entry.address && entry.address.trim() ? entry.address.trim() : 'Address On Record';
+        const address = resolveContactAddress(entry) || 'Address On Record';
         const custId = entry.customer_identifier || null;
         const subsDel = entry.subs_del_no || null;
         const accountNo = entry.account_no || custId || null;
@@ -1204,7 +1223,7 @@ export class CampaignService {
               email,
               custLang,
               retryAttempts,
-              address,
+              address === 'Address On Record' ? null : address,
               category,
               `Imported into Real Estate Campaign: ${campaign.name || 'Property Intake'}`,
             ]

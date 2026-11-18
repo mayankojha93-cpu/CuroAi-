@@ -66,6 +66,11 @@ export function matchRealEstateDisposition(
     return 'Pending Outreach' as any;
   }
 
+  // If call connected and lasted 5+ seconds, it is not "No Answer" even if caller hung up silently
+  if (duration >= 5 && (upper === 'NOT CONNECTED (NO ANSWER)' || upper.includes('NO ANSWER') || upper.includes('NOT CONNECTED'))) {
+    return 'Abruptly Disconnected Call';
+  }
+
   // Exact canonical match check
   const exact = REAL_ESTATE_CANONICAL_DISPOSITIONS.find(
     (c) => c.toLowerCase() === text.toLowerCase() || c.toUpperCase() === upper

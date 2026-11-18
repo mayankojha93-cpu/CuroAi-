@@ -937,7 +937,7 @@ ${dialogueText.slice(0, 4000)}`;
     }
 
     // 2. Standardize disposition to 2nd pipeline Canonical Dispositions
-    const canonicalDisp: RealEstateCanonicalDisposition = matchRealEstateDisposition(
+    let canonicalDisp: RealEstateCanonicalDisposition = matchRealEstateDisposition(
       data.final_disposition,
       data.duration_seconds,
       call.status,
@@ -1004,8 +1004,13 @@ ${dialogueText.slice(0, 4000)}`;
     let mappedStatus = 'completed';
     let failureReason = (data as any).failure_reason || null;
     if (canonicalDisp === 'Not Connected (No Answer)') {
-      mappedStatus = 'no_answer';
-      failureReason = failureReason || 'Dialing timeout: callee did not answer within timeout period';
+      if ((data.duration_seconds || 0) > 0) {
+        canonicalDisp = 'Abruptly Disconnected Call';
+        mappedStatus = 'completed';
+      } else {
+        mappedStatus = 'no_answer';
+        failureReason = failureReason || 'Dialing timeout: callee did not answer within timeout period';
+      }
     } else if (canonicalDisp === 'Wrong Number') {
       mappedStatus = 'failed';
       failureReason = failureReason || 'Wrong Number';

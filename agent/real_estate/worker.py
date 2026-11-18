@@ -340,10 +340,15 @@ async def _wait_for_answer(ctx, state: RealEstateState, timeout: float) -> bool:
 
 def _apply_disconnect_disposition(state: RealEstateState):
     has_customer_speech = any(t.get("role") == "customer" for t in state.transcript)
-    if not has_customer_speech:
+    is_answered = getattr(state, "answered_at", None) is not None
+
+    # Call was never answered (ringing timeout / busy / rejected before pickup)
+    if not is_answered and not has_customer_speech:
         state.final_disposition = "Not Connected (No Answer)"
         state.agent_summary = state.agent_summary or "Call disconnected before customer answered"
         return
+
+    # Call was answered by callee (phone connected, audio recorded)
     state.callee_connected = True
     if state.final_disposition in (
         "Abruptly Disconnected Call",
@@ -352,6 +357,10 @@ def _apply_disconnect_disposition(state: RealEstateState):
         "Partial Details Captured (Disconnected)",
     ):
         state.final_disposition = "Abruptly Disconnected Call"
+        if not has_customer_speech:
+            state.agent_summary = state.agent_summary or "Customer answered the call but hung up during introduction"
+        else:
+            state.agent_summary = state.agent_summary or "Customer hung up abruptly during the call"
 
 
 def post_re_outcome_sync(state: RealEstateState) -> bool:
@@ -510,7 +519,7 @@ async def entrypoint(ctx: agents.JobContext):
     preferred_language = "hi" if raw_pref in ("hi", "hindi", "hi-in", "hinglish") else "en"
     lead_id = metadata.get("leadId")
     direction = metadata.get("direction", "outbound")
-    if not raw_loc or raw_loc.lower() in ("location not specified", "not specified", "delhi, 110011, burari, sant nagar", "none", "null", "undefined", "n/a", "na"):
+    if not raw_loc or raw_loc.lower() in ("location not specified", "not specified", "address on record", "location on record", "delhi, 110011, burari, sant nagar", "none", "null", "undefined", "n/a", "na"):
         property_location = None
     else:
         property_location = raw_loc
