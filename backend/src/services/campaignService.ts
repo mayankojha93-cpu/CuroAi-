@@ -119,13 +119,22 @@ function normalizePhoneNumber(raw: string): string | null {
  */
 function resolveContactAddress(item: any): string {
   if (!item || typeof item !== 'object') return '';
-  const direct = [item.address, item.location, item.property_location, item.propertyLocation, item.Location, item.Address];
+  const PLACEHOLDERS = new Set([
+    'location not specified', 'address on record', 'not specified', 'location on record',
+    'n/a', 'na', 'none', 'null', 'undefined', '-', 'unknown',
+  ]);
+  const usable = (v: unknown): v is string =>
+    typeof v === 'string' && v.trim() !== '' && !PLACEHOLDERS.has(v.trim().toLowerCase());
+
+  // Known keys first (a placeholder in one key must not hide a real value in another)
+  const direct = [item.location, item.property_location, item.propertyLocation, item.Location, item.address, item.Address];
   for (const v of direct) {
-    if (typeof v === 'string' && v.trim()) return v.trim();
+    if (usable(v)) return v.trim();
   }
+  // Any other key that looks like a location / address column
   for (const [k, v] of Object.entries(item)) {
     const key = k.toLowerCase().replace(/[^a-z]/g, '');
-    if ((key.includes('location') || key.includes('address')) && typeof v === 'string' && v.trim()) {
+    if ((key.includes('location') || key.includes('address')) && usable(v)) {
       return v.trim();
     }
   }

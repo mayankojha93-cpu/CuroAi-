@@ -77,6 +77,16 @@ export function cleanToEnglishOnly(str?: string | null): string {
     .trim();
 }
 
+/** Placeholder strings that must never be treated as a real property location. */
+const PLACEHOLDER_LOCATIONS = new Set([
+  'location not specified', 'address on record', 'location on record', 'not specified',
+  'n/a', 'na', 'none', 'null', 'undefined', 'unknown', '-',
+]);
+function realLocationOrNull(v?: string | null): string | null {
+  const t = (v || '').trim();
+  return t && !PLACEHOLDER_LOCATIONS.has(t.toLowerCase()) ? t : null;
+}
+
 export class RealEstateCallService {
   private sipClient: SipClient;
   private dispatchClient: AgentDispatchClient;
@@ -281,9 +291,11 @@ export class RealEstateCallService {
       `SELECT sector_or_location, project_or_society FROM real_estate_properties WHERE lead_id = $1 ORDER BY created_at DESC LIMIT 1`,
       [leadId]
     );
-    const propertyLocation = (propRes.rows.length > 0 && (propRes.rows[0].sector_or_location || propRes.rows[0].project_or_society))
-      ? (propRes.rows[0].sector_or_location || propRes.rows[0].project_or_society || '').trim()
-      : (lead.property_location || '').trim() || null;
+    // Saved property details win, but a placeholder there must not hide the real location uploaded with the lead
+    const savedPropLocation = propRes.rows.length > 0
+      ? realLocationOrNull(propRes.rows[0].sector_or_location || propRes.rows[0].project_or_society)
+      : null;
+    const propertyLocation = savedPropLocation || realLocationOrNull(lead.property_location);
 
     this.executeOutboundWorkflow(callId, lead, roomName, propertyLocation).catch((err) => {
       logger.error({ err, callId }, 'Unhandled error in real estate outbound call workflow');
@@ -302,7 +314,7 @@ export class RealEstateCallService {
         ? rawLeadName
         : null;
 
-      const effectiveLocation = (propertyLocation || lead?.property_location || '').trim() || null;
+      const effectiveLocation = realLocationOrNull(propertyLocation) || realLocationOrNull(lead?.property_location);
       const effectiveCategory = lead?.category || null;
 
       const metaPayload = JSON.stringify({
@@ -937,7 +949,7 @@ ${dialogueText.slice(0, 4000)}`;
     }
 
     // 2. Standardize disposition to 2nd pipeline Canonical Dispositions
-    let canonicalDisp: RealEstateCanonicalDisposition = matchRealEstateDisposition(
+    const canonicalDisp: RealEstateCanonicalDisposition = matchRealEstateDisposition(
       data.final_disposition,
       data.duration_seconds,
       call.status,
@@ -1004,13 +1016,8 @@ ${dialogueText.slice(0, 4000)}`;
     let mappedStatus = 'completed';
     let failureReason = (data as any).failure_reason || null;
     if (canonicalDisp === 'Not Connected (No Answer)') {
-      if ((data.duration_seconds || 0) > 0) {
-        canonicalDisp = 'Abruptly Disconnected Call';
-        mappedStatus = 'completed';
-      } else {
-        mappedStatus = 'no_answer';
-        failureReason = failureReason || 'Dialing timeout: callee did not answer within timeout period';
-      }
+      mappedStatus = 'no_answer';
+      failureReason = failureReason || 'Dialing timeout: callee did not answer within timeout period';
     } else if (canonicalDisp === 'Wrong Number') {
       mappedStatus = 'failed';
       failureReason = failureReason || 'Wrong Number';
