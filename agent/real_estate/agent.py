@@ -653,7 +653,14 @@ class RealEstateAgent(Agent):
             _no_lead = False
             if _reask:
                 _n = _bump_reask(state, f"{state.step.value}|{_reask}")
-                if _n >= 3:
+                if (state.is_interested or state.step in _intake) and _n >= 3:
+                    logger.info(f"🤝 After 2 failed attempts on same question ({_n}) -> offering advisor callback and closing")
+                    try:
+                        await self._re_tools.book_advisor_handoff(reason="Could not understand caller after 2 failed attempts on same question")
+                    except Exception as e:
+                        logger.warning(f"Advisor handoff failed: {e}")
+                    raise StopResponse()
+                elif _n >= 3:
                     logger.info(f"🔁 Same question re-asked {_n}x -> handing this turn to the LLM instead of looping")
                     _reask = None
                 elif _kind and not (_asks_repeat(text) and not _neutral):
@@ -688,7 +695,14 @@ class RealEstateAgent(Agent):
                 )
             lead = "" if not loc else ("Sure, " if en else "Ji, ")
             _n = _bump_reask(state, f"INTRO|{'loc' if loc else 'noloc'}")
-            if _n >= 3:
+            if state.is_interested and _n >= 3:
+                logger.info("🤝 After 2 failed attempts on intro question -> offering advisor callback and closing")
+                try:
+                    await self._re_tools.book_advisor_handoff(reason="Could not understand caller after 2 failed attempts on same question")
+                except Exception as e:
+                    logger.warning(f"Advisor handoff failed: {e}")
+                raise StopResponse()
+            elif _n >= 3:
                 logger.info("🔁 Intro clarification asked 3x -> letting the LLM handle it")
             else:
                 logger.info(f"🔁 Repeat / location clarification at intro -> '{_rep}'")
@@ -974,6 +988,7 @@ class RealEstateAgent(Agent):
 
         full = "".join(_chunk_text(c) or "" for c in held)
         if saw_tool:
+            self._re_state.record_question_success()
             if full.strip():
                 logger.info(f"🔇 Dropped LLM text that came with a tool call (avoids double question): {full.strip()[:140]!r}")
             return
@@ -987,6 +1002,21 @@ class RealEstateAgent(Agent):
             if recovered:
                 yield recovered
             return
+
+        # No tool was called: LLM is responding with speech because it did not understand / get the answer
+        q_key = self._re_state.get_active_question_key()
+        fail_count = self._re_state.record_question_failure(q_key)
+        logger.info(f"❓ Question '{q_key}' not understood by LLM (failure count: {fail_count})")
+        from .state import RealEstateStep
+        if (self._re_state.is_interested or self._re_state.step in (
+            RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.RESIDENTIAL_LEASE,
+            RealEstateStep.COMMERCIAL_SALE, RealEstateStep.COMMERCIAL_LEASE,
+            RealEstateStep.CATEGORY_SELECT,
+        )) and fail_count > 2:
+            logger.info(f"🤝 After 2 failed attempts on '{q_key}' (count: {fail_count}) -> booking advisor callback handoff")
+            await self._re_tools.book_advisor_handoff(reason="Could not understand caller after 2 failed attempts on same question")
+            return
+
         for c in held:
             yield c
 
@@ -1029,6 +1059,18 @@ class RealEstateAgent(Agent):
             return reply
 
         # Nothing usable -> never stay silent: re-ask the question that is currently open.
+        q_key = state.get_active_question_key()
+        fail_count = state.record_question_failure(q_key)
+        from .state import RealEstateStep
+        if (state.is_interested or state.step in (
+            RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.RESIDENTIAL_LEASE,
+            RealEstateStep.COMMERCIAL_SALE, RealEstateStep.COMMERCIAL_LEASE,
+            RealEstateStep.CATEGORY_SELECT,
+        )) and fail_count > 2:
+            logger.info(f"🤝 After 2 failed attempts on '{q_key}' in recovery -> booking advisor callback handoff")
+            await self._re_tools.book_advisor_handoff(reason="Could not understand caller after 2 failed attempts on same question")
+            return None
+
         missing = state.get_missing_fields()
         en = state.reply_lang == "en"
         if missing:

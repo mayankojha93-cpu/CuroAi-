@@ -1166,11 +1166,15 @@ async def entrypoint(ctx: agents.JobContext):
     async def silence_watchdog():
         consecutive_silence = 0
         while not state.hangup_started:
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(0.5)
             if state.hangup_started:
                 break
+            if getattr(session, "agent_state", "idle") in ("speaking", "thinking"):
+                state.last_activity_time = time.time()
+                continue
             idle = time.time() - state.last_activity_time
-            if idle > 22.0:
+            threshold = 4.0 if consecutive_silence == 0 else 3.0
+            if idle > threshold:
                 consecutive_silence += 1
                 state.last_activity_time = time.time()
                 if consecutive_silence == 1:
@@ -1204,7 +1208,7 @@ async def entrypoint(ctx: agents.JobContext):
                     state.hangup_started = True
                     await _save_and_shutdown()
                     break
-            elif idle < 3.0:
+            elif idle < 1.0:
                 consecutive_silence = 0
 
     asyncio.create_task(silence_watchdog())

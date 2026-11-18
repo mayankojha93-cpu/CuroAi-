@@ -443,6 +443,7 @@ class RealEstateTools:
         """Call when customer confirms interest OR indicates they are thinking about / considering selling, renting, or leasing out (e.g. 'looking to lease out', 'lease out', 'lease', 'rent out', 'sell', 'soch raha hoon', 'sochata rahun', 'thinking about it', 'considering it', 'plan hai').
         Optionally accepts category ('residential'/'commercial') or intent ('sale'/'lease'/'rent') if mentioned."""
         self.state.is_interested = True
+        self.state.record_question_success()
         self._apply_standalone()
 
         # Both customer name and property location are already provided from data/records.
@@ -709,6 +710,7 @@ class RealEstateTools:
 
         # If both category and intent are established, transition to the respective branch 4.1 to 4.4
         if self.state.category and self.state.intent:
+            self.state.record_question_success("CATEGORY_SELECT")
             cat = self.state.category
             intn = self.state.intent
             if cat == "residential" and intn == "sale":
@@ -879,6 +881,7 @@ class RealEstateTools:
             self.state.is_standalone = True
             logger.info("Standalone/independent property detected -> skipping unit number & floor")
 
+        self.state.record_question_success()
         missing = self.state.get_missing_fields()
         if len(missing) == 0:
             # All details for this branch are captured!
@@ -902,6 +905,7 @@ class RealEstateTools:
         target = field_id if field_id in ids else (missing[0]["id"] if missing else None)
         if target:
             self.state.skipped_fields.add(target)
+            self.state.record_question_success()
         missing = self.state.get_missing_fields()
         if not missing:
             return await self.finish_property_intake()

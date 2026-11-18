@@ -132,6 +132,8 @@ class RealEstateState:
         # Same-question loop guard: how many times in a row the SAME open question was re-asked
         self.reask_key: str = ""
         self.reask_count: int = 0
+        # Question failure tracking: counts failed attempts when caller's answer is not understood
+        self.question_failed_attempts: Dict[str, int] = {}
         # Language-switch evidence (one garbled Hindi-looking turn must not flip an English call)
         self._lang_votes: List[str] = []
 
@@ -154,6 +156,35 @@ class RealEstateState:
             if role in ("customer", "user"):
                 self.callee_connected = True
                 self.last_activity_time = time.time()
+
+    def get_active_question_key(self) -> str:
+        """Unique key identifying the currently active question."""
+        if self.step in (
+            RealEstateStep.RESIDENTIAL_SALE,
+            RealEstateStep.RESIDENTIAL_LEASE,
+            RealEstateStep.COMMERCIAL_SALE,
+            RealEstateStep.COMMERCIAL_LEASE,
+        ):
+            missing = self.get_missing_fields()
+            if missing:
+                return f"{self.step.value}|{missing[0]['id']}"
+        return self.step.value
+
+    def record_question_success(self, key: Optional[str] = None):
+        """Reset failure counter when a question is successfully answered."""
+        k = key or self.get_active_question_key()
+        self.question_failed_attempts.pop(k, None)
+
+    def record_question_failure(self, key: Optional[str] = None) -> int:
+        """Increment and return failure count when an answer was not understood."""
+        k = key or self.get_active_question_key()
+        count = self.question_failed_attempts.get(k, 0) + 1
+        self.question_failed_attempts[k] = count
+        return count
+
+    def get_question_failure_count(self, key: Optional[str] = None) -> int:
+        k = key or self.get_active_question_key()
+        return self.question_failed_attempts.get(k, 0)
 
     def update_reply_lang(self, text: Optional[str]) -> bool:
         """Detect and follow the customer's language (Hinglish vs English).

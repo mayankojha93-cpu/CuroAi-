@@ -142,11 +142,16 @@ Human Speaking Style & Pacing Rules:
 12. REPEAT & CLARIFICATION HANDLING:
    - If the customer says "repeat", "say again", "pardon", "what did you say", "what?", "phir se bolo", "dobara bolo", "kya bola", "samjha nahi", "samajh nahi aaya", "ek baar aur", or similar:
      Simply re-phrase the most recent question you asked, slightly differently. DO NOT call any tool. DO NOT move to a new question.
-13. ANTI-REPETITION RULE — STRICTLY ENFORCED:
+13. ANTI-REPETITION & UNCLEAR SPEECH RULE — STRICTLY ENFORCED:
    - NEVER ask the same question more than ONCE in a row in the exact same wording.
-   - If the customer gives an unclear or off-topic answer, ask the same question ONCE more in different words.
-   - If after a second ask the answer is still unclear, briefly acknowledge and move to the next field: "No problem, we can confirm that later."
-   - Under NO circumstances repeat the same sentence or question three or more times.
+   - When the customer is interested, if you do not understand what they said (inaudible, garbled, unclear, or doesn't answer the question):
+     * Repeat/rephrase the question up to 2 times in simple words.
+     * After 2 failed attempts on the same question (the answer is still not understood), DO NOT ask it a third time and DO NOT loop!
+     * Politely offer a scheduled call with our senior advisor:
+       - English: "I'm having a bit of trouble hearing you clearly. Let me have our senior property advisor schedule a callback with you directly. Thank you for your time, have a wonderful day!"
+       - Hinglish: "Aapki aawaz theek se clear nahi aa rahi hai. Main apne senior property advisor se aapka callback schedule karwa deti hoon jo aapse connect karenge. Thank you for your time, have a wonderful day!"
+     * Invoke `book_advisor_handoff(reason="Could not understand caller after 2 failed attempts on same question")`.
+     * Disposition will be "Advisor Callback Booked".
 14. HALLUCINATION PREVENTION — ZERO TOLERANCE:
    - You are an INTAKE assistant only. NEVER invent, assume, fill in, or guess any customer detail.
    - If the speech-to-text transcription of the customer's reply is phonetic, garbled, or unclear:
@@ -210,8 +215,13 @@ def get_closing_text(state: RealEstateState) -> str:
         closing_en = "Thank you so much! I will have the property details and brochure sent to your WhatsApp shortly... Have a wonderful day!"
         closing_hi = "Thank you so much, Sir! Main property details aur brochure aapke WhatsApp par bhejwa deti hoon... Have a wonderful day!"
     elif "advisor" in disp:
-        closing_en = "Thank you for your time, Sir! I’ve noted all the details, and our senior property advisor will connect with you shortly... Have a wonderful day!"
-        closing_hi = "Apna time dene ke liye thank you, Sir! Maine details note kar li hain, aur hamare senior property advisor aapse jald hi connect karenge. Have a wonderful day!"
+        reason = (state.advisor_handoff_reason or "").lower()
+        if any(w in reason for w in ("unclear", "repeat", "understand", "failed", "hearing", "trouble")):
+            closing_en = "I'm having a bit of trouble hearing you clearly. Let me arrange for our senior property advisor to connect with you directly. Thank you for your time, have a wonderful day!"
+            closing_hi = "Aapki aawaz theek se clear nahi aa rahi hai. Main apne senior property advisor se aapka callback schedule karwa deti hoon jo aapse connect karenge. Thank you for your time, have a wonderful day!"
+        else:
+            closing_en = "Thank you for your time, Sir! I’ve noted all the details, and our senior property advisor will connect with you shortly... Have a wonderful day!"
+            closing_hi = "Apna time dene ke liye thank you, Sir! Maine details note kar li hain, aur hamare senior property advisor aapse jald hi connect karenge. Have a wonderful day!"
     elif "not interested" in disp:
         closing_en = "Understood Sir, no problem at all! Thank you for your time... Have a wonderful day!"
         closing_hi = "Samajh gayi Sir, koi baat nahi! Apna time dene ke liye thank you... Have a wonderful day!"
