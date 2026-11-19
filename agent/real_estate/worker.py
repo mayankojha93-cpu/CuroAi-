@@ -993,8 +993,8 @@ async def entrypoint(ctx: agents.JobContext):
 
         raw_text = getattr(ev, "transcript", None) or getattr(ev, "text", "")
         if raw_text and raw_text.strip():
-            # Safety override: if human callback / personal busy pattern is present, never drop as carrier
-            if not _HUMAN_CALLBACK_RE.search(raw_text):
+            # Safety override: carrier detection only runs during initial intro before human engagement
+            if state.step == RealEstateStep.INTRODUCTION and not _HUMAN_CALLBACK_RE.search(raw_text):
                 carrier_kind = classify_carrier_message(raw_text)
                 if carrier_kind:
                     logger.warning(f"📵 Carrier announcement ({carrier_kind}) on audio stream: '{raw_text.strip()[:100]}'. Dropping call immediately.")
@@ -1050,7 +1050,7 @@ async def entrypoint(ctx: agents.JobContext):
 
                 if state.step == RealEstateStep.CLOSING or "close_call" in content_str:
                     logger.info("Closing message spoken; initiating delayed hangup (no-op if already scheduled)...")
-                    asyncio.create_task(tools_instance._delayed_hangup())
+                    asyncio.create_task(tools_instance._delayed_hangup(clean_agent_text))
 
     @session.on("close")
     def on_session_close(ev):
@@ -1282,9 +1282,9 @@ async def entrypoint(ctx: agents.JobContext):
             # Flow requirement:
             # - After intro: wait 4sec. If silent -> nudge ("Kya aap line par hain? / Are you still with me?")
             # - After nudge finishes: wait 3sec. If still silent -> drop call.
-            # - Mid-call: allow slightly more breathing room (5.0s nudge, 4.0s drop)
-            silence_limit = 4.0 if not has_customer else 5.0
-            drop_limit = 3.0 if not has_customer else 4.0
+            # - Mid-call / Active intake: wait 8sec for natural breathing room to think or check documents, and 8sec drop window.
+            silence_limit = 4.0 if not has_customer else 8.0
+            drop_limit = 3.0 if not has_customer else 8.0
 
             if state.consecutive_silence == 0:
                 if idle > silence_limit:
