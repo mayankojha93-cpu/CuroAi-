@@ -127,7 +127,10 @@ class RealEstateState:
         self.valuation_requested: bool = False
         # Raw text of the customer's latest turn (used by tools to reject hallucinated args)
         self.last_user_text: str = ""
-        # The last question Priya actually spoke (for "repeat that" at any step)
+        # Rolling recent customer turns (window of last 5 turns) to avoid losing intent/slots
+        # during preemptive generation, interruptions, and micro backchannels.
+        self.recent_user_texts: List[str] = []
+        # The last question the agent actually spoke (for "repeat that" at any step)
         self.last_agent_question: str = ""
         self.hangup_started: bool = False
         self.outcome_posted: bool = False
@@ -151,6 +154,21 @@ class RealEstateState:
 
         # Pre-synthesised audio frames for fixed lines, keyed by the exact text (see worker.py / tools.say_cached)
         self.audio_cache: Dict[str, list] = {}
+
+    def push_user_text(self, text: str):
+        t = (text or "").strip()
+        self.last_user_text = t
+        if t:
+            self.recent_user_texts.append(t)
+            if len(self.recent_user_texts) > 5:
+                self.recent_user_texts.pop(0)
+
+    def get_recent_speech_context(self, max_turns: int = 3) -> str:
+        """Returns concatenated recent user utterances for grounded verification."""
+        turns = [t for t in self.recent_user_texts[-max_turns:] if t]
+        if self.last_user_text and (not turns or self.last_user_text != turns[-1]):
+            turns.append(self.last_user_text)
+        return " ".join(turns)
 
     def add_transcript(self, role: str, text: str):
         if text and text.strip():
@@ -235,22 +253,6 @@ class RealEstateState:
         Return the list of missing fields for the active branch in strict script order.
         Each item includes field id, descriptive label, and canonical question in EN & HI.
         """
-        # Auto-correct step if category or property type indicates commercial vs residential mismatch
-        if self.commercial_type or (self.category and self.category == "commercial"):
-            self.category = "commercial"
-            self.bhk_config = None  # Commercial units never have BHK
-            if self.step == RealEstateStep.RESIDENTIAL_SALE:
-                self.step = RealEstateStep.COMMERCIAL_SALE
-            elif self.step == RealEstateStep.RESIDENTIAL_LEASE:
-                self.step = RealEstateStep.COMMERCIAL_LEASE
-        elif self.bhk_config or (self.category and self.category == "residential"):
-            self.category = "residential"
-            self.commercial_type = None  # Residential properties never have commercial type
-            if self.step == RealEstateStep.COMMERCIAL_SALE:
-                self.step = RealEstateStep.RESIDENTIAL_SALE
-            elif self.step == RealEstateStep.COMMERCIAL_LEASE:
-                self.step = RealEstateStep.RESIDENTIAL_LEASE
-
         missing: List[Dict[str, str]] = []
         has_known_loc = bool(
             (self.initial_property_location and self.initial_property_location.strip())
