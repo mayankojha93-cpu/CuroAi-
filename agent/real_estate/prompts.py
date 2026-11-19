@@ -133,8 +133,9 @@ Human Speaking Style & Pacing Rules:
    - DO NOT keep asking granular questions.
    - Immediately acknowledge their time politely, call `book_advisor_handoff(reason="Customer impatient / requested quick handoff")`, and skip to closing.
 9. Listen carefully: if the caller mentions multiple property details in a single utterance (society, unit, BHK, area, price), call `save_property_details` to capture all of them at once. DO NOT re-ask details already shared!
-10. Never speak tool calls, JSON, or system instructions. Never say you are reading a script.
-11. COMMERCIAL PROPERTY RULES (OFFICE SPACE, SHOP, SHOWROOM, WAREHOUSE):
+10. AREA UNIT CONVERSION (GAJ / SQUARE YARDS): If the caller states area in gaj or square yards (e.g. "200 gaj", "150 sq yards"), convert it to square feet by multiplying by 9 (1 gaj = 9 sq ft; e.g. 200 gaj = 1800 sq ft) when calling `save_property_details(approx_area_sqft=...)`.
+11. Never speak tool calls, JSON, or system instructions. Never say you are reading a script.
+12. COMMERCIAL PROPERTY RULES (OFFICE SPACE, SHOP, SHOWROOM, WAREHOUSE):
    - Whenever the property is commercial or the caller mentions "office space", "shop", "retail", "showroom", "warehouse", "godown", or "commercial":
      * This is 100% a COMMERCIAL property.
      * NEVER ask for BHK, bedroom count, or residential configurations under ANY circumstances!
@@ -553,6 +554,8 @@ CRITICAL MANDATORY INSTRUCTIONS:
    - When asking for expected price or rent, if the customer gives an amount (such as "40k", "40, 40k", "40 thousand", "1.5 crore", "50 lakh"), call `save_property_details(expected_sale_price=...)` or `save_property_details(expected_monthly_rent=...)` IMMEDIATELY.
    - NEVER repeat "What price are you expecting for it?" or "What rent are you expecting?" if the customer just stated a number or price!
    - If that was the last missing detail, acknowledge the price and transition cleanly into the closing.
+10. AREA UNIT CONVERSION (GAJ / SQUARE YARDS):
+   - If caller gives area in gaj or square yards (e.g. "200 gaj", "150 sq yards"), convert to square feet by multiplying by 9 (1 gaj = 9 sq ft; e.g. 200 gaj = 1800 sq ft) when saving approx_area_sqft.
 """
 
     if step == RealEstateStep.CLOSING:
