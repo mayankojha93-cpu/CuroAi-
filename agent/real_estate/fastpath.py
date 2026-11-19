@@ -115,22 +115,10 @@ def _x_area(v: str, open_field: str) -> Optional[Dict[str, Any]]:
     if _OTHER_UNIT.search(v):
         return None  # not square feet -> let the LLM deal with it
     m = _AREA.search(v)
-    if m:
-        val = _to_float(m.group(1))
-        if val is not None and 50 <= val <= 1_000_000:
-            return {"approx_area_sqft": val}
-    if open_field == "approx_area":
-        # Handle natural conversational replies like "Uh, it would be approx 1,200." or "around 1400"
-        cleaned = re.sub(r"(?<=\d),(?=\d)", "", v)
-        nums = re.findall(r"\b\d+(?:\.\d+)?\b", cleaned)
-        if len(nums) == 1:
-            val = float(nums[0])
-            if 50 <= val <= 1_000_000:
-                return {"approx_area_sqft": val}
-        raw = _bare_number(v, _AREA_FILL)
-        val = _to_float(raw) if raw else None
-        if val is not None and 50 <= val <= 1_000_000:
-            return {"approx_area_sqft": val}
+    raw = m.group(1) if m else (_bare_number(v, _AREA_FILL) if open_field == "approx_area" else None)
+    val = _to_float(raw) if raw else None
+    if val is not None and 50 <= val <= 1_000_000:
+        return {"approx_area_sqft": val}
     return None
 
 

@@ -185,7 +185,6 @@ def commercial_type_from_speech(text: Any) -> Optional[str]:
 _STANDALONE_RE = re.compile(
     r"(?<![a-z])("
     r"stand[\s\-]?alone|standard[\s\-]?alone|standard[\s\-]?allen|standard[\s\-]?alan|"
-    r"(?:stand[\s\-]?alone|independent|free[\s\-]?standing)\s*(?:property|properties|building|house|home|unit|bungalow|villa|kothi|makan|makaan|ghar|plot|shop|office|showroom|warehouse|godown)|"
     r"free[\s\-]?standing|independent(?!\s+(?:floor|builder))|"
     r"villa|villas|duplex\s*villa|kothi|kothis|bungalow|bungalows|bangla|bangalow|haveli|haweli|"
     r"row[\s\-]?house|rowhouse|town[\s\-]?house|townhouse|"
@@ -337,19 +336,28 @@ class RealEstateTools:
     # Human feel: natural Indian sales affirmations with breathing pauses (commas/ellipses)
     # Never ends with a blunt period, so TTS doesn't drop pitch mechanically.
     _ACK_HI = (
-        "Achha,", "Haan ji,", "Theek hai,", "Samajh gayi,", "Bilkul,", "Okay ji,",
-        "Achha theek hai,", "Ji,", "Perfect,", "Chaliye,",
+        "Achha ji, ",
+        "Haanji Sir... ",
+        "Theek hai ji, ",
+        "Samajh gayi Sir... ",
+        "Ji noted Sir, ",
+        "Bilkul Sir, ",
+        "Achha, theek hai ji... ",
+        "Right Sir, noted... ",
+        "Perfect Sir, ",
     )
     _ACK_EN = (
-        "Got it,", "Okay,", "Sure,", "Alright,", "Right,", "Great,", "Okay, nice,",
-        "Oh okay,", "Perfect,", "Cool,",
+        "Got it, Sir... ",
+        "Sure Sir, ",
+        "Alright, Sir... ",
+        "Understood, Sir... ",
+        "Great, Sir... ",
+        "Right, noted Sir... ",
+        "Perfect, Sir... ",
+        "Okay, great... ",
     )
-    # short word said AFTER an echoed detail: "3 BHK, perfect." / "Okay, 3 BHK."
-    _SHORT_ACK_HI = ("achha", "theek hai", "perfect", "badhiya", "bilkul", "okay")
-    _SHORT_ACK_EN = ("got it", "perfect", "okay", "nice", "great", "alright")
-    # joins the acknowledgement to the next question so it flows like one thought
-    _JOIN_EN = ("And", "And", "So", "Also,")
-    _JOIN_HI = ("Aur", "Toh", "Aur batayein,", "Achha aur", "Waise")
+    _SHORT_ACK_HI = ("achha ji", "theek hai ji", "perfect Sir", "noted ji", "great Sir", "bilkul Sir")
+    _SHORT_ACK_EN = ("got it, Sir", "perfect, Sir", "noted, Sir", "great, Sir", "alright, Sir")
 
     def _pick(self, pool):
         """Random choice that never repeats the previous acknowledgement (same opening word every turn
@@ -360,64 +368,20 @@ class RealEstateTools:
         self._last_ack = key(pick)
         return pick
 
-    def _sir(self, en: bool) -> str:
-        """', Sir' only now and then (never two replies in a row): a person doesn't say it every sentence."""
-        self._since_sir = getattr(self, "_since_sir", 9) + 1
-        if self._since_sir >= 3 and random.random() < 0.6:
-            self._since_sir = 0
-            return ", Sir" if en else " Sir"
-        return ""
-
-    @staticmethod
-    def _strip_lead(question: str):
-        """('And which floor...') -> ('which floor...', True) so we can attach a fresh, varied connector."""
-        m = re.match(r"^\s*(?:right,?\s*)?(?:and|also|aur|toh|waise)\s*,?\s+", question, re.I)
-        if m:
-            return question[m.end():], True
-        return question, False
-
     def _fast(self, question: str, fallback: str, ack: Optional[str] = "auto", echo: Optional[str] = None) -> str:
         """If FAST_TOOL_REPLY is on, store the exact line to speak in state.direct_reply and
         return a neutral tool result. llm_node then speaks it without calling the LLM again.
-        Otherwise return `fallback` (the original instruction string) = old behaviour.
-
-        Human feel: the acknowledgement style changes from turn to turn (echo / plain ack / no ack),
-        'Sir' is used sparingly, and the next question is joined with a varied connector."""
+        Otherwise return `fallback` (the original instruction string) = old behaviour."""
         if not FAST_TOOL_REPLY or not question:
             return fallback
         en = self.state.reply_lang == "en"
-        body, followup = self._strip_lead(question)
-
-        def join(prefix: str) -> str:
-            """prefix + question, joined naturally."""
-            if followup:
-                conn = random.choice(self._JOIN_EN if en else self._JOIN_HI)
-                return f"{prefix} {conn} {body}".strip()
-            return f"{prefix} {question}".strip()
-
         if echo:
+            # "3 BHK... perfect Sir... " / "704 on 7th floor... noted Sir... " -> sounds like an attentive real person
             short = self._pick(self._SHORT_ACK_EN if en else self._SHORT_ACK_HI)
-            e = f"{echo[:1].upper()}{echo[1:]}"
-            style = random.choice(("echo_ack", "echo_ack", "ack_echo", "echo_only"))
-            if style == "echo_ack":
-                prefix = f"{e}, {short}{self._sir(en)}."
-            elif style == "ack_echo":
-                lead = self._pick(self._ACK_EN if en else self._ACK_HI).rstrip(",")
-                low = echo[:1].lower() + echo[1:] if len(echo) > 1 and echo[0].isalpha() and echo[1].islower() else echo
-                prefix = f"{lead}, {low}."
-            else:
-                prefix = f"{e}."
-            text = join(prefix)
+            ack = f"{echo[:1].upper()}{echo[1:]}... {short}..."
         elif ack == "auto":
-            if random.random() < 0.25:            # sometimes no acknowledgement at all, like a real person
-                text = question
-            else:
-                lead = self._pick(self._ACK_EN if en else self._ACK_HI).rstrip(",")
-                lead = f"{lead}{self._sir(en)}."
-                text = join(lead)
-        else:
-            text = f"{ack} {question}".strip() if ack else question
-        text = re.sub(r"\s+", " ", text).replace(",,", ",").replace(" ,", ",")
+            ack = self._pick(self._ACK_EN if en else self._ACK_HI)
+        text = f"{ack} {question}".strip() if ack else question
         self.state.direct_reply = text
         return f"Reply already spoken to the customer: '{text}'. Do not repeat it."
 
