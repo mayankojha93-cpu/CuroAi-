@@ -11,9 +11,9 @@ from typing import Optional
 
 # 1. IVR Detection Phrases (English)
 _IVR_ENGLISH_PATTERNS = [
-    r"thank you for calling",
+    r"thank you for calling\s+(our\s+customer\s+service|airtel|jio|vi|vodafone|bsnl|customer\s*care|,\s*goodbye\b)",
     r"welcome to (our|the)?\s*service",
-    r"welcome to\b",
+    r"welcome to\s+(airtel|jio|vi|vodafone|bsnl|customer\s*care|our\s*(customer\s*)?service)\b",
     r"please listen carefully",
     r"please select an option",
     r"(kindly|please)\s+choose\s+(from\s+)?(the\s+following\s+options|an\s+option)",
@@ -74,8 +74,8 @@ _VOICEMAIL_ENGLISH_PATTERNS = [
     r"(the\s+)?voice\s*mail( box)? is not set up",
     r"sorry,?\s*(the\s+)?person you are trying to reach",
     r"please try your call again later",
-    r"voice\s*mail",
-    r"mail\s*box",
+    r"(forwarded\s+to|reached|leave\s+a\s+message\s+in)\s+(the\s+)?voice\s*mail",
+    r"(forwarded\s+to|reached|leave\s+a\s+message\s+in)\s+(the\s+)?mail\s*box",
 ]
 
 # 3. Answering Machine Detection Phrases (English)
@@ -139,7 +139,7 @@ _INDIAN_IVR_PATTERNS = [
     r"आपका इंतज़ार करने के लिए धन्यवाद",
     r"aapki call jodi ja rahi hai",
     r"आपकी कॉल जोड़ी जा रही है",
-    r"dabayein|dabaiye|दबाएं|दबाइए",
+    r"(?:ke\s*liye|options?|vikalp|\d)\s*(?:ko)?\s*(?:dabayein|dabaiye|दबाएं|दबाइए)",
 ]
 
 # 5. Indian Voicemail Detection Phrases (Hindi / Hinglish – Roman Script & Devanagari)
@@ -163,8 +163,8 @@ _INDIAN_VOICEMAIL_PATTERNS = [
     r"aapka sandesh record hone ke baad",
     r"sandesh chhod",
     r"संदेश छोड़",
-    r"उपलब्ध नहीं",
-    r"uplabdh nahi",
+    r"(?:subscriber|grahak|number|vyakti|customer|sewa|call\s*receive\s*karne)\s+.*(?:uplabdh\s*nahi|उपलब्ध\s*नहीं)",
+    r"(?:uplabdh\s*nahi|उपलब्ध\s*नहीं)\s+(?:hai|hain|है|हैं)\s*(?:kripya|baad\s*mein|kuch\s*der)",
 ]
 
 # 6. Additional Automated System Phrases
@@ -178,7 +178,7 @@ _AUTOMATED_SYSTEM_PATTERNS = [
     r"sorry,?\s*i didn't get that",
     r"invalid selection",
     r"incorrect input",
-    r"please try again",
+    r"(?:invalid\s*selection|incorrect\s*input|call\s*cannot\s*be\s*completed).*(?:please\s+)?try\s+again",
     r"your session has expired",
     r"you have entered an invalid option",
     r"number you have dialed is currently switched off",
@@ -188,8 +188,8 @@ _AUTOMATED_SYSTEM_PATTERNS = [
     r"number you have dialed does not exist",
     r"call cannot be completed as dialed",
     r"please check the number and try again",
-    r"switched off",
-    r"स्विच(्ड)?\s*ऑफ",
+    r"(?:number|phone|mobile|subscriber|grahak)\s+.*(?:is\s+)?(?:currently\s+)?(?:switched\s*off|स्विच(?:्ड)?\s*ऑफ)",
+    r"(?:switched\s*off|स्विच(?:्ड)?\s*ऑफ)\s*(?:hai|aa\s*raha|bata\s*raha)",
     r"not reachable",
     r"can\s*not be reached",
     r"pahunch se bahar",
