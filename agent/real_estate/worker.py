@@ -370,17 +370,46 @@ def _apply_disconnect_disposition(state: RealEstateState):
 
     # Callee answered the phone (connected, duration > 0)
     state.callee_connected = True
+
+    # Check what property details were captured before disconnection
+    details_captured = []
+    if state.unit_number and state.unit_number != "Standalone":
+        details_captured.append(f"unit {state.unit_number}")
+    if state.floor_number and state.floor_number != "Ground":
+        details_captured.append(f"floor {state.floor_number}")
+    if state.bhk_config:
+        details_captured.append(state.bhk_config)
+    if state.commercial_type:
+        details_captured.append(state.commercial_type)
+    if state.approx_area_sqft:
+        details_captured.append(f"{state.approx_area_sqft} sq ft")
+    if state.furnishing_status:
+        details_captured.append(state.furnishing_status)
+    if state.expected_sale_price:
+        details_captured.append(f"price {state.expected_sale_price}")
+    if state.expected_monthly_rent:
+        details_captured.append(f"rent {state.expected_monthly_rent}")
+
     if state.final_disposition in (
         "Abruptly Disconnected Call",
         "Not Connected (No Answer)",
         "Interested (Disconnected)",
         "Partial Details Captured (Disconnected)",
     ):
-        state.final_disposition = "Abruptly Disconnected Call"
-        if not has_customer_speech:
-            state.agent_summary = state.agent_summary or "Customer answered the call but hung up during introduction"
+        if details_captured:
+            state.final_disposition = "Partial Details Captured (Disconnected)"
+            summary_desc = ", ".join(details_captured[:4])
+            state.agent_summary = f"Partial details captured ({summary_desc}) but caller disconnected before call completion"
+        elif state.is_interested or state.intent:
+            state.final_disposition = "Interested (Disconnected)"
+            intent_desc = f"to {state.intent}" if state.intent else ""
+            state.agent_summary = f"Caller expressed interest {intent_desc} but disconnected before property details could be captured".strip()
         else:
-            state.agent_summary = state.agent_summary or "Customer hung up abruptly during the call"
+            state.final_disposition = "Abruptly Disconnected Call"
+            if not has_customer_speech:
+                state.agent_summary = state.agent_summary or "Customer answered the call but hung up during introduction"
+            else:
+                state.agent_summary = state.agent_summary or "Customer hung up abruptly during the call"
 
 
 def post_re_outcome_sync(state: RealEstateState) -> bool:
@@ -762,7 +791,15 @@ async def entrypoint(ctx: agents.JobContext):
             if line:
                 logger.info(line)
 
-    turn_opts = {"preemptive_generation": {"enabled": PREEMPTIVE_GENERATION}}
+    turn_opts = {
+        "preemptive_generation": {"enabled": PREEMPTIVE_GENERATION},
+        "interruption": {
+            "mode": "adaptive",
+            "min_words": 2,
+            "min_duration": 0.5,
+            "resume_false_interruption": True,
+        },
+    }
     endpointing_opts = {}
     if ENDPOINT_MIN_DELAY is not None:
         endpointing_opts["min_delay"] = ENDPOINT_MIN_DELAY
@@ -1294,10 +1331,7 @@ async def entrypoint(ctx: agents.JobContext):
                     except Exception:
                         pass
 
-                    if not has_customer:
-                        state.final_disposition = "Not Connected (No Answer)"
-                    elif state.final_disposition in ("Abruptly Disconnected Call", "Not Connected (No Answer)"):
-                        state.final_disposition = "Abruptly Disconnected Call"
+                    _apply_disconnect_disposition(state)
                     state.hangup_started = True
                     await _save_and_shutdown()
                     break
