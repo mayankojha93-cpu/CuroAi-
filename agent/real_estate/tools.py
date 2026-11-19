@@ -4,7 +4,7 @@ import logging
 import asyncio
 from typing import Optional, List, Dict, Any, Union
 from livekit.agents import function_tool
-from .state import RealEstateState, RealEstateStep
+from .state import RealEstateState, RealEstateStep, format_clean_location
 from .prompts import get_step_instructions, get_closing_text
 from .config import FAST_TOOL_REPLY, AGENT_PERSONA_NAME
 
@@ -185,7 +185,15 @@ def commercial_type_from_speech(text: Any) -> Optional[str]:
 _STANDALONE_RE = re.compile(
     r"(?<![a-z])("
     r"stand[\s\-]?alone|standard[\s\-]?alone|standard[\s\-]?allen|standard[\s\-]?alan|"
-    r"free[\s\-]?standing|independent|"
+    r"free[\s\-]?standing|independent(?!\s+(?:floor|builder))|"
+    r"villa|villas|duplex\s*villa|kothi|kothis|bungalow|bungalows|bangla|bangalow|haveli|haweli|"
+    r"row[\s\-]?house|rowhouse|town[\s\-]?house|townhouse|"
+    r"farm[\s\-]?house|farmhouse|farm[\s\-]?land|farmland|"
+    r"plot|plots|khali\s*plot|open\s*land|land|lands|zameen|zamin|jameen|jamin|kheti|"
+    r"independent\s*(?:house|home|building|property|bungalow|villa|kothi|makan|makaan|ghar)|"
+    r"own\s*(?:house|building|property|home)|single\s*(?:house|building|family\s*home)|"
+    r"apna\s*(?:ghar|makan|makaan)|khud\s*ka\s*(?:ghar|makan|makaan)|"
+    r"godown|warehouse|factory|shed|industrial\s*shed|karkhana|"
     r"no\s+(unit|flat|floor|door|house|even)\s*(number|no\.?|num)?|"
     r"(there\s+is\s+)?no\s+unit|"
     r"(unit|flat|floor)\s*(number)?\s*(nahi|nahin|not|nhi|hai\s*hi\s*nahi)|"
@@ -194,7 +202,13 @@ _STANDALONE_RE = re.compile(
     r")(?![a-z])",
     re.I
 )
-_STANDALONE_DEV = re.compile(r"(स्टैंड\s?अलोन|स्टैंडअलोन|स्टैंडर्ड\s?अलोन|इंडिपेंडेंट|इंडिपेंडेन्ट|फ्री\s?स्टैंडिंग)")
+_STANDALONE_DEV = re.compile(
+    r"(स्टैंड\s?अलोन|स्टैंडअलोन|स्टैंडर्ड\s?अलोन|इंडिपेंडेंट|इंडिपेंडेन्ट|फ्री\s?स्टैंडिंग|"
+    r"विला|विले|कोठी|कोठियां|प्लॉट|प्लाट|प्लॉट्स|प्लाट्स|खाली\s*प्लॉट|खाली\s*जगह|"
+    r"बंगलो|बंगलॉ|बंगला|हवेली|फार्महाउस|फार्म\s*हाउस|फार्मलैंड|जमीन|ज़मीन|खेती|"
+    r"इंडिपेंडेंट\s*(घर|मकान|बिल्डिंग|प्रॉपर्टी|विला|कोठी)?|"
+    r"अपना\s*(घर|मकान)|खुद\s*का\s*(घर|मकान)|गोदाम|कारखाना|शेड)"
+)
 _STANDALONE_NEG_RE = re.compile(
     r"(not\s+(a\s+|an\s+)?(stand[\s\-]?alone|free[\s\-]?standing|independent)"
     r"|(stand[\s\-]?alone|free[\s\-]?standing|independent)\s+(nahi|nahin|nhi)"
@@ -231,6 +245,54 @@ def ask_new_location_question(lang: str) -> str:
     )
 
 
+def normalize_amount_str(val: Any, intent: str = "sale") -> Optional[str]:
+    s = _clean_str(val)
+    if not s:
+        return None
+    s = s.strip()
+
+    # 1. Phonetic "k" or "ke" -> thousand (e.g. "40 ke" / "40k" / "40 k")
+    s = re.sub(r'(?i)\b(\d+(?:\.\d+)?)\s*(?:ke|k)\b', r'\1 thousand', s)
+
+    # 2. Hindi Devanagari amounts -> English units
+    s = re.sub(r'(?i)\bलाख\b', 'lakh', s)
+    s = re.sub(r'(?i)\b(करोड़|करोड)\b', 'crore', s)
+    s = re.sub(r'(?i)\b(हज़ार|हजार)\b', 'thousand', s)
+
+    # 3. Already has recognized unit?
+    if re.search(r'(?i)\b(crore|crores|cr|lakh|lakhs|lac|lacs|laakh|thousand|hazar|hazaar)\b', s):
+        s = re.sub(r'(?i)\b(crores|cr)\b', 'crore', s)
+        s = re.sub(r'(?i)\b(lakhs|lac|lacs|laakh)\b', 'lakh', s)
+        s = re.sub(r'(?i)\b(hazar|hazaar)\b', 'thousand', s)
+        return s
+
+    # 4. Bare number: extract numeric value
+    m = re.search(r'([0-9]+(?:\.[0-9]+)?)', s.replace(',', ''))
+    if not m:
+        return s
+    num = float(m.group(1))
+
+    if intent == "lease":
+        # In Indian rentals: 5 to 999 = thousands (e.g. 40 -> "40 thousand", meaning 40k/month)
+        if 5 <= num < 1000:
+            formatted_num = int(num) if num.is_integer() else num
+            return f"{formatted_num} thousand"
+        elif num >= 1000:
+            return str(int(num) if num.is_integer() else num)
+    else:
+        # In Indian sales: 0.5 to 9.9 with decimal = crore (e.g. 1.5 -> "1.5 crore")
+        if 0.5 <= num < 10 and "." in m.group(1):
+            return f"{num} crore"
+        # 5 to 999 = lakhs (e.g. 40 -> "40 lakh", 85 -> "85 lakh")
+        elif 5 <= num < 1000:
+            formatted_num = int(num) if num.is_integer() else num
+            return f"{formatted_num} lakh"
+        elif num >= 1000:
+            return str(int(num) if num.is_integer() else num)
+
+    return s
+
+
 async def _replay(frames):
     for f in frames:
         yield f
@@ -255,7 +317,7 @@ def _grounded(category, intent, heard):
     if heard:
         c = classify_category(heard)
         i = classify_intent(heard)
-        return c or classify_category(category), i or classify_intent(intent)
+        return c, i
     return classify_category(category), classify_intent(intent)
 
 
@@ -358,6 +420,11 @@ class RealEstateTools:
                 fl = str(floor)
                 fl = fl if "floor" in fl.lower() else f"{fl} floor"
                 return f"{unit} on {fl}"
+            if unit and self._in_heard(unit):          # only the unit was new this turn
+                return f"Unit {unit}"
+            if floor and self._in_heard(floor):        # only the floor was new this turn
+                fl = str(floor)
+                return fl if "floor" in fl.lower() else f"{fl} floor"
             bhk = new("bhk_config")
             if bhk and self._in_heard(bhk):
                 return str(bhk) if re.search(r"bhk", str(bhk), re.I) else f"{bhk} BHK"
@@ -381,12 +448,16 @@ class RealEstateTools:
         return None
 
     def _apply_standalone(self):
-        """'independent house' / 'standalone' / 'freestanding building' said in the caller's latest words
+        """'independent house' / 'standalone' / 'villa' / 'kothi' / 'plot' said in the caller's latest words
         -> no unit number or floor exists, so get_missing_fields() must stop asking for them. Called before
         every tool that computes the next question, so it also works when it is said at the very first reply."""
         if not self.state.is_standalone and is_standalone_from_speech(self.state.last_user_text):
             self.state.is_standalone = True
-            logger.info("Standalone/independent property -> unit number & floor will be skipped")
+            if not self.state.unit_number:
+                self.state.unit_number = "Standalone"
+            if not self.state.floor_number:
+                self.state.floor_number = "Ground"
+            logger.info("Standalone/independent property (villa/kothi/plot/house) -> unit & floor set to Standalone")
 
     async def _go(self, next_step: RealEstateStep):
         """Transition step and synchronize agent instructions and available tools."""
@@ -490,10 +561,11 @@ class RealEstateTools:
             )
             return self._fast(cat_q, f"Ask category: '{cat_q}'", ack="auto")
         elif self.state.category:
+            # The opening line already asked "sell or rent?"; do not read the same words back again.
             int_q = (
-                "Are you looking to sell or rent it out?"
+                "Is it for sale, or for rent?"
                 if self.state.reply_lang == "en"
-                else "Aap ise sell karna chahte hain, ya rent par dena?"
+                else "Ye sale ke liye hai, ya rent ke liye?"
             )
             return self._fast(int_q, f"Ask intent: '{int_q}'", ack="auto")
         else:
@@ -840,12 +912,35 @@ class RealEstateTools:
             self.state.furnishing_status = clean_furnishing
 
         clean_price = _clean_str(expected_sale_price)
-        if clean_price:
-            self.state.expected_sale_price = clean_price
-
         clean_rent = _clean_str(expected_monthly_rent)
-        if clean_rent:
-            self.state.expected_monthly_rent = clean_rent
+
+        heard_low = (self.state.last_user_text or "").lower()
+        has_rent_marker = bool(re.search(r"\b(per\s*month|par\s*manth|par\s*month|mahina|mahine|har\s*mahine|rent|kiraya|monthly|kiraye)\b", heard_low))
+        has_sale_marker = bool(re.search(r"\b(crore|crores|cr|bechna|bechni|sell|sale|total\s*price|full\s*price)\b", heard_low))
+
+        # Check cross-intent auto-pivot:
+        if clean_rent or (clean_price and has_rent_marker):
+            amt = clean_rent or clean_price
+            self.state.expected_monthly_rent = normalize_amount_str(amt, intent="lease")
+            self.state.expected_sale_price = None
+            if self.state.intent != "lease":
+                self.state.intent = "lease"
+                logger.info(f"🔄 Auto-pivoted intent to lease from rent amount/keywords: '{amt}'")
+                if self.state.step in (RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.CATEGORY_SELECT):
+                    await self._go(RealEstateStep.RESIDENTIAL_LEASE)
+                elif self.state.step == RealEstateStep.COMMERCIAL_SALE:
+                    await self._go(RealEstateStep.COMMERCIAL_LEASE)
+        elif clean_price or (clean_rent and has_sale_marker):
+            amt = clean_price or clean_rent
+            self.state.expected_sale_price = normalize_amount_str(amt, intent="sale")
+            self.state.expected_monthly_rent = None
+            if self.state.intent != "sale":
+                self.state.intent = "sale"
+                logger.info(f"🔄 Auto-pivoted intent to sale from price amount/keywords: '{amt}'")
+                if self.state.step in (RealEstateStep.RESIDENTIAL_LEASE, RealEstateStep.CATEGORY_SELECT):
+                    await self._go(RealEstateStep.RESIDENTIAL_SALE)
+                elif self.state.step == RealEstateStep.COMMERCIAL_LEASE:
+                    await self._go(RealEstateStep.COMMERCIAL_SALE)
 
         if is_currently_leased is not None:
             if isinstance(is_currently_leased, bool):
@@ -927,9 +1022,9 @@ class RealEstateTools:
         self.state.final_disposition = "Qualified Lead"
 
         details = [f"{cat} {intn}"]
-        if self.state.project_or_society:
-            loc = f", {self.state.sector_or_location}" if self.state.sector_or_location else ""
-            details.append(f"{self.state.project_or_society}{loc}")
+        loc_str = format_clean_location(self.state.project_or_society, self.state.sector_or_location)
+        if loc_str != "N/A":
+            details.append(loc_str)
         if self.state.is_standalone:
             details.append("Standalone/Independent property")
         if self.state.unit_number or self.state.floor_number:
@@ -983,7 +1078,8 @@ class RealEstateTools:
         slot = f"{preferred_day or ''} {time_slot or ''}".strip() or "General"
         self.state.callback_time_slot = slot
         self.state.final_disposition = "Schedule Callback"
-        self.state.agent_summary = f"Callback scheduled for: {slot}"
+        note = " (owner not available; someone else answered the phone)" if getattr(self.state, "third_party_answered", False) else ""
+        self.state.agent_summary = f"Callback scheduled for: {slot}{note}"
         await self._go(RealEstateStep.CLOSING)
         return f"Callback scheduled for {slot}. Confirm with customer and speak closing."
 
