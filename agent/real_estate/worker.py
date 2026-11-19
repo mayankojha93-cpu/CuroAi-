@@ -53,7 +53,7 @@ from .config import (
     PRERENDER_COMMON,
 )
 from .state import RealEstateState, RealEstateStep
-from .agent import RealEstateAgent
+from .agent import RealEstateAgent, is_human_unavailable
 from .tools import RealEstateTools
 from .prompts import _owner_call_name
 from .audio_recorder import RoomAudioRecorder
@@ -945,7 +945,7 @@ async def entrypoint(ctx: agents.JobContext):
         raw_text = getattr(ev, "transcript", None) or getattr(ev, "text", "")
         is_final = getattr(ev, "is_final", True)
         if is_final and raw_text and raw_text.strip():
-            carrier_kind = classify_carrier_message(raw_text)
+            carrier_kind = None if is_human_unavailable(raw_text) else classify_carrier_message(raw_text)
             if carrier_kind:
                 logger.warning(f"📵 Carrier announcement ({carrier_kind}) on audio stream: '{raw_text.strip()[:100]}'")
                 state.add_transcript("system", f"[carrier announcement: {carrier_kind}] {raw_text.strip()}")
@@ -977,7 +977,7 @@ async def entrypoint(ctx: agents.JobContext):
                     content_str = part_s
 
             if role in ("user", "customer") and content_str:
-                carrier_kind = classify_carrier_message(content_str)
+                carrier_kind = None if is_human_unavailable(content_str) else classify_carrier_message(content_str)
                 if carrier_kind:
                     return
                 log_dialogue("customer", romanize_hindi(content_str.strip()))
@@ -1031,9 +1031,9 @@ async def entrypoint(ctx: agents.JobContext):
             parts = [p.strip() for p in clean_loc.split(",") if p.strip()]
             spoken_loc = f"{parts[1]}, {parts[0]}" if len(parts) >= 2 else (parts[0] if parts else clean_loc)
             return (
-                f"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. I'm calling about your property in {spoken_loc}... Were you looking to sell or rent it out?"
+                f"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. I'm calling about your property in {spoken_loc}... Are you looking to sell it, or rent it out?"
                 if state.reply_lang == "en"
-                else f"{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se. Aapki {spoken_loc} wali property ke baare mein call kiya tha... Kya aap use sell karne ka plan kar rahe hain ya rent out?"
+                else f"{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se. Aapki {spoken_loc} wali property ke baare mein call kiya tha... Aap ise sell karna chahte hain, ya rent par dena?"
             )
         return (
             f"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. We connect property owners directly with verified buyers... Do you own any property that you'd like to sell or rent out?"
