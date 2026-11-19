@@ -67,6 +67,10 @@ class RealEstateState:
         self.answered_at: Optional[float] = None
         self.start_time: float = time.time()
         self.last_activity_time: float = time.time()
+        self.hold_until: float = 0.0
+        self.consecutive_silence: int = 0
+        self.greeting_acknowledged: bool = False
+        self.opening_speech_interrupted: bool = False
         self.latency_samples: List[float] = []
 
         # Current conversation step
