@@ -1069,7 +1069,7 @@ async def entrypoint(ctx: agents.JobContext):
             lines = [other_property_question(lang), ask_new_location_question(lang)]
             for disp in ('Not Interested', 'Qualified Lead', 'Advisor Callback Booked'):
                 lines.append(get_closing_text(SimpleNamespace(
-                    final_disposition=disp, reply_lang=lang, valuation_requested=False, intent=None, advisor_handoff_reason=None)))
+                    final_disposition=disp, reply_lang=lang, valuation_requested=False, intent=None)))
             for t in lines:
                 try:
                     state.audio_cache[t] = await _prerender_tts(tts, t)

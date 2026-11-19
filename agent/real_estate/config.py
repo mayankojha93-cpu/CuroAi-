@@ -75,7 +75,7 @@ TTS_TEMPERATURE = float(os.getenv("REAL_ESTATE_TTS_TEMPERATURE", "0.65"))
 #                      request is retried on OpenRouter automatically, so a call never goes silent.
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto").strip().lower() or "auto"
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "meta-llama/llama-3.1-8b-instruct")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 LLM_FALLBACK = os.getenv("LLM_FALLBACK", "1") == "1"
 LLM_ATTEMPT_TIMEOUT = float(os.getenv("LLM_ATTEMPT_TIMEOUT", "4.0"))
 
@@ -103,7 +103,7 @@ LATENCY_LOG = os.getenv("LATENCY_LOG", "1") == "1"
 # VAD silence needed to end a speech segment. 0.28s cut people off while they recited numbers
 # ("1 crore ... 20 lakh", "407 ... fourth floor"); 0.45s waits through a normal thinking pause.
 # NOTE: a VAD_MIN_SILENCE / ENDPOINT_* value in your .env overrides these defaults.
-VAD_MIN_SILENCE = float(os.getenv("VAD_MIN_SILENCE", "0.28"))
+VAD_MIN_SILENCE = float(os.getenv("VAD_MIN_SILENCE", "0.45"))
 # OpenRouter provider ordering: routes through ultra-fast LPU/hardware providers (Groq/Cerebras) first
 # with automatic fallback, dropping TTFT from ~2.5s down to 300-500ms. Set "none" to disable.
 _prov_raw = os.getenv("OPENROUTER_PROVIDER_ORDER", "Groq,Cerebras,Together,DeepInfra")
@@ -121,8 +121,8 @@ def _opt_float(name: str):
         return None
 
 # Small extra wait on top of VAD_MIN_SILENCE so a pause between two parts of one answer is not split into two turns.
-ENDPOINT_MIN_DELAY = _opt_float("ENDPOINT_MIN_DELAY") if _opt_float("ENDPOINT_MIN_DELAY") is not None else 0.15
-ENDPOINT_MAX_DELAY = _opt_float("ENDPOINT_MAX_DELAY") if _opt_float("ENDPOINT_MAX_DELAY") is not None else 0.60
+ENDPOINT_MIN_DELAY = _opt_float("ENDPOINT_MIN_DELAY") if _opt_float("ENDPOINT_MIN_DELAY") is not None else 0.25
+ENDPOINT_MAX_DELAY = _opt_float("ENDPOINT_MAX_DELAY") if _opt_float("ENDPOINT_MAX_DELAY") is not None else 0.9
 
 # Max tokens the LLM may generate per reply. 120 was too low: a tool call with many parameters
 # (save_property_details has 14) got CUT OFF mid-JSON and the caller heard nothing.

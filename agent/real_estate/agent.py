@@ -630,12 +630,6 @@ class RealEstateAgent(Agent):
             return self._q_exempt <= 6
         return False
 
-    def _is_filler_ack(self) -> bool:
-        """True when caller gave a short listening backchannel, greeting, or filler (e.g. 'hello', 'haan', 'yes', 'so...').
-        These are NOT failed attempts and must not increment failed question count."""
-        user_text = (self._re_state.last_user_text or "").strip()
-        return _is_listening_backchannel(user_text) or _is_hello_only(user_text) or len(_tokens(user_text)) <= 2
-
     async def sync_step(self):
         """Sync instructions and available tools when step changes."""
         await self.update_instructions(get_step_instructions(self._re_state))
@@ -904,7 +898,14 @@ class RealEstateAgent(Agent):
             _no_lead = False
             if _reask:
                 _n = _bump_reask(state, f"{state.step.value}|{_reask}")
-                if _n >= 3:
+                if (state.is_interested or state.step in _intake) and _n >= 3:
+                    logger.info(f"🤝 After 2 failed attempts on same question ({_n}) -> offering advisor callback and closing")
+                    try:
+                        await self._re_tools.book_advisor_handoff(reason="Could not understand caller after 2 failed attempts on same question")
+                    except Exception as e:
+                        logger.warning(f"Advisor handoff failed: {e}")
+                    raise StopResponse()
+                elif _n >= 3:
                     logger.info(f"🔁 Same question re-asked {_n}x -> handing this turn to the LLM instead of looping")
                     _reask = None
                 elif _kind and not (_asks_repeat(text) and not _neutral):
@@ -939,7 +940,14 @@ class RealEstateAgent(Agent):
                 )
             lead = "" if not loc else ("Sure, " if en else "Ji, ")
             _n = _bump_reask(state, f"INTRO|{'loc' if loc else 'noloc'}")
-            if _n >= 3:
+            if state.is_interested and _n >= 3:
+                logger.info("🤝 After 2 failed attempts on intro question -> offering advisor callback and closing")
+                try:
+                    await self._re_tools.book_advisor_handoff(reason="Could not understand caller after 2 failed attempts on same question")
+                except Exception as e:
+                    logger.warning(f"Advisor handoff failed: {e}")
+                raise StopResponse()
+            elif _n >= 3:
                 logger.info("🔁 Intro clarification asked 3x -> letting the LLM handle it")
             else:
                 logger.info(f"🔁 Repeat / location clarification at intro -> '{_rep}'")
@@ -1116,62 +1124,6 @@ class RealEstateAgent(Agent):
                         logger.warning(f"Failed to refresh instructions: {e}")
                 asyncio.create_task(_refresh_lang_instructions())
 
-        # ── Standalone / unit-floor loop protection (no LLM) ─────────────────────────────────────
-        # (1) Caller just said "standalone / independent property, building, house...": unit & floor were
-        #     set above, so acknowledge and ask the NEXT question
-        #     directly. Relying on the LLM here failed: it spoke an acknowledgement but never saved anything,
-        #     so the unit/floor question came back after the next answer.
-        # (2) Caller has answered the unit/floor question 3 times without giving a unit or a floor: stop asking.
-        _uf_steps = (
-            RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.RESIDENTIAL_LEASE,
-            RealEstateStep.COMMERCIAL_SALE, RealEstateStep.COMMERCIAL_LEASE,
-        )
-        if state.step in _uf_steps and not state.closing_spoken and text:
-            _uf_missing = state.get_missing_fields()
-            _uf_next = None
-            _uf_ack = None
-            if standalone_changed and _uf_missing and len(_tokens(text)) <= 8 and not re.search(r"\d", text):
-                # nothing else volunteered in the same sentence? (otherwise the LLM splits it)
-                if not any(_fastpath_extract(_m["id"], text) for _m in _uf_missing):
-                    _uf_next = _uf_missing[0]
-                    import random as _rnd
-                    _uf_ack = _rnd.choice(
-                        ("Okay, so it's a standalone property.", "Oh okay, standalone, got it.", "Alright, an independent property.", "Right, standalone then.")
-                        if state.reply_lang == "en" else
-                        ("Achha, toh standalone property hai.", "Okay, independent property hai, samajh gayi.", "Theek hai, standalone hai toh.")
-                    )
-            elif not standalone_changed:
-                _uf_open = bool(_uf_missing) and _uf_missing[0]["id"] in ("unit_floor", "unit_number", "floor_number")
-                if _uf_open:
-                    state.uf_unanswered = getattr(state, "uf_unanswered", 0) + 1
-                    if (
-                        state.uf_unanswered >= 3
-                        and not re.search(r"\d", text)
-                        and not _fastpath_extract(_uf_missing[0]["id"], text)
-                    ):
-                        logger.info(f"🔁 Unit/floor asked {state.uf_unanswered}x without an answer -> skipping it: '{text}'")
-                        state.skipped_fields.add("unit_floor")
-                        try:
-                            await self.update_instructions(get_step_instructions(state))
-                        except Exception as e:
-                            logger.warning(f"Failed to refresh instructions after skipping unit/floor: {e}")
-                        _after = state.get_missing_fields()
-                        if _after:
-                            _uf_next = _after[0]
-                            _uf_ack = "No worries, we'll skip that." if state.reply_lang == "en" else "Koi baat nahi, chhod dete hain."
-                else:
-                    state.uf_unanswered = 0
-            if _uf_next:
-                state.uf_unanswered = 0
-                _uf_q = _uf_next["question_en"] if state.reply_lang == "en" else _uf_next["question_hi"]
-                try:
-                    self.session.say(f"{_uf_ack} {_uf_q}", allow_interruptions=True)
-                except Exception as e:
-                    logger.warning(f"Standalone/unit-floor direct reply failed, falling back to LLM: {e}")
-                else:
-                    state.last_agent_question = _uf_q
-                    raise StopResponse()
-
         # Caller asks "what rate / what price can I get?" during intake -> valuation line + closing,
         # spoken deterministically (no LLM round trip), then the call ends.
         if (
@@ -1221,13 +1173,6 @@ class RealEstateAgent(Agent):
                     _fp_kw = {"commercial_type": _ct} if (_ct and _ct != "Other" and len(_tokens(text)) <= 4) else None
                 else:
                     _fp_kw = _fastpath_extract(_fp_field, text)
-                if not _fp_kw:
-                    for _alt in _fp_missing[1:]:
-                        _alt_kw = _fastpath_extract(_alt["id"], text)
-                        if _alt_kw:
-                            _fp_kw = _alt_kw
-                            _fp_field = _alt["id"]
-                            break
                 if _fp_kw:
                     try:
                         await self._re_tools.save_property_details(**_fp_kw)
@@ -1309,8 +1254,28 @@ class RealEstateAgent(Agent):
                 yield recovered
             return
 
-        # The caller asked US something ("why do you need this?") or gave a short listening ack ("hello", "haan", "so..."):
-        # Speak the LLM response and keep going naturally.
+        # The caller asked US something ("why do you need this?"): the LLM's spoken answer is a normal turn,
+        # not a failed one. Speak it and keep going (no failure count, no advisor handoff).
+        if self._question_exempt():
+            logger.info("💬 Caller asked a question -> answered, NOT counted as 'not understood'")
+            for c in held:
+                yield c
+            return
+
+        # No tool was called: LLM is responding with speech because it did not understand / get the answer
+        q_key = self._re_state.get_active_question_key()
+        fail_count = self._re_state.record_question_failure(q_key)
+        logger.info(f"❓ Question '{q_key}' not understood by LLM (failure count: {fail_count})")
+        from .state import RealEstateStep
+        if (self._re_state.is_interested or self._re_state.step in (
+            RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.RESIDENTIAL_LEASE,
+            RealEstateStep.COMMERCIAL_SALE, RealEstateStep.COMMERCIAL_LEASE,
+            RealEstateStep.CATEGORY_SELECT,
+        )) and fail_count > 2:
+            logger.info(f"🤝 After 2 failed attempts on '{q_key}' (count: {fail_count}) -> booking advisor callback handoff")
+            await self._re_tools.book_advisor_handoff(reason="Could not understand caller after 2 failed attempts on same question")
+            return
+
         for c in held:
             yield c
 
@@ -1352,7 +1317,19 @@ class RealEstateAgent(Agent):
             logger.info(f"⚡ RECOVERED reply: '{reply}'")
             return reply
 
-        # Nothing usable -> re-ask the question that is currently open.
+        # Nothing usable -> never stay silent: re-ask the question that is currently open.
+        q_key = state.get_active_question_key()
+        fail_count = 0 if self._question_exempt() else state.record_question_failure(q_key)
+        from .state import RealEstateStep
+        if (state.is_interested or state.step in (
+            RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.RESIDENTIAL_LEASE,
+            RealEstateStep.COMMERCIAL_SALE, RealEstateStep.COMMERCIAL_LEASE,
+            RealEstateStep.CATEGORY_SELECT,
+        )) and fail_count > 2:
+            logger.info(f"🤝 After 2 failed attempts on '{q_key}' in recovery -> booking advisor callback handoff")
+            await self._re_tools.book_advisor_handoff(reason="Could not understand caller after 2 failed attempts on same question")
+            return None
+
         missing = state.get_missing_fields()
         en = state.reply_lang == "en"
         if missing:
