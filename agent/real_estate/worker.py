@@ -52,7 +52,7 @@ from .config import (
     PRERENDER_GREETING,
     PRERENDER_COMMON,
 )
-from .state import RealEstateState, RealEstateStep
+from .state import RealEstateState, RealEstateStep, format_clean_location, clean_spoken_location
 from .agent import RealEstateAgent, is_human_unavailable
 from .tools import RealEstateTools
 from .prompts import _owner_call_name
@@ -112,8 +112,7 @@ class ConversationFileLogger:
                 f"  Disposition  : {state.final_disposition}\n"
                 f"  Interested   : {state.is_interested}\n"
                 f"  Category     : {state.category or 'N/A'}  |  Intent: {state.intent or 'N/A'}\n"
-                f"  Property     : {state.project_or_society or 'N/A'}"
-                f"{', ' + state.sector_or_location if state.sector_or_location else ''}\n"
+                f"  Property     : {format_clean_location(state.project_or_society, state.sector_or_location)}\n"
                 f"  Unit / Floor : {state.unit_number or 'N/A'} / {state.floor_number or 'N/A'}\n"
                 f"  Config/Type  : {state.bhk_config or state.commercial_type or 'N/A'}\n"
                 f"  Area         : {f'{state.approx_area_sqft} sqft' if state.approx_area_sqft else 'N/A'}\n"
@@ -1027,9 +1026,7 @@ async def entrypoint(ctx: agents.JobContext):
         salutation_en = f"Hello {name_call}" if name_call != "Sir" else "Hello Sir"
         salutation_hi = f"Hello {name_call} ji" if name_call != "Sir" else "Hello Sir"
         if loc:
-            clean_loc = loc.split(";")[0].strip()
-            parts = [p.strip() for p in clean_loc.split(",") if p.strip()]
-            spoken_loc = f"{parts[1]}, {parts[0]}" if len(parts) >= 2 else (parts[0] if parts else clean_loc)
+            spoken_loc = clean_spoken_location(loc)
             return (
                 f"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. I'm calling about your property in {spoken_loc}... Are you looking to sell it, or rent it out?"
                 if state.reply_lang == "en"
