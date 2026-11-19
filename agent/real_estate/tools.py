@@ -358,6 +358,11 @@ class RealEstateTools:
                 fl = str(floor)
                 fl = fl if "floor" in fl.lower() else f"{fl} floor"
                 return f"{unit} on {fl}"
+            if unit and self._in_heard(unit):          # only the unit was new this turn
+                return f"Unit {unit}"
+            if floor and self._in_heard(floor):        # only the floor was new this turn
+                fl = str(floor)
+                return fl if "floor" in fl.lower() else f"{fl} floor"
             bhk = new("bhk_config")
             if bhk and self._in_heard(bhk):
                 return str(bhk) if re.search(r"bhk", str(bhk), re.I) else f"{bhk} BHK"
@@ -490,10 +495,11 @@ class RealEstateTools:
             )
             return self._fast(cat_q, f"Ask category: '{cat_q}'", ack="auto")
         elif self.state.category:
+            # The opening line already asked "sell or rent?"; do not read the same words back again.
             int_q = (
-                "Are you looking to sell or rent it out?"
+                "Is it for sale, or for rent?"
                 if self.state.reply_lang == "en"
-                else "Aap ise sell karna chahte hain, ya rent par dena?"
+                else "Ye sale ke liye hai, ya rent ke liye?"
             )
             return self._fast(int_q, f"Ask intent: '{int_q}'", ack="auto")
         else:
@@ -983,7 +989,8 @@ class RealEstateTools:
         slot = f"{preferred_day or ''} {time_slot or ''}".strip() or "General"
         self.state.callback_time_slot = slot
         self.state.final_disposition = "Schedule Callback"
-        self.state.agent_summary = f"Callback scheduled for: {slot}"
+        note = " (owner not available; someone else answered the phone)" if getattr(self.state, "third_party_answered", False) else ""
+        self.state.agent_summary = f"Callback scheduled for: {slot}{note}"
         await self._go(RealEstateStep.CLOSING)
         return f"Callback scheduled for {slot}. Confirm with customer and speak closing."
 
