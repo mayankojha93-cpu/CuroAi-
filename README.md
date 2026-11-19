@@ -31,8 +31,9 @@ An MVP outbound voice calling system for a telecom company that autonomously cal
 +--------------+     |                +------------------------+
 | PostgreSQL   |     +----------------+   LiveKit Agent Worker |
 | (18 / Local) |                      |   (Python 3.11)        |
-+--------------+                      |   Sarvam STT/TTS       |
-                                      |   Groq Llama 3.1 8B    |
++--------------+                      |   Soniox STT           |
+                                      |   Sarvam TTS           |
+                                      |   Groq/OpenRouter LLM  |
                                       +------------------------+
 ```
 
@@ -104,6 +105,7 @@ SIP_USERNAME=your_exotel_sip_username
 SIP_PASSWORD=your_exotel_sip_password
 
 # AI Providers
+SONIOX_API_KEY=your_soniox_api_key
 SARVAM_API_KEY=your_sarvam_api_key
 GROQ_API_KEY=your_groq_api_key
 LLM_MODEL=llama-3.1-8b-instant
@@ -207,6 +209,7 @@ docker run -d \
   -e LIVEKIT_API_KEY="your_api_key" \
   -e LIVEKIT_API_SECRET="your_api_secret" \
   -e AGENT_NAME="telecom-router-pickup-agent" \
+  -e SONIOX_API_KEY="your_soniox_key" \
   -e SARVAM_API_KEY="your_sarvam_key" \
   -e GROQ_API_KEY="your_groq_key" \
   -e BACKEND_URL="https://your-backend-domain.com" \
