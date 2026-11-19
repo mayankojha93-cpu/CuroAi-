@@ -6,7 +6,7 @@ from typing import Optional
 from livekit.agents import Agent, StopResponse
 from src.carrier_filter import classify_carrier_message
 from .prompts import get_step_instructions
-from .state import RealEstateState, RealEstateStep as _Step
+from .state import RealEstateState, RealEstateStep as _Step, clean_spoken_location
 from .config import CHAT_CTX_MAX_ITEMS, FAST_TOOL_REPLY, FASTPATH_ENABLED, AGENT_PERSONA_NAME
 from .fastpath import extract as _fastpath_extract
 
@@ -355,9 +355,7 @@ def _is_hello_only(text: str) -> bool:
 
 
 def _spoken_loc(loc: str) -> str:
-    clean = (loc or "").split(";")[0].strip()
-    parts = [p.strip() for p in clean.split(",") if p.strip()]
-    return f"{parts[1]}, {parts[0]}" if len(parts) >= 2 else (parts[0] if parts else clean)
+    return clean_spoken_location(loc)
 
 
 # ── Caller asks US for the price/rate ("kya rate chal raha hai? kitne mein bech sakte hain?") ──
@@ -839,7 +837,7 @@ class RealEstateAgent(Agent):
         if (
             not state.is_standalone
             and state.step in (
-                _SS.CATEGORY_SELECT, _SS.ASK_NEW_LOCATION,
+                _SS.INTRODUCTION, _SS.CATEGORY_SELECT, _SS.ASK_NEW_LOCATION,
                 _SS.RESIDENTIAL_SALE, _SS.RESIDENTIAL_LEASE,
                 _SS.COMMERCIAL_SALE, _SS.COMMERCIAL_LEASE,
             )
@@ -1157,7 +1155,13 @@ class RealEstateAgent(Agent):
             _fp_missing = state.get_missing_fields()
             if _fp_missing:
                 _fp_field = _fp_missing[0]["id"]
-                if _fp_field == "commercial_type":
+                _has_rent_marker = bool(re.search(r"\b(per\s*month|par\s*manth|par\s*month|mahina|mahine|har\s*mahine|rent|kiraya|monthly)\b", text, re.I))
+                _has_sale_marker = bool(re.search(r"\b(crore|crores|cr|bechna|bechni|sell|sale|total\s*price|full\s*price)\b", text, re.I))
+                if _fp_field == "sale_price" and _has_rent_marker:
+                    _fp_kw = _fastpath_extract("monthly_rent", text)
+                elif _fp_field == "monthly_rent" and _has_sale_marker:
+                    _fp_kw = _fastpath_extract("sale_price", text)
+                elif _fp_field == "commercial_type":
                     _ct = commercial_type_from_speech(text)
                     _fp_kw = {"commercial_type": _ct} if (_ct and _ct != "Other" and len(_tokens(text)) <= 4) else None
                 else:
