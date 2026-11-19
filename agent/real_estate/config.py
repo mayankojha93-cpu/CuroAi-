@@ -100,10 +100,8 @@ PREEMPTIVE_GENERATION = os.getenv("PREEMPTIVE_GENERATION", "1") == "1"
 FAST_TOOL_REPLY = os.getenv("FAST_TOOL_REPLY", "1") == "1"
 # LATENCY_LOG=1 : per-turn EOU / LLM TTFT / TTS TTFB breakdown in the logs.
 LATENCY_LOG = os.getenv("LATENCY_LOG", "1") == "1"
-# VAD silence needed to end a speech segment. 0.28s cut people off while they recited numbers
-# ("1 crore ... 20 lakh", "407 ... fourth floor"); 0.45s waits through a normal thinking pause.
-# NOTE: a VAD_MIN_SILENCE / ENDPOINT_* value in your .env overrides these defaults.
-VAD_MIN_SILENCE = float(os.getenv("VAD_MIN_SILENCE", "0.45"))
+# VAD silence needed to end a speech segment (0.28s gives snappy turn transitions without premature cut-off).
+VAD_MIN_SILENCE = float(os.getenv("VAD_MIN_SILENCE", "0.28"))
 # OpenRouter provider ordering: routes through ultra-fast LPU/hardware providers (Groq/Cerebras) first
 # with automatic fallback, dropping TTFT from ~2.5s down to 300-500ms. Set "none" to disable.
 _prov_raw = os.getenv("OPENROUTER_PROVIDER_ORDER", "Groq,Cerebras,Together,DeepInfra")
@@ -120,9 +118,8 @@ def _opt_float(name: str):
     except ValueError:
         return None
 
-# Small extra wait on top of VAD_MIN_SILENCE so a pause between two parts of one answer is not split into two turns.
-ENDPOINT_MIN_DELAY = _opt_float("ENDPOINT_MIN_DELAY") if _opt_float("ENDPOINT_MIN_DELAY") is not None else 0.25
-ENDPOINT_MAX_DELAY = _opt_float("ENDPOINT_MAX_DELAY") if _opt_float("ENDPOINT_MAX_DELAY") is not None else 0.9
+ENDPOINT_MIN_DELAY = _opt_float("ENDPOINT_MIN_DELAY") if _opt_float("ENDPOINT_MIN_DELAY") is not None else 0.05  # VAD already waits VAD_MIN_SILENCE; an extra 0.15s on top was pure dead time
+ENDPOINT_MAX_DELAY = _opt_float("ENDPOINT_MAX_DELAY") if _opt_float("ENDPOINT_MAX_DELAY") is not None else 0.35
 
 # Max tokens the LLM may generate per reply. 120 was too low: a tool call with many parameters
 # (save_property_details has 14) got CUT OFF mid-JSON and the caller heard nothing.
