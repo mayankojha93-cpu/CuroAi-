@@ -907,10 +907,11 @@ class RealEstateAgent(Agent):
                             "Ye residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
                         )
                         _kind = "category"
-            elif state.step in _intake and _asks_repeat(text):
+            elif state.step in _intake and (_asks_repeat(text) or _neutral):
                 _missing = state.get_missing_fields()
                 if _missing:
                     _reask = _missing[0]["question_en"] if state.reply_lang == "en" else _missing[0]["question_hi"]
+                    _kind = _missing[0]["id"]
             _no_lead = False
             if _reask:
                 _n = _bump_reask(state, f"{state.step.value}|{_reask}")
@@ -924,6 +925,7 @@ class RealEstateAgent(Agent):
                         _reask, _no_lead = _alt, True
             if _reask:
                 lead = "" if _no_lead else ("Sure, " if state.reply_lang == "en" else "Ji, ")
+                state.last_agent_question = _reask
                 logger.info(f"🔁 Repeat/backchannel -> re-asking open question (no LLM): '{_reask}'")
                 try:
                     self.session.say(lead + _reask, allow_interruptions=True)
@@ -1051,7 +1053,13 @@ class RealEstateAgent(Agent):
         _refusal = state.step in (RealEstateStep.INTRODUCTION, RealEstateStep.CHECK_OTHER_PROPERTY) and (
             _rejects_this_location(text) or _starts_with_negation(text)
         )
-        detected_cat = None if _refusal else classify_category(text)
+        # Category is strictly locked once intake begins (or if provided from audience file/db).
+        # Only re-detect in early turns (INTRODUCTION, CATEGORY_SELECT, new location) or if category is unknown.
+        _allow_cat_detect = (not state.category) or (state.step in (
+            RealEstateStep.INTRODUCTION, RealEstateStep.CATEGORY_SELECT,
+            RealEstateStep.CHECK_OTHER_PROPERTY, RealEstateStep.ASK_NEW_LOCATION
+        ))
+        detected_cat = None if (_refusal or not _allow_cat_detect) else classify_category(text)
         detected_int = None if _refusal else classify_intent(text)
         step_changed = False
 
