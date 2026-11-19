@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 from livekit import agents, api
 from livekit.agents import AgentSession, AgentServer, TurnHandlingOptions, JobExecutorType
-from livekit.plugins import sarvam, silero, openai
+from livekit.plugins import sarvam, soniox, silero, openai
 
 from .config import (
     ROOT_DIR,
@@ -18,6 +18,8 @@ from .config import (
     AGENT_NAME,
     AGENT_PERSONA_NAME,
     LLM_MODEL,
+    SONIOX_API_KEY,
+    SONIOX_MODEL,
     SARVAM_API_KEY,
     OPENROUTER_API_KEY,
     OPENROUTER_PROVIDER_SORT,
@@ -25,7 +27,6 @@ from .config import (
     ENDPOINT_MIN_DELAY,
     ENDPOINT_MAX_DELAY,
     STT_LANGUAGE,
-    STT_MODE,
     TTS_LANGUAGE_HI,
     TTS_LANGUAGE_EN,
     TTS_MODEL,
@@ -549,28 +550,29 @@ async def entrypoint(ctx: agents.JobContext):
         property_location = raw_loc
 
     # Audio & speech pipeline
-    # ── Sarvam STT Keyterms: biases the ASR engine toward domain vocabulary ──────────────────────
-    # Sarvam saaras:v4 "keyterm prompting" corrects garbled phone-line transcription of these words
-    # at the STT level (zero latency, runs inside the ASR engine). Max 50 keyterms, 64 chars each.
-    # This is far more reliable than post-processing regex because the model understands phonetics.
-    # "codemix" mode is best for Hinglish: keeps English words in Latin script inside a Hindi sentence,
-    # so "residential", "semi-furnished", "available" are transcribed correctly even when spoken
-    # with a Hindi accent or in a Hinglish sentence.
+    # ── Soniox STT Context Terms: biases the ASR engine toward real estate vocabulary ─────────────
+    # Biases Soniox ASR towards domain-specific real estate vocabulary, Hindi/Hinglish terms, and society names
     _STT_KEYTERMS = [
-        # Property category (most commonly garbled)
-        "residential", "commercial",
+        # Property category & Transaction
+        "residential", "commercial", "industrial", "agricultural",
+        "sell", "rent", "lease", "resale", "purchase", "invest",
+        # Configuration & Types
+        "BHK", "1 BHK", "2 BHK", "3 BHK", "4 BHK", "5 BHK", "RK", "1 RK",
+        "studio apartment", "penthouse", "duplex", "villa", "independent house",
+        "builder floor", "plot", "kothi", "farmhouse", "flat", "apartment",
         # Furnishing status
         "semi-furnished", "unfurnished", "fully furnished",
-        # Availability
-        "available", "immediate", "notice period",
-        # Configuration
-        "BHK", "1 BHK", "2 BHK", "3 BHK", "4 BHK", "5 BHK", "RK", "studio", "penthouse", "duplex",
-        # Area units & numbers
-        "square feet", "sqft", "unit", "floor", "floor number",
-        # Transaction type
-        "sell", "rent", "lease",
-        # Property types
-        "apartment", "flat", "villa", "independent house",
+        # Availability & Status
+        "available", "immediate", "notice period", "ready to move", "under construction", "possession",
+        # Area units, Measurement & Floors
+        "square feet", "sqft", "sq yards", "gaj", "unit", "floor", "ground floor", "top floor", "floor number",
+        "carpet area", "super area", "built up area",
+        # Features & Amenities
+        "balcony", "parking", "car parking", "lift", "gated society", "gated community",
+        "park facing", "corner plot", "road facing", "main road",
+        # Hindi / Hinglish real estate terms
+        "kiraya", "kiraye", "rent pe", "bechna", "kharidna", "makaan", "dukaan", "plot", "zameen",
+        "aavasiya", "vyavasayik",
         # Common society/project names from active campaigns (extend via env if needed)
         "Mapsko Casabella",
     ]
@@ -580,41 +582,29 @@ async def entrypoint(ctx: agents.JobContext):
     if _extra_kw:
         _STT_KEYTERMS = list(dict.fromkeys(_STT_KEYTERMS + _extra_kw))  # dedup, preserve order
 
-    _stt_kwargs: dict = dict(
-        language=STT_LANGUAGE,
-        model="saaras:v4",
-        api_key=SARVAM_API_KEY,
-    )
-    # Add keyterms & mode if the plugin supports them (saaras:v4 feature; guarded so older plugin
-    # versions don't crash with an unexpected keyword argument).
-    try:
-        import inspect as _inspect
-        _stt_sig = _inspect.signature(sarvam.STT.__init__)
-        if "keyterms" in _stt_sig.parameters:
-            _stt_kwargs["keyterms"] = _STT_KEYTERMS
-            logger.info(f"🎯 STT keyterms enabled ({len(_STT_KEYTERMS)} terms)")
-        else:
-            logger.info("ℹ️  STT plugin does not support keyterms (update livekit-plugins-sarvam)")
-        if "mode" in _stt_sig.parameters:
-            _stt_kwargs["mode"] = STT_MODE
-            logger.info(f"🎯 STT mode: {STT_MODE}")
-    except Exception as _e:
-        logger.debug(f"STT capability check skipped: {_e}")
-
-    stt = sarvam.STT(**_stt_kwargs)
-
     # Inject the property location from call metadata as an additional keyterm (dynamic per-call).
     # e.g. "Mapsko Casabella sec 82" — prevents the society name from being garbled by STT.
-    if property_location and "keyterms" in _stt_kwargs:
+    if property_location:
         _loc_terms = [t.strip() for t in property_location.split(",") if len(t.strip()) > 3]
         if _loc_terms:
-            try:
-                current_kw = list(_stt_kwargs.get("keyterms", []))
-                new_kw = list(dict.fromkeys(current_kw + _loc_terms))[:50]  # Sarvam max=50
-                stt.update_options(keyterms=new_kw)
-                logger.info(f"🎯 Injected property location into STT keyterms: {_loc_terms}")
-            except Exception as _ke:
-                logger.debug(f"Could not inject location keyterms: {_ke}")
+            _STT_KEYTERMS = list(dict.fromkeys(_STT_KEYTERMS + _loc_terms))
+            logger.info(f"🎯 Injected property location into Soniox context terms: {_loc_terms}")
+
+    # Support Hindi, English, and Hinglish code-switching with Language Identification
+    stt_hints = ["hi", "en"]
+
+    stt = soniox.STT(
+        api_key=SONIOX_API_KEY,
+        params=soniox.STTOptions(
+            model=SONIOX_MODEL,
+            language_hints=stt_hints,
+            language_hints_strict=False,
+            context=soniox.ContextObject(terms=_STT_KEYTERMS),
+            enable_language_identification=True,
+            enable_speaker_diarization=False,
+        ),
+    )
+    logger.info(f"🎯 Soniox STT initialized (model={SONIOX_MODEL}, hints={stt_hints}, terms={len(_STT_KEYTERMS)}, lang_id=True)")
 
     vad = ctx.proc.userdata.get("vad") if getattr(ctx, "proc", None) else None
     if vad is None:

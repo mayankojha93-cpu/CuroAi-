@@ -25,8 +25,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("telecom-voice-agent")
 
-# Suppress noisy internal LiveKit/Sarvam debug spam so conversation logs stand out cleanly
-for _name in ("livekit.plugins.sarvam", "livekit.plugins.silero", "livekit.agents", "livekit"):
+# Suppress noisy internal LiveKit/Sarvam/Soniox debug spam so conversation logs stand out cleanly
+for _name in ("livekit.plugins.sarvam", "livekit.plugins.soniox", "livekit.plugins.silero", "livekit.agents", "livekit"):
     logging.getLogger(_name).setLevel(logging.INFO)
 
 # Agent Config
@@ -36,9 +36,14 @@ AGENT_NAME = os.getenv("AGENT_NAME", "telecom-router-pickup-agent")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "meta-llama/llama-3.3-70b-instruct")
 
-# Speech — Sarvam AI (STT + TTS)
+# Speech-to-Text (STT) — Soniox
+SONIOX_API_KEY = os.getenv("SONIOX_API_KEY")
+SONIOX_MODEL = os.getenv("SONIOX_MODEL", "stt-rt-v5")
+# STT: default hi,en for Hindi + English (Hinglish) conversations
+STT_LANGUAGE = os.getenv("STT_LANGUAGE", "hi,en").strip() or "hi,en"
+
+# Text-to-Speech (TTS) — Sarvam AI
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
-STT_LANGUAGE = os.getenv("STT_LANGUAGE", "hi-IN").strip() or "hi-IN"
 TTS_LANGUAGE_HI = os.getenv("TTS_LANGUAGE_HI", "hi-IN")
 TTS_LANGUAGE_EN = os.getenv("TTS_LANGUAGE_EN", "en-IN")
 TTS_MODEL = os.getenv("TTS_MODEL", "bulbul:v4-flash")

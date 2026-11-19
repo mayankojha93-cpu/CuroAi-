@@ -28,7 +28,7 @@ for _name in ("livekit.plugins.silero", "livekit.agents", "livekit"):
     logging.getLogger(_name).setLevel(logging.INFO)
 # The Sarvam plugin sets DEBUG on its own child loggers (".log", ".log.SpeechStream"), so the parent
 # level alone is ignored and every 100 audio chunks / VAD event is printed 3x. Silence them explicitly.
-for _name in ("livekit.plugins.sarvam", "livekit.plugins.sarvam.log", "livekit.plugins.sarvam.log.SpeechStream"):
+for _name in ("livekit.plugins.sarvam", "livekit.plugins.sarvam.log", "livekit.plugins.sarvam.log.SpeechStream", "livekit.plugins.soniox"):
     logging.getLogger(_name).setLevel(logging.WARNING)
 
 # Agent Name registered on LiveKit Server
@@ -39,16 +39,14 @@ AGENT_PERSONA_NAME = os.getenv("REAL_ESTATE_PERSONA_NAME", "Kavitha")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "meta-llama/llama-3.3-70b-instruct")
 
-# Speech Configuration (Sarvam AI)
-SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
+# STT Configuration (Soniox)
+SONIOX_API_KEY = os.getenv("SONIOX_API_KEY")
+SONIOX_MODEL = os.getenv("SONIOX_MODEL", "stt-rt-v5")
+# STT: default hi,en for Hindi + English (Hinglish) conversations
+STT_LANGUAGE = os.getenv("RE_STT_LANGUAGE", os.getenv("STT_LANGUAGE", "hi,en")).strip() or "hi,en"
 
-# STT: default hi-IN for Hindi + English (Hinglish) conversations
-STT_LANGUAGE = os.getenv("RE_STT_LANGUAGE", os.getenv("STT_LANGUAGE", "hi-IN")).strip() or "hi-IN"
-# STT mode: "codemix" is best for Hinglish (mixes Hindi/English words naturally),
-# "transcribe" for pure Hindi, "translit" for romanized output.
-# "codemix" on saaras:v4 significantly reduces garbling of English domain words like
-# "residential", "semi-furnished", "available" in a Hindi sentence.
-STT_MODE = os.getenv("RE_STT_MODE", "codemix").strip() or "codemix"
+# Speech / TTS Configuration (Sarvam AI)
+SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
 
 TTS_LANGUAGE_HI = os.getenv("TTS_LANGUAGE_HI", "hi-IN")
 TTS_LANGUAGE_EN = os.getenv("TTS_LANGUAGE_EN", "en-IN")

@@ -5,7 +5,7 @@ from typing import Optional
 from datetime import datetime
 from livekit import agents
 from livekit.agents import AgentSession, Agent, AgentServer, TurnHandlingOptions
-from livekit.plugins import sarvam, silero, openai
+from livekit.plugins import sarvam, soniox, silero, openai
 try:
     import numpy.fft  # Preload to prevent event loop blocking during audio STFT
 except ImportError:
@@ -15,6 +15,8 @@ from src.config import (
     logger,
     AGENT_NAME,
     LLM_MODEL,
+    SONIOX_API_KEY,
+    SONIOX_MODEL,
     SARVAM_API_KEY,
     OPENROUTER_API_KEY,
     OPENROUTER_PROVIDER_SORT,
@@ -116,11 +118,20 @@ async def entrypoint(ctx: agents.JobContext):
         info_task = asyncio.create_task(asyncio.to_thread(_fetch_call_info_sync, call_id))
 
     # 2. Speech and audio pipeline (does not depend on the customer data)
-    stt = sarvam.STT(
-        language=STT_LANGUAGE,
-        model="saaras:v4",
-        api_key=SARVAM_API_KEY,
+    # Support Hindi, English, and Hinglish code-switching with Language Identification
+    stt_hints = ["hi", "en"]
+
+    stt = soniox.STT(
+        api_key=SONIOX_API_KEY,
+        params=soniox.STTOptions(
+            model=SONIOX_MODEL,
+            language_hints=stt_hints,
+            language_hints_strict=False,
+            enable_language_identification=True,
+            enable_speaker_diarization=False,
+        ),
     )
+    logger.info(f"🎯 Soniox STT initialized (model={SONIOX_MODEL}, hints={stt_hints}, lang_id=True)")
 
     vad = ctx.proc.userdata.get("vad") if getattr(ctx, "proc", None) else None
     if vad is None:
