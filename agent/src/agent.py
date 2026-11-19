@@ -39,6 +39,8 @@ class AirtelAgent(Agent):
         kind = classify_carrier_message(text)
         if kind:
             logger.warning(f"📵 Carrier announcement ({kind}) ignored, not sent to LLM: \"{text[:120]}\"")
+            self._airtel_state.final_disposition = "Voicemail or IVR Detected"
+            self._airtel_state.customer_note = f"Voicemail or IVR Detected ({kind}): {text[:120]}"
             raise StopResponse()
 
         state = self._airtel_state

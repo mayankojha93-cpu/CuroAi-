@@ -1,4 +1,5 @@
 import re
+import time
 import json
 import asyncio
 import logging
@@ -14,12 +15,23 @@ from .fastpath import extract as _fastpath_extract
 # menus / voicemail prompts the carrier filter misses are still caught instead of being answered by the LLM.
 _IVR_EXTRA = re.compile(
     r"(after\s+the\s+(tone|beep)|at\s+the\s+tone|leave\s+(a\s+|your\s+)*(message|voicemail)|record\s+your\s+message|"
-    r"voice\s*mail|mail\s*box|press\s+(star|hash|pound|\d)|to\s+(repeat|go\s+back)\s+press|"
-    r"is\s+not\s+(available|reachable|answering)|not\s+reachable|switched\s+off|currently\s+(busy|unavailable)|"
-    r"please\s+(stay|hold|wait)\s+on\s+the\s+line|(beep|tone)\s+ke\s+baad|sandesh\s+(chhod|record)|message\s+record|"
-    r"(abhi|is\s*samay)\s+(vyast|uplabdh)|dabayein|dabaye|"
-    r"\u092c\u0940\u092a|\u091f\u094b\u0928\s*\u0915\u0947\s*\u092c\u093e\u0926|"
-    r"\u0909\u092a\u0932\u092c\u094d\u0927\s*\u0928\u0939\u0940\u0902|\u092a\u0939\u0941\u0902\u091a\s*\u0938\u0947\s*\u092c\u093e\u0939\u0930|\u0938\u094d\u0935\u093f\u091a\s*\u0911\u092b)",
+    r"voice\s*mail|mail\s*box|to\s+(repeat|go\s+back)\s+press|"
+    r"(for\s+[a-z]+|men[uu])\s*press\s+(star|hash|pound|\d)|"
+    r"the\s+(number|person|subscriber|customer)\s+(you\s+are\s+calling|you\s+have\s+dialed)?\s+is\s+(currently\s+)?(not\s+available|busy|unavailable|switched\s+off|reachable)|"
+    r"(number|phone)\s+is\s+(switched\s+off|not\s+reachable|out\s+of\s+coverage)|"
+    r"(jis\s+vyakti\s+ko\s+aap\s+call\s+kar\s+rahe\s+hain|dial\s+kiya\s+hua\s+number)\s+.*(vyast|switched\s*off|uplabdh\s*nahi)|"
+    r"please\s+(stay|hold|wait)\s+on\s+the\s+line|(beep|tone)\s+ke\s+baad\s+(sandesh|message)|"
+    r"\u092c\u0940\u092a|\u091f\u094b\u0928\s*\u0915\u0947\s*\u092c\u093e\u0926\s*(\u0938\u0902\u0926\u0947\u0931|\u092e\u0947\u0938\u0947\u091c)|"
+    r"\u0921\u093e\u092f\u0932\s*\u0915\u093f\u092f\u093e\s*(\u0917\u092f\u093e|\u0939\u0941\u0906)\s*\u0928\u0902\u092c\u0930|"
+    r"\u0938\u094d\u0935\u093f\u091a\s*\u0911\u092b)",
+    re.I,
+)
+
+# Human callback / third-party answering indicators (never an IVR/voicemail machine)
+_HUMAN_CALLBACK_RE = re.compile(
+    r"\b(sir|madam|bhaiya|uncle|aunty|papa|mummy|father|mother|brother|sister|husband|wife|boss|owner|"
+    r"meeting|baad\s*mein|baad\s*me|call\s*(me\s*)?(back|later)|later|busy\s*hai|busy\s*hain|"
+    r"shaam\s*ko|kal\s*call|subah|abhi\s*nahi|driving|drive\s*kar|office\s*mein|hospital)\b",
     re.I,
 )
 # A real person answering the greeting rarely speaks this many words twice in a row; a looping IVR menu does.
@@ -232,32 +244,105 @@ def _starts_with_negation(text: str) -> bool:
     return bool(toks) and toks[0] in _NEG_TOKENS
 
 
+_GREETING_ACK_RE = re.compile(
+    r"^(yes|yeah|yep|yup|haan|han|haanji|hanji|haan\s*ji|ji\s*haan|ji|hello|hi|hey|"
+    r"((haan|han|haanji|hanji|haan\s*ji|ji|yes)\s+)?(boliye|bataiye|kahiye|tell\s+me|speaking|sun\s*raha\s*hoon|sun\s*rahi\s*hoon)|"
+    r"boliye|ji\s*boliye|bataiye|ji\s*bataiye|kahiye|ji\s*kahiye|tell\s+me|yes\s+tell\s+me|who\s+is\s+this|"
+    r"who\s+are\s+you|who's\s+this|who's\s+calling|who\s+is\s+calling|who\s+is\s+speaking|"
+    r"kaun|kaun\s+bol\s+rahe\s+ho|kaun\s+bol\s+raha\s+hai|kaun\s+hai|kahan\s+se\s+bol\s+rahe\s+ho|"
+    r"speaking|yes\s+speaking|haan\s+sun\s+raha\s+hoon|sun\s+raha\s+hoon|kya\s+kaam\s+hai|"
+    r"kya\s+baat\s+hai|kya\s+hua|ok|okay|alright|yes\s+please)[\s.?!,]*$",
+    re.IGNORECASE
+)
+_GREETING_ACK_DEV = re.compile(
+    r"^(हाँ|हां|हा|हाँजी|हांजी|जी|यस|येस|हेलो|हाय|बोलिए|जी\s*बोलिए|बताइए|जी\s*बताइए|कहिए|"
+    r"कौन|कौन\s*बोल\s*रहा\s*है|कौन\s*हो|सुन\s*रहा\s*हूँ|सुन\s*रहा\s*हूं|क्या\s*काम\s*है|क्या\s*बात\s*है|ओके)[\s.?!,]*$"
+)
+
+
+def _is_greeting_ack(text: str) -> bool:
+    if not text:
+        return False
+    t = text.strip()
+    return bool(_GREETING_ACK_RE.match(t) or _GREETING_ACK_DEV.match(t))
+
+
+_PICKUP_OR_IDENTITY_RE = re.compile(
+    r"(who\s+(is\s+this|are\s+you|is\s+speaking|is\s+calling)|who's\s+(this|calling)|"
+    r"where\s+are\s+you\s+calling\s+from|which\s+company|"
+    r"what\s+(is\s+this\s+regarding|do\s+you\s+want|is\s+the\s+matter)|"
+    r"kaun\s*(hai|bol\s*rahe|bol\s*raha|hai\s*ye|ho)|kisko\s*(lagaya|phone|call)|"
+    r"kisse\s*baat|kahan\s*se\s*(bol|call)|konsi\s*company|"
+    r"kya\s*(kaam|baat|mamla)\s*hai|kyun\s*phone\s*kiya|kis\s*baare\s*mein|"
+    r"^\s*(hello|halo|hi|hey|haan\s*hello|yes\s*hello)[\s.?!,]*$)",
+    re.IGNORECASE
+)
+_PICKUP_OR_IDENTITY_DEV = re.compile(
+    r"(कौन\s*(है|बोल\s*रहे|हो)|किससे\s*बात|कहाँ\s*से|क्या\s*काम\s*है|क्यों\s*फोन|हेलो|हाय)"
+)
+
+
+def _is_pickup_or_identity_query(text: str) -> bool:
+    if not text:
+        return False
+    t = text.strip()
+    return bool(_PICKUP_OR_IDENTITY_RE.search(t) or _PICKUP_OR_IDENTITY_DEV.search(t))
+
+
 # ── Caller asks US for the price/rate ("kya rate chal raha hai? kitne mein bech sakte hain?") ──
 # Handled deterministically (no LLM): speak valuation line + short thank-you, then hang up.
 _PRICE_Q_LATIN = re.compile(
     r"(kya\s+(rate|price|bhav|bhaav|value|daam|dam)\b"
     r"|\b(rate|price|bhav|bhaav|daam|dam|value)\s+(kya|kitna|kitni|chal\s*raha|chal\s*rha|chalega)"
-    r"|market\s+(rate|price|value)"
+    r"|(kya|kitna|kitni|batao|bataiye|what\s+(is|are|'s)(\s+the)?)\s+.*market\s+(rate|price|value)"
+    r"|market\s+(rate|price|value)\s+(kya|kitna|kitni|chal\s*raha|batao|bataiye)"
     r"|kitn[ae]\s+(me|mein|main)\s+(bech|bik|sell)"
     r"|kitn[ae]\s+(milega|mil\s*sakta|mil\s*jayega|mil\s*jaayega)"
     r"|how\s+much\s+(can|will|would|do|should)"
-    r"|what\s+(is|are|'s)\s+(the\s+)?(rate|price|value|market)"
+    r"|what\s+(is|are|'s)\s+(the\s+)?(rate|price|value)"
     r"|what\s+price|valuation)",
     re.I,
 )
 _PRICE_Q_DEV = re.compile(
     r"(क्या\s*(रेट|प्राइस|भाव|कीमत|दाम|वैल्यू)"
     r"|(रेट|प्राइस|भाव|कीमत|दाम)\s*(क्या|कितना|कितनी|चल)"
-    r"|मार्केट\s*(रेट|प्राइस|वैल्यू)"
+    r"|(क्या|कितना|बताओ|बताइए)\s*.*मार्केट\s*(रेट|प्राइस|वैल्यू)"
+    r"|मार्केट\s*(रेट|प्राइस|भाव|वैल्यू)\s*(क्या|कितना|कितनी|चल|बताओ|बताइए)"
     r"|कितने\s*में\s*(बेच|बिक)"
     r"|कितना\s*मिलेगा|वैल्यूएशन)"
 )
+_MARKET_RATE_ANSWER_LATIN = re.compile(
+    r"\b(jo\s+(bhi\s+)?|as\s+per\s+|according\s+to\s+)?"
+    r"market\s+(rate|price|value)"
+    r"(\s+(pe|par|me|mein|main|hi|hai|hoga|chal\s*raha\s*hai|de\s*denge|chahiye|bik\s*jaye|mil\s*jaye))?\b",
+    re.I,
+)
+_MARKET_RATE_ANSWER_DEV = re.compile(
+    r"(जो\s*(भी\s*)?|के\s*अनुसार\s*)?"
+    r"मार्केट\s*(रेट|प्राइस|भाव|वैल्यू)"
+    r"(\s*(पे|पर|में|ही|है|होगा|चल\s*रहा\s*है|दे\s*देंगे|चाहिए))?",
+    re.I,
+)
 _HAS_AMOUNT = re.compile(r"[0-9०-९]|lakh|lac\b|crore|cr\b|लाख|करोड़|करोड", re.I)
+
+
+def _is_market_rate_statement(text: str) -> bool:
+    """True when caller is stating 'market rate' as their expectation (not asking what it is)."""
+    if not text:
+        return False
+    low = text.lower().strip()
+    if re.search(r"\b(kya|kitn[aei]|what\s+is|batao|bataiye)\b", low):
+        return False
+    if re.search(r"(क्या|कितना|कितनी|कितने|बताओ|बताइए)", text):
+        return False
+    return bool(_MARKET_RATE_ANSWER_LATIN.search(low) or _MARKET_RATE_ANSWER_DEV.search(text))
 
 
 def _asks_agent_for_price(text: str) -> bool:
     """True when the caller is ASKING for a rate/valuation (not stating their own expected price)."""
     if not text or _HAS_AMOUNT.search(text):
+        return False
+    if _is_market_rate_statement(text):
         return False
     if _PRICE_Q_DEV.search(text):
         return True
@@ -306,11 +391,14 @@ def _asks_repeat(text: str) -> bool:
 
 
 _LOC_CLARIFY_LATIN = re.compile(
-    r"(which\s+(property|location|address|place|flat)|where\s+is\s+it|what\s+address|kahan\s+(pe|par|per|hai)|konsi\s+(property|jagah|location|address)|kaunsi\s+(property|jagah|location|address))",
+    r"(which\s+(property|location|address|place|flat)|where\s+is\s+it|what\s+address|"
+    r"tell\s+me\s+(the\s+)?property|property\s+details?|kahan\s+(pe|par|per|hai)|"
+    r"(konsi|kaunsi|kounsi|kisi)\s+(property|jagah|location|address|flat)|"
+    r"konsa\s+flat|kaun\s+sa\s+flat|kiski\s+baat)",
     re.I,
 )
 _LOC_CLARIFY_DEV = re.compile(
-    r"(कौनसी|कौन\s*सी|कहाँ|कहां|किस\s*(जगह|लोकेशन|एड्रेस|प्रॉपर्टी))"
+    r"(कौनसी|कौन\s*सी|कहाँ|कहां|किस\s*(जगह|लोकेशन|एड्रेस|प्रॉपर्टी|फ्लैट)|प्रॉपर्टी\s*डिटेल्स)"
 )
 
 
@@ -326,6 +414,31 @@ def _asks_location_clarification(text: str) -> bool:
     except Exception:
         pass
     return any(_LOC_CLARIFY_LATIN.search((c or "").lower()) for c in cands)
+
+
+_NUMBER_SOURCE_RE = re.compile(
+    r"(number\s+(kahan|kidhar|kaise|kisne)|kahan\s+se\s+mila|kisne\s+diya|"
+    r"where\s+did\s+you\s+get\s+(my\s+)?number|how\s+did\s+you\s+get\s+(my\s+)?number|"
+    r"who\s+gave\s+(you\s+)?(my\s+)?number)",
+    re.I,
+)
+_NUMBER_SOURCE_DEV = re.compile(
+    r"(नंबर\s*(कहाँ|कहां|किसने|कैसे)|कहाँ\s*से\s*मिला|किसने\s*दिया)"
+)
+
+
+def _asks_number_source(text: str) -> bool:
+    if not text:
+        return False
+    if _NUMBER_SOURCE_DEV.search(text):
+        return True
+    cands = [text]
+    try:
+        from src.transliteration import romanize_hindi
+        cands.append(romanize_hindi(text))
+    except Exception:
+        pass
+    return any(_NUMBER_SOURCE_RE.search((c or "").lower()) for c in cands)
 
 
 _BROKER_Q_LATIN = re.compile(
@@ -461,24 +574,22 @@ class RealEstateAgent(Agent):
             tools=tools_instance.tools_for_step(state.step),
         )
 
-    async def _wait_and_drop_ivr(self, kind: str, text: str):
+    async def _drop_ivr_immediately(self, kind: str, text: str):
         try:
-            logger.info(f"⏳ Waiting 5s before dropping call due to carrier IVR ({kind})...")
-            await asyncio.sleep(5.0)
             if self._re_state.hangup_started:
                 return
-            logger.warning(f"⏰ 5s IVR wait completed for ({kind}). Dropping call now.")
+            logger.warning(f"📵 IVR / Voicemail detected ({kind}): '{text[:100]}'. Dropping call immediately.")
             self._re_state.ivr_detected = True
             self._re_state.final_disposition = "Voicemail or IVR Detected"
-            if kind == "hold":
-                self._re_state.agent_summary = "Call placed on hold by callee; timed out after 5s waiting for human."
-            else:
-                self._re_state.agent_summary = f"Carrier announcement / voicemail detected: {text[:100]}"
-
+            self._re_state.agent_summary = f"Voicemail or IVR Detected: {text[:100]}"
+            try:
+                self.session.interrupt(force=True)
+            except Exception:
+                pass
             if self._re_tools.hangup_func:
                 await self._re_tools.hangup_func()
         except asyncio.CancelledError:
-            logger.info(f"IVR 5s drop timer cancelled for ({kind}).")
+            pass
         except Exception as e:
             logger.warning(f"Error in IVR drop task: {e}")
 
@@ -497,42 +608,115 @@ class RealEstateAgent(Agent):
         if self._re_state.closing_spoken:
             raise StopResponse()
         text = (getattr(new_message, "text_content", None) or "").strip()
-        kind = classify_carrier_message(text)
-        if not kind and _IVR_EXTRA.search(text):
-            kind = "voicemail"
-        if not kind:
-            # Looping IVR menus / voicemail greetings: long speech turns back to back while still at the intro
-            if len(text.split()) >= _IVR_LONG_WORDS and self._re_state.step == _Step.INTRODUCTION:
-                self._ivr_long_turns += 1
-            else:
-                self._ivr_long_turns = 0
-            if self._ivr_long_turns >= 2:
+        kind = None
+        # Safety override: if human callback or third-party/assistant indicator is present, NEVER drop as IVR
+        if not _HUMAN_CALLBACK_RE.search(text):
+            kind = classify_carrier_message(text)
+            if not kind and _IVR_EXTRA.search(text):
                 kind = "voicemail"
+            if not kind:
+                # Looping IVR menus / voicemail greetings: long speech turns back to back while still at the intro
+                if len(text.split()) >= _IVR_LONG_WORDS and self._re_state.step == _Step.INTRODUCTION:
+                    self._ivr_long_turns += 1
+                else:
+                    self._ivr_long_turns = 0
+                if self._ivr_long_turns >= 2:
+                    kind = "voicemail"
+        else:
+            logger.info(f"🗣️ Human callback / personal busy pattern in customer utterance: '{text}' -> bypassing IVR filter")
         if kind:
-            logger.warning(f"📵 Carrier announcement ({kind}) detected: '{text[:100]}'")
+            logger.warning(f"📵 Carrier announcement ({kind}) detected: '{text[:100]}'. Dropping call.")
             self._re_state.ivr_detected = True
+            self._re_state.final_disposition = "Voicemail or IVR Detected"
+            self._re_state.agent_summary = f"Voicemail or IVR Detected: {text[:100]}"
             if self._ivr_task is None or self._ivr_task.done():
                 self._ivr_kind = kind
-                self._ivr_task = asyncio.create_task(self._wait_and_drop_ivr(kind, text))
+                self._ivr_task = asyncio.create_task(self._drop_ivr_immediately(kind, text))
             raise StopResponse()
-
-        if self._ivr_task and not self._ivr_task.done():
-            if len(text.split()) > _IVR_HUMAN_MAX_WORDS:
-                logger.info(f"📵 Long speech while IVR timer is running - treating as IVR, staying silent: '{text[:80]}'")
-                raise StopResponse()
-            logger.info("🗣️ Human speech detected; cancelling 5s IVR drop timer.")
-            self._re_state.ivr_detected = False
-            self._ivr_task.cancel()
-            self._ivr_task = None
-            self._ivr_kind = None
 
         state = self._re_state
         state.last_user_text = text
         low_text = text.lower()
 
-        # ── Scenario B, deterministic (no LLM, exact scripted lines) ─────────────────────────
-        from .tools import other_property_question, ask_new_location_question, say_cached
+        # Hold / wait request from customer
+        _HOLD_RE = re.compile(
+            r"\b(ek\s*(min|minute|sec|second)|wait|hold\s*on|ruko|rukna|ruk\s*jao|zara\s*ruko|thoda\s*(ruko|wait|time)|2\s*min|do\s*minute)\b",
+            re.IGNORECASE,
+        )
+        if _HOLD_RE.search(low_text):
+            logger.info(f"⏳ Hold requested by customer: '{text}'. Granting grace period.")
+            state.hold_until = time.time() + 35.0
+            state.last_activity_time = time.time()
+        else:
+            state.hold_until = 0.0
+
+        # ── Deterministic intake shortcuts (no LLM round trip, instant playout) ──────────
+        from .tools import other_property_question, ask_new_location_question, say_cached, sell_or_rent_question, classify_intent
         tools_ = self._re_tools
+
+        # Proactive intent check for INTRODUCTION step
+        _intro_refusal = _rejects_this_location(text) or _starts_with_negation(text)
+        _intro_int = None if _intro_refusal else classify_intent(text)
+
+        # A: caller acknowledges or interrupts opening greeting -> ask qualification question
+        if state.step == _Step.INTRODUCTION and _is_greeting_ack(text) and not state.greeting_acknowledged:
+            state.greeting_acknowledged = True
+            loc = state.initial_property_location or state.sector_or_location
+            has_loc = bool(loc)
+            was_interrupted = getattr(state, "opening_speech_interrupted", False) or _is_pickup_or_identity_query(text)
+            reply = sell_or_rent_question(state.reply_lang, has_loc=has_loc, loc=loc, full_context=was_interrupted)
+            state.last_agent_question = reply
+            logger.info(f"👋 Greeting acknowledged (full_context={was_interrupted}) -> asking qualification: '{reply}'")
+            say_cached(self.session, state, reply, True)
+            raise StopResponse()
+
+        # A1: caller answered "Sell" or "Rent" directly at INTRODUCTION step -> capture intent and move to intake
+        if state.step == _Step.INTRODUCTION and _intro_int:
+            state.greeting_acknowledged = True
+            state.intent = _intro_int
+            state.is_interested = True
+            cat = state.category or "residential"
+            state.category = cat
+            if cat == "commercial":
+                state.step = _Step.COMMERCIAL_LEASE if _intro_int == "lease" else _Step.COMMERCIAL_SALE
+            else:
+                state.step = _Step.RESIDENTIAL_LEASE if _intro_int == "lease" else _Step.RESIDENTIAL_SALE
+            await self.sync_step()
+            missing = state.get_missing_fields()
+            if missing:
+                first_q = missing[0]["question_en"] if state.reply_lang == "en" else missing[0]["question_hi"]
+                ack = "Great, Sir! " if state.reply_lang == "en" else "Ji bilkul Sir! "
+                reply = ack + first_q
+                state.last_agent_question = reply
+                logger.info(f"🎯 Intent '{_intro_int}' recognized from '{text}' at intro -> transitioning to {state.step.value}: '{reply}'")
+                say_cached(self.session, state, reply, True)
+                raise StopResponse()
+
+        # A2: caller answered ambiguous "Haan" / "Yes" AFTER greeting was already acknowledged -> prompt to choose
+        if state.step == _Step.INTRODUCTION and state.greeting_acknowledged and _is_greeting_ack(text) and not _intro_int:
+            en = state.reply_lang == "en"
+            clarify = (
+                "Could you please tell me if you'd like to sell it, or put it on rent?"
+                if en else
+                "Ji, aap ise sell karna chahte hain ya rent par dena? Please batayein."
+            )
+            state.last_agent_question = clarify
+            logger.info(f"🤔 Caller gave ambiguous 'yes' to sell-or-rent -> asking to choose: '{clarify}'")
+            say_cached(self.session, state, clarify, True)
+            raise StopResponse()
+
+        # A3: caller asks "Number kahan se mila?" / "How did you get my number?"
+        if state.step == _Step.INTRODUCTION and _asks_number_source(text):
+            en = state.reply_lang == "en"
+            _rep = (
+                "Your number was listed in our verified property database, Sir. Were you looking to sell or rent out your property?"
+                if en else
+                "Actually Sir, aapka number hamare verified property database mein listed tha. Kya aap apni property sell ya rent karne ka plan kar rahe hain?"
+            )
+            state.last_agent_question = _rep
+            logger.info(f"📱 'How did you get my number?' query -> explaining source: '{_rep}'")
+            say_cached(self.session, state, _rep, True)
+            raise StopResponse()
 
         # B: caller refuses THIS location ("us location pe nahi bechna") -> "any other property?"
         if state.step == _Step.INTRODUCTION and (_rejects_this_location(text) or _is_bare_refusal(text)):
@@ -542,6 +726,7 @@ class RealEstateAgent(Agent):
                 await tools_.not_interested_in_this_location()
                 reply = state.direct_reply or other_property_question(state.reply_lang)
                 state.direct_reply = None
+                state.last_agent_question = reply
                 say_cached(self.session, state, reply, True)
                 ok = True
             except Exception as e:
@@ -560,6 +745,7 @@ class RealEstateAgent(Agent):
                     if _ans:
                         reply = state.direct_reply or ask_new_location_question(state.reply_lang)
                         state.direct_reply = None
+                        state.last_agent_question = reply
                         say_cached(self.session, state, reply, True)
                     else:
                         from .prompts import get_closing_text
@@ -593,7 +779,7 @@ class RealEstateAgent(Agent):
 
         # Caller says "standalone" / "independent" property -> no unit number or floor exists, so
         # get_missing_fields() stops asking for them. Checked on every pre-closing intake turn.
-        from .tools import is_standalone_from_speech
+        from .tools import is_standalone_from_speech, _DONT_KNOW_RE, _DONT_KNOW_DEV
         from .state import RealEstateStep as _SS
         standalone_changed = False
         if (
@@ -612,6 +798,81 @@ class RealEstateAgent(Agent):
                 state.floor_number = "Ground"
             standalone_changed = True
             logger.info(f"🏠 Standalone/independent property -> unit & floor set to Standalone: '{text}'")
+
+        # Caller says "don't know" / "nahi pata" / "yaad nahi" to the currently asked intake field:
+        # Skip the field cleanly without corrupting data (e.g. unit_floor will NOT be marked standalone).
+        _intake_steps = (_SS.RESIDENTIAL_SALE, _SS.RESIDENTIAL_LEASE, _SS.COMMERCIAL_SALE, _SS.COMMERCIAL_LEASE)
+        if state.step in _intake_steps and (_DONT_KNOW_RE.search(low_text) or _DONT_KNOW_DEV.search(text)):
+            missing = state.get_missing_fields()
+            if missing:
+                skipped_id = missing[0]["id"]
+                state.skipped_fields.add(skipped_id)
+                logger.info(f"⏭️ Caller doesn't know {skipped_id} ('{text}') -> skipped without corrupting data")
+                missing_after = state.get_missing_fields()
+                if missing_after:
+                    next_q = missing_after[0]["question_en"] if state.reply_lang == "en" else missing_after[0]["question_hi"]
+                    lead = "No problem Sir. " if state.reply_lang == "en" else "Koi baat nahi Sir. "
+                    reply = lead + next_q
+                    state.last_agent_question = reply
+                    say_cached(self.session, state, reply, True)
+                    raise StopResponse()
+                else:
+                    from .prompts import get_closing_text
+                    closing_text = get_closing_text(state)
+                    state.closing_spoken = True
+                    tools_._hangup_scheduled = True
+                    speech = say_cached(self.session, state, closing_text, False)
+                    if tools_.hangup_func:
+                        async def _hangup_after_speech():
+                            try:
+                                if hasattr(speech, "wait_for_playout"):
+                                    await speech.wait_for_playout()
+                                else:
+                                    await asyncio.sleep(4.0)
+                            except Exception:
+                                await asyncio.sleep(3.5)
+                            await asyncio.sleep(0.5)
+                            await tools_.hangup_func()
+                        asyncio.create_task(_hangup_after_speech())
+                    raise StopResponse()
+
+        # Caller states "market rate" / "jo market rate chal raha hai" as expected price:
+        if state.step in _intake_steps and _is_market_rate_statement(text):
+            missing = state.get_missing_fields()
+            if missing and missing[0]["id"] in ("sale_price", "monthly_rent"):
+                field_id = missing[0]["id"]
+                if field_id == "sale_price":
+                    state.expected_sale_price = "Market Rate"
+                else:
+                    state.expected_monthly_rent = "Market Rate"
+                logger.info(f"💰 Caller stated price as Market Rate ('{text}') -> saved {field_id}='Market Rate'")
+                missing_after = state.get_missing_fields()
+                if missing_after:
+                    next_q = missing_after[0]["question_en"] if state.reply_lang == "en" else missing_after[0]["question_hi"]
+                    lead = "Market rate, noted Sir. " if state.reply_lang == "en" else "Market rate, note kar liya Sir. "
+                    reply = lead + next_q
+                    state.last_agent_question = reply
+                    say_cached(self.session, state, reply, True)
+                    raise StopResponse()
+                else:
+                    from .prompts import get_closing_text
+                    closing_text = get_closing_text(state)
+                    state.closing_spoken = True
+                    tools_._hangup_scheduled = True
+                    speech = say_cached(self.session, state, closing_text, False)
+                    if tools_.hangup_func:
+                        async def _hangup_after_speech():
+                            try:
+                                if hasattr(speech, "wait_for_playout"):
+                                    await speech.wait_for_playout()
+                                else:
+                                    await asyncio.sleep(4.0)
+                            except Exception:
+                                await asyncio.sleep(3.5)
+                            await asyncio.sleep(0.5)
+                            await tools_.hangup_func()
+                        asyncio.create_task(_hangup_after_speech())
+                    raise StopResponse()
 
         # Caller asks us to repeat / says "what did you ask?" -> re-ask the open question (no LLM,
         # no tool call, nothing skipped). Runs BEFORE category detection because the caller's
@@ -646,21 +907,15 @@ class RealEstateAgent(Agent):
                             "Ye residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
                         )
                         _kind = "category"
-            elif state.step in _intake and _asks_repeat(text):
+            elif state.step in _intake and (_asks_repeat(text) or _neutral):
                 _missing = state.get_missing_fields()
                 if _missing:
                     _reask = _missing[0]["question_en"] if state.reply_lang == "en" else _missing[0]["question_hi"]
+                    _kind = _missing[0]["id"]
             _no_lead = False
             if _reask:
                 _n = _bump_reask(state, f"{state.step.value}|{_reask}")
-                if (state.is_interested or state.step in _intake) and _n >= 3:
-                    logger.info(f"🤝 After 2 failed attempts on same question ({_n}) -> offering advisor callback and closing")
-                    try:
-                        await self._re_tools.book_advisor_handoff(reason="Could not understand caller after 2 failed attempts on same question")
-                    except Exception as e:
-                        logger.warning(f"Advisor handoff failed: {e}")
-                    raise StopResponse()
-                elif _n >= 3:
+                if _n >= 3:
                     logger.info(f"🔁 Same question re-asked {_n}x -> handing this turn to the LLM instead of looping")
                     _reask = None
                 elif _kind and not (_asks_repeat(text) and not _neutral):
@@ -670,6 +925,7 @@ class RealEstateAgent(Agent):
                         _reask, _no_lead = _alt, True
             if _reask:
                 lead = "" if _no_lead else ("Sure, " if state.reply_lang == "en" else "Ji, ")
+                state.last_agent_question = _reask
                 logger.info(f"🔁 Repeat/backchannel -> re-asking open question (no LLM): '{_reask}'")
                 try:
                     self.session.say(lead + _reask, allow_interruptions=True)
@@ -695,17 +951,11 @@ class RealEstateAgent(Agent):
                 )
             lead = "" if not loc else ("Sure, " if en else "Ji, ")
             _n = _bump_reask(state, f"INTRO|{'loc' if loc else 'noloc'}")
-            if state.is_interested and _n >= 3:
-                logger.info("🤝 After 2 failed attempts on intro question -> offering advisor callback and closing")
-                try:
-                    await self._re_tools.book_advisor_handoff(reason="Could not understand caller after 2 failed attempts on same question")
-                except Exception as e:
-                    logger.warning(f"Advisor handoff failed: {e}")
-                raise StopResponse()
-            elif _n >= 3:
+            if _n >= 3:
                 logger.info("🔁 Intro clarification asked 3x -> letting the LLM handle it")
             else:
                 logger.info(f"🔁 Repeat / location clarification at intro -> '{_rep}'")
+                state.last_agent_question = _rep
                 try:
                     self.session.say(lead + _rep, allow_interruptions=True)
                 except Exception as e:
@@ -743,15 +993,22 @@ class RealEstateAgent(Agent):
         # "Repeat" at ANY other step (other-property, new location, name): say the last question
         # we actually asked, verbatim. Repeating only happens when the caller asks for it.
         if state.step not in _intake and state.step != _S.CATEGORY_SELECT and state.step != _S.INTRODUCTION and state.step != _S.CLOSING \
-                and _asks_repeat(text) and state.last_agent_question:
-            lead = "Sure, " if state.reply_lang == "en" else "Ji, "
-            logger.info(f"🔁 Repeat requested -> re-asking last question (no LLM): '{state.last_agent_question}'")
-            try:
-                self.session.say(lead + state.last_agent_question, allow_interruptions=True)
-            except Exception as e:
-                logger.warning(f"Re-ask failed, falling back to LLM: {e}")
-            else:
-                raise StopResponse()
+                and _asks_repeat(text):
+            q_to_repeat = state.last_agent_question
+            if not q_to_repeat:
+                if state.step == _S.CHECK_OTHER_PROPERTY:
+                    q_to_repeat = other_property_question(state.reply_lang)
+                elif state.step == _S.ASK_NEW_LOCATION:
+                    q_to_repeat = ask_new_location_question(state.reply_lang)
+            if q_to_repeat:
+                lead = "Sure, " if state.reply_lang == "en" else "Ji, "
+                logger.info(f"🔁 Repeat requested -> re-asking last question (no LLM): '{q_to_repeat}'")
+                try:
+                    self.session.say(lead + q_to_repeat, allow_interruptions=True)
+                except Exception as e:
+                    logger.warning(f"Re-ask failed, falling back to LLM: {e}")
+                else:
+                    raise StopResponse()
 
         # Caller asks "Are you a broker?" / "Kya aap broker ho?"
         if _asks_if_broker(text) and state.step != _S.CLOSING:
@@ -771,6 +1028,7 @@ class RealEstateAgent(Agent):
                     "Ji, hum My Estate Finder se hain. Hum property owners ko direct verified buyers aur tenants se connect karte hain. Kya aap apni property sell ya rent karne ka soch rahe hain?"
                 )
             logger.info(f"🏢 'Are you a broker?' query -> explaining platform: '{_rep}'")
+            state.last_agent_question = _rep
             try:
                 self.session.say(_rep, allow_interruptions=True)
             except Exception as e:
@@ -795,7 +1053,13 @@ class RealEstateAgent(Agent):
         _refusal = state.step in (RealEstateStep.INTRODUCTION, RealEstateStep.CHECK_OTHER_PROPERTY) and (
             _rejects_this_location(text) or _starts_with_negation(text)
         )
-        detected_cat = None if _refusal else classify_category(text)
+        # Category is strictly locked once intake begins (or if provided from audience file/db).
+        # Only re-detect in early turns (INTRODUCTION, CATEGORY_SELECT, new location) or if category is unknown.
+        _allow_cat_detect = (not state.category) or (state.step in (
+            RealEstateStep.INTRODUCTION, RealEstateStep.CATEGORY_SELECT,
+            RealEstateStep.CHECK_OTHER_PROPERTY, RealEstateStep.ASK_NEW_LOCATION
+        ))
+        detected_cat = None if (_refusal or not _allow_cat_detect) else classify_category(text)
         detected_int = None if _refusal else classify_intent(text)
         step_changed = False
 
@@ -831,7 +1095,7 @@ class RealEstateAgent(Agent):
             state.intent = detected_int
             logger.info(f"🎯 Proactively recognized intent: '{detected_int}' from utterance: '{text}'")
 
-        if state.step in (RealEstateStep.CATEGORY_SELECT, RealEstateStep.ASK_NEW_LOCATION) and state.category and state.intent:
+        if state.step in (RealEstateStep.INTRODUCTION, RealEstateStep.CATEGORY_SELECT, RealEstateStep.ASK_NEW_LOCATION) and state.category and state.intent:
             if state.category == "commercial":
                 state.step = RealEstateStep.COMMERCIAL_LEASE if state.intent == "lease" else RealEstateStep.COMMERCIAL_SALE
             else:
@@ -936,6 +1200,7 @@ class RealEstateAgent(Agent):
                                 if _m:
                                     _fp_reply = _m[0]["question_en"] if state.reply_lang == "en" else _m[0]["question_hi"]
                             if _fp_reply:
+                                state.last_agent_question = _extract_question(_fp_reply) or _fp_reply
                                 self.session.say(_fp_reply, allow_interruptions=True)
                         raise StopResponse()
 
@@ -988,7 +1253,6 @@ class RealEstateAgent(Agent):
 
         full = "".join(_chunk_text(c) or "" for c in held)
         if saw_tool:
-            self._re_state.record_question_success()
             if full.strip():
                 logger.info(f"🔇 Dropped LLM text that came with a tool call (avoids double question): {full.strip()[:140]!r}")
             return
@@ -1003,20 +1267,7 @@ class RealEstateAgent(Agent):
                 yield recovered
             return
 
-        # No tool was called: LLM is responding with speech because it did not understand / get the answer
-        q_key = self._re_state.get_active_question_key()
-        fail_count = self._re_state.record_question_failure(q_key)
-        logger.info(f"❓ Question '{q_key}' not understood by LLM (failure count: {fail_count})")
-        from .state import RealEstateStep
-        if (self._re_state.is_interested or self._re_state.step in (
-            RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.RESIDENTIAL_LEASE,
-            RealEstateStep.COMMERCIAL_SALE, RealEstateStep.COMMERCIAL_LEASE,
-            RealEstateStep.CATEGORY_SELECT,
-        )) and fail_count > 2:
-            logger.info(f"🤝 After 2 failed attempts on '{q_key}' (count: {fail_count}) -> booking advisor callback handoff")
-            await self._re_tools.book_advisor_handoff(reason="Could not understand caller after 2 failed attempts on same question")
-            return
-
+        # No tool was called: LLM is speaking naturally (answering question, objection, or clarifying)
         for c in held:
             yield c
 
@@ -1059,18 +1310,6 @@ class RealEstateAgent(Agent):
             return reply
 
         # Nothing usable -> never stay silent: re-ask the question that is currently open.
-        q_key = state.get_active_question_key()
-        fail_count = state.record_question_failure(q_key)
-        from .state import RealEstateStep
-        if (state.is_interested or state.step in (
-            RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.RESIDENTIAL_LEASE,
-            RealEstateStep.COMMERCIAL_SALE, RealEstateStep.COMMERCIAL_LEASE,
-            RealEstateStep.CATEGORY_SELECT,
-        )) and fail_count > 2:
-            logger.info(f"🤝 After 2 failed attempts on '{q_key}' in recovery -> booking advisor callback handoff")
-            await self._re_tools.book_advisor_handoff(reason="Could not understand caller after 2 failed attempts on same question")
-            return None
-
         missing = state.get_missing_fields()
         en = state.reply_lang == "en"
         if missing:

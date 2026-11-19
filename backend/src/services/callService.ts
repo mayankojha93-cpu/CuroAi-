@@ -755,8 +755,10 @@ export class CallService {
 
     // Map into the 3 standard statuses: 'completed' (Successful), 'failed' (Failed), 'no_answer' (No Answer)
     let mappedStatus = 'completed';
-    if (finalDisp === 'Not Connected (No Answer)' || finalDisp === 'Voicemail or IVR Detected') {
+    if (finalDisp === 'Not Connected (No Answer)') {
       mappedStatus = 'no_answer';
+    } else if (finalDisp === 'Voicemail or IVR Detected') {
+      mappedStatus = 'completed';
     } else if (
       finalDisp === 'Not Connected (Failed)' ||
       finalDisp === 'Refused To Return' ||
@@ -1117,7 +1119,7 @@ export class CallService {
         {
           category: "Customer couldn't be connected after multiple attempts",
           dispositions: [
-            { name: 'Voicemail or IVR Detected', count: dispMap['VOICEMAIL'] || 0 },
+            { name: 'Voicemail or IVR Detected', count: (dispMap['Voicemail or IVR Detected'] || 0) + (dispMap['VOICEMAIL'] || 0) + (dispMap['IVR'] || 0) },
             { name: 'No Response (Silence)', count: dispMap['NO_RESPONSE'] || 0 },
             { name: 'Not Connected (No Answer)', count: dispMap['NO_ANSWER'] || 0 },
             { name: 'Not Connected (Failed)', count: dispMap['FAILED'] || 0 },

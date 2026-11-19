@@ -333,7 +333,7 @@ async def entrypoint(ctx: agents.JobContext):
 
     ivr_drop_task: Optional[asyncio.Task] = None
 
-    def _schedule_ivr_drop(kind: str, text: str):
+    def _drop_ivr_immediately(kind: str, text: str):
         nonlocal ivr_drop_task
         if state.is_completed:
             return
@@ -342,18 +342,10 @@ async def entrypoint(ctx: agents.JobContext):
 
         async def _do_drop():
             try:
-                logger.info(f"⏳ Waiting 5s before dropping call due to carrier IVR ({kind})...")
-                await asyncio.sleep(5.0)
-                if state.is_completed:
-                    return
-                logger.warning(f"⏰ 5s IVR wait completed for ({kind}). Ending call.")
+                logger.warning(f"📵 IVR / Voicemail detected ({kind}): \"{text.strip()[:120]}\". Dropping call immediately from agent side.")
                 state.is_completed = True
-                if kind == "hold":
-                    state.final_disposition = "VOICEMAIL"
-                    state.customer_note = "Call placed on hold by subscriber; timed out after 5s waiting for human."
-                else:
-                    state.final_disposition = "VOICEMAIL"
-                    state.customer_note = f"Voicemail / not-reachable announcement detected: {text[:120]}"
+                state.final_disposition = "Voicemail or IVR Detected"
+                state.customer_note = f"Voicemail or IVR Detected ({kind}): {text.strip()[:120]}"
                 state.transition_to(Step.TERMINATED)
                 _cancel_timers()
                 try:
@@ -362,7 +354,7 @@ async def entrypoint(ctx: agents.JobContext):
                     pass
                 await clean_hangup(ctx, session, state)
             except asyncio.CancelledError:
-                logger.info(f"IVR 5s drop timer cancelled for ({kind}).")
+                pass
             except Exception as e:
                 logger.warning(f"Error in IVR drop task: {e}")
 
@@ -376,23 +368,15 @@ async def entrypoint(ctx: agents.JobContext):
         is_final = getattr(ev, "is_final", True)
         confidence = getattr(ev, "confidence", 1.0) or 1.0
 
-        # Automated carrier announcements (call-waiting "on hold", voicemail, not reachable) are NOT the
-        # customer. Do not log them as customer speech, do not reset the silence timer, do not start the
-        # provider-timeout timer (no LLM reply will follow). AirtelAgent.on_user_turn_completed blocks the LLM.
+        # Automated carrier / IVR / voicemail announcements are NOT the customer.
+        # Once detected, drop the call immediately and set disposition to 'Voicemail or IVR Detected'.
         carrier_kind = classify_carrier_message(raw_text)
         if carrier_kind:
+            logger.warning(f"📵 Carrier IVR / Voicemail announcement ({carrier_kind}) detected: \"{raw_text.strip()[:120]}\"")
             if is_final:
-                logger.warning(f"📵 Carrier announcement ({carrier_kind}) detected: \"{raw_text.strip()[:120]}\"")
                 state.add_transcript("system", f"[carrier announcement: {carrier_kind}] {raw_text.strip()}")
-                _schedule_ivr_drop(carrier_kind, raw_text)
+            _drop_ivr_immediately(carrier_kind, raw_text)
             return
-
-        # Legitimate human speech arrived: cancel pending IVR drop timer
-        nonlocal ivr_drop_task
-        if ivr_drop_task and not ivr_drop_task.done():
-            logger.info("🗣️ Human speech detected! Cancelling 5s IVR drop timer.")
-            ivr_drop_task.cancel()
-            ivr_drop_task = None
 
         timing_tracker["last_activity_time"] = time.time()
 

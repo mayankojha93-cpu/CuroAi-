@@ -124,11 +124,12 @@ _DNC_LATIN = re.compile(
 )
 _DNC_DEV = re.compile(r"(कॉल\s*मत|मत\s*कॉल|कॉल\s*न\s*कर|नंबर\s*(हटा|रिमूव|डिलीट)|रिमूव|डू\s*नॉट\s*कॉल|डीएनडी|परेशान\s*मत)")
 _REFUSAL_LATIN = re.compile(
-    r"\b(no|nope|nahi|nhi|nahin|nai|never|mat|don'?t|do\s*not|dont)\b"
-    r"|\bnot\s+(interested|looking|selling|renting|leasing|want|planning|thinking|at\s+all)",
+    r"\b(no|nope|nah|nahi|nahin|nhi|nahii|nai|never|nothing|none|mat|don'?t|do\s*not|dont)\b"
+    r"|\bnot\s+(interested|looking|selling|renting|leasing|want|planning|thinking|at\s+all|really|now)"
+    r"|\b(nothing\s+else|none\s+else|no\s+other|no\s+more)\b",
     re.I,
 )
-_REFUSAL_DEV = re.compile(r"(नहीं|नही|मत|नो\b)")
+_REFUSAL_DEV = re.compile(r"(नहीं|नही|नहि|मत|नो\b|कुछ\s*नहीं|कोई\s*नहीं)")
 
 
 def explicit_dnc_request(text: Any) -> bool:
@@ -184,17 +185,16 @@ def commercial_type_from_speech(text: Any) -> Optional[str]:
 # "independent floor" / "builder floor" are NOT standalone (one floor of a building -> floor matters).
 _STANDALONE_RE = re.compile(
     r"(?<![a-z])("
-    r"stand[\s\-]?alone|standard[\s\-]?alone|standard[\s\-]?allen|standard[\s\-]?alan|"
-    r"free[\s\-]?standing|independent|"
-    r"no\s+(unit|flat|floor|door|house|even)\s*(number|no\.?|num)?|"
-    r"(there\s+is\s+)?no\s+unit|"
-    r"(unit|flat|floor)\s*(number)?\s*(nahi|nahin|not|nhi|hai\s*hi\s*nahi)|"
-    r"entire\s+(building|property|house|office)|"
-    r"whole\s+(building|property|house|office)"
+    r"stand[\s\-]?alone|standard[\s\-]?alone|free[\s\-]?standing|"
+    r"independent\s+(house|villa|building|property|kothi|bungalow|home)|"
+    r"\b(villa|kothi|bungalow|row\s*house)\b|"
+    r"(entire|whole)\s+(building|property|house|office)|"
+    r"(unit|flat|floor)\s*(number)?\s*(hai\s*hi\s*nahi|hota\s*hi\s*nahi|nahi\s*hota)\b|"
+    r"(there\s+is\s+)?no\s+(unit|flat|floor)\s*(number)?"
     r")(?![a-z])",
     re.I
 )
-_STANDALONE_DEV = re.compile(r"(स्टैंड\s?अलोन|स्टैंडअलोन|स्टैंडर्ड\s?अलोन|इंडिपेंडेंट|इंडिपेंडेन्ट|फ्री\s?स्टैंडिंग)")
+_STANDALONE_DEV = re.compile(r"(स्टैंड\s?अलोन|स्टैंडअलोन|स्टैंडर्ड\s?अलोन|इंडिपेंडेंट\s*(हाउस|विला|कोठी|बिल्डिंग)?|विला|कोठी|बंगला)")
 _STANDALONE_NEG_RE = re.compile(
     r"(not\s+(a\s+|an\s+)?(stand[\s\-]?alone|free[\s\-]?standing|independent)"
     r"|(stand[\s\-]?alone|free[\s\-]?standing|independent)\s+(nahi|nahin|nhi)"
@@ -207,6 +207,9 @@ def is_standalone_from_speech(text: Any) -> bool:
     'standalone building'). Used to skip the unit-number / floor question."""
     low = str(text or "").lower().strip()
     if not low:
+        return False
+    # If caller says they do not know / do not remember, that is NOT a standalone property
+    if _DONT_KNOW_RE.search(low) or _DONT_KNOW_DEV.search(low):
         return False
     if _STANDALONE_NEG_RE.search(low):
         return False
@@ -222,6 +225,38 @@ def other_property_question(lang: str) -> str:
     )
 
 
+def sell_or_rent_question(lang: str, has_loc: bool = True, loc: Optional[str] = None, full_context: bool = False) -> str:
+    """Qualification question asked in turn 2 after opening greeting acknowledgment.
+    If full_context is True (e.g. caller interrupted intro or asked who/what/hello),
+    provides full persona, company, and location context so the caller is never confused."""
+    if full_context:
+        clean_loc = loc.split(";")[0].strip() if loc else ""
+        if clean_loc:
+            return (
+                f"Hello Sir, this is Priya from My Estate Finder. I'm calling regarding your property in {clean_loc} — were you looking to sell or rent it out?"
+                if lang == "en"
+                else f"Ji, main Priya baat kar rahi hoon My Estate Finder se. Aapki {clean_loc} wali property ke silsile mein call kiya tha — kya aap use sell karne ka plan kar rahe hain ya rent out?"
+            )
+        else:
+            return (
+                "Hello Sir, this is Priya from My Estate Finder. Were you looking to sell or rent out any property?"
+                if lang == "en"
+                else "Ji, main Priya baat kar rahi hoon My Estate Finder se. Main yeh pooch rahi thi ki kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"
+            )
+
+    if has_loc:
+        return (
+            "Were you looking to sell or rent it out?"
+            if lang == "en"
+            else "Kya aap use sell karne ka plan kar rahe hain ya rent out?"
+        )
+    return (
+        "Do you own any property that you'd like to sell or rent out?"
+        if lang == "en"
+        else "Kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"
+    )
+
+
 def ask_new_location_question(lang: str) -> str:
     """Scenario B2: asked when the caller says they have another property."""
     return (
@@ -231,6 +266,20 @@ def ask_new_location_question(lang: str) -> str:
     )
 
 
+_Q_LEAD_RE = re.compile(r"^(?:ji sir|sure sir|sorry sir|ji|sure|sorry|sir)\s*[,.]?\s+", re.I)
+
+
+def extract_question(spoken: str) -> str:
+    """The question part of a spoken line: from the first sentence that ends with '?' to the end.
+    Drops acks like 'Okay.' and re-ask leads like 'Ji Sir,' so a later 'repeat' sounds clean."""
+    parts = re.split(r"(?<=[.!?।])\s+", (spoken or "").strip())
+    for i, p in enumerate(parts):
+        if p.rstrip().endswith("?"):
+            q = " ".join(parts[i:]).strip()
+            return _Q_LEAD_RE.sub("", q).strip()
+    return ""
+
+
 async def _replay(frames):
     for f in frames:
         yield f
@@ -238,6 +287,10 @@ async def _replay(frames):
 
 def say_cached(session, state, text: str, allow_interruptions: bool = True):
     """session.say(), but plays pre-rendered audio when this exact line was synthesised during the ring."""
+    q = extract_question(text)
+    if q and hasattr(state, "last_agent_question"):
+        state.last_agent_question = q
+
     frames = getattr(state, "audio_cache", {}).get(text)
     if frames:
         try:
@@ -443,7 +496,6 @@ class RealEstateTools:
         """Call when customer confirms interest OR indicates they are thinking about / considering selling, renting, or leasing out (e.g. 'looking to lease out', 'lease out', 'lease', 'rent out', 'sell', 'soch raha hoon', 'sochata rahun', 'thinking about it', 'considering it', 'plan hai').
         Optionally accepts category ('residential'/'commercial') or intent ('sale'/'lease'/'rent') if mentioned."""
         self.state.is_interested = True
-        self.state.record_question_success()
         self._apply_standalone()
 
         # Both customer name and property location are already provided from data/records.
@@ -531,7 +583,13 @@ class RealEstateTools:
         If customer states the new location in the same sentence, pass it in new_location.
         If they also state category (residential/commercial) or intent (sale/rent), pass them."""
         if not has_other:
-            return await self.mark_not_interested()
+            self.state.has_other_property = False
+            self.state.is_interested = False
+            self.state.final_disposition = "Not Interested"
+            if not self.state.agent_summary:
+                self.state.agent_summary = "Customer has no other property to sell or rent"
+            await self._go(RealEstateStep.CLOSING)
+            return "Customer has no other property. Speak polite closing and thank them for their time."
 
         self.state.has_other_property = True
         self.state.is_standalone = False  # new property: decide again from what the caller says
@@ -710,7 +768,6 @@ class RealEstateTools:
 
         # If both category and intent are established, transition to the respective branch 4.1 to 4.4
         if self.state.category and self.state.intent:
-            self.state.record_question_success("CATEGORY_SELECT")
             cat = self.state.category
             intn = self.state.intent
             if cat == "residential" and intn == "sale":
@@ -769,7 +826,9 @@ class RealEstateTools:
         """Save ONLY the property details the customer explicitly stated in their latest message.
         Pass just those parameters and OMIT every other parameter. Never pass null and never guess
         or reuse values from earlier turns. commercial_type must be exactly the unit type the caller
-        said (office, shop, showroom...); never assume it."""
+        said (office, shop, showroom...); never assume it.
+        approx_area_sqft: Super area in sq ft. If customer states area in gaj or square yards,
+        convert to sq ft (1 gaj = 9 sq ft, e.g. 200 gaj = 1800 sq ft)."""
         before = self._snap()
         clean_society = _clean_str(project_or_society)
         if clean_society:
@@ -805,33 +864,45 @@ class RealEstateTools:
         if clean_comm:
             self.state.commercial_type = clean_comm
 
-        # Dynamic category switching and step realignment
-        cat_hint = classify_category(category) or (classify_category(clean_comm) if clean_comm else None)
-        if clean_comm or cat_hint == "commercial":
-            self.state.category = "commercial"
-            self.state.bhk_config = None  # Commercial properties never have BHK
-            if self.state.step in (RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.CATEGORY_SELECT):
-                target_step = RealEstateStep.COMMERCIAL_LEASE if (self.state.intent == "lease") else RealEstateStep.COMMERCIAL_SALE
-                await self._go(target_step)
-            elif self.state.step == RealEstateStep.RESIDENTIAL_LEASE:
-                await self._go(RealEstateStep.COMMERCIAL_LEASE)
-        elif clean_bhk or cat_hint == "residential":
-            self.state.category = "residential"
-            self.state.commercial_type = None  # Residential properties never have commercial type
-            if self.state.step in (RealEstateStep.COMMERCIAL_SALE, RealEstateStep.CATEGORY_SELECT):
-                target_step = RealEstateStep.RESIDENTIAL_LEASE if (self.state.intent == "lease") else RealEstateStep.RESIDENTIAL_SALE
-                await self._go(target_step)
-            elif self.state.step == RealEstateStep.COMMERCIAL_LEASE:
-                await self._go(RealEstateStep.RESIDENTIAL_LEASE)
+        # Dynamic category switching and step realignment.
+        # Only allowed in early turns or if category was not set (e.g. not in audience DB).
+        # Once in intake branches, category is locked to avoid stray words flipping the branch.
+        allow_cat_switch = (not self.state.category) or (self.state.step in (
+            RealEstateStep.CATEGORY_SELECT, RealEstateStep.INTRODUCTION,
+            RealEstateStep.CHECK_OTHER_PROPERTY, RealEstateStep.ASK_NEW_LOCATION
+        ))
+        if allow_cat_switch:
+            cat_hint = classify_category(category) or (classify_category(clean_comm) if clean_comm else None)
+            if clean_comm or cat_hint == "commercial":
+                self.state.category = "commercial"
+                self.state.bhk_config = None  # Commercial properties never have BHK
+                if self.state.step in (RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.CATEGORY_SELECT):
+                    target_step = RealEstateStep.COMMERCIAL_LEASE if (self.state.intent == "lease") else RealEstateStep.COMMERCIAL_SALE
+                    await self._go(target_step)
+                elif self.state.step == RealEstateStep.RESIDENTIAL_LEASE:
+                    await self._go(RealEstateStep.COMMERCIAL_LEASE)
+            elif clean_bhk or cat_hint == "residential":
+                self.state.category = "residential"
+                self.state.commercial_type = None  # Residential properties never have commercial type
+                if self.state.step in (RealEstateStep.COMMERCIAL_SALE, RealEstateStep.CATEGORY_SELECT):
+                    target_step = RealEstateStep.RESIDENTIAL_LEASE if (self.state.intent == "lease") else RealEstateStep.RESIDENTIAL_SALE
+                    await self._go(target_step)
+                elif self.state.step == RealEstateStep.COMMERCIAL_LEASE:
+                    await self._go(RealEstateStep.RESIDENTIAL_LEASE)
 
         if approx_area_sqft is not None:
             try:
                 if isinstance(approx_area_sqft, (int, float)):
                     self.state.approx_area_sqft = float(approx_area_sqft)
                 else:
-                    m = re.search(r'([0-9]+(?:\.[0-9]+)?)', str(approx_area_sqft).replace(',', ''))
+                    raw_str = str(approx_area_sqft).replace(',', '').strip()
+                    m = re.search(r'([0-9]+(?:\.[0-9]+)?)', raw_str)
                     if m:
-                        self.state.approx_area_sqft = float(m.group(1))
+                        val = float(m.group(1))
+                        # If passed in gaj or square yards, convert to sq ft (1 gaj = 9 sq ft)
+                        if re.search(r'\b(gaj|sq\.?\s*yards?|sq\.?\s*yd|square\s*yards?|yards?|yd)\b', raw_str, re.IGNORECASE):
+                            val = round(val * 9.0, 2)
+                        self.state.approx_area_sqft = val
             except (ValueError, TypeError):
                 pass
 
@@ -881,7 +952,6 @@ class RealEstateTools:
             self.state.is_standalone = True
             logger.info("Standalone/independent property detected -> skipping unit number & floor")
 
-        self.state.record_question_success()
         missing = self.state.get_missing_fields()
         if len(missing) == 0:
             # All details for this branch are captured!
@@ -905,7 +975,6 @@ class RealEstateTools:
         target = field_id if field_id in ids else (missing[0]["id"] if missing else None)
         if target:
             self.state.skipped_fields.add(target)
-            self.state.record_question_success()
         missing = self.state.get_missing_fields()
         if not missing:
             return await self.finish_property_intake()
@@ -913,23 +982,20 @@ class RealEstateTools:
         no_prob = "No problem." if self.state.reply_lang == "en" else "Koi baat nahi."
         return self._fast(q, f"No problem, that detail is skipped. Acknowledge in 2-3 words and ask only: '{q}'", ack=no_prob)
 
-    @function_tool
-    async def finish_property_intake(self) -> str:
-        """Call when all property details have been collected to wrap up."""
-        missing = self.state.get_missing_fields()
-        if len(missing) > 0 and not getattr(self.state, "impatient_detected", False):
-            next_field = missing[0]
-            q = next_field["question_en"] if self.state.reply_lang == "en" else next_field["question_hi"]
-            return self._fast(q, f"Not all details are collected yet. Smoothly ask: '{q}'")
-
-        cat = (self.state.category or "Residential").title()
-        intn = "Sale" if self.state.intent == "sale" else "Lease"
-        self.state.final_disposition = "Qualified Lead"
-
-        details = [f"{cat} {intn}"]
+    def _build_property_summary(self) -> str:
+        """Builds a structured summary of all property details captured so far."""
+        details = []
+        if self.state.category or self.state.intent:
+            cat = (self.state.category or "Residential").title()
+            intn = "Sale" if self.state.intent == "sale" else "Lease" if self.state.intent == "lease" else ""
+            summary_type = f"{cat} {intn}".strip()
+            if summary_type:
+                details.append(summary_type)
         if self.state.project_or_society:
             loc = f", {self.state.sector_or_location}" if self.state.sector_or_location else ""
             details.append(f"{self.state.project_or_society}{loc}")
+        elif self.state.sector_or_location:
+            details.append(self.state.sector_or_location)
         if self.state.is_standalone:
             details.append("Standalone/Independent property")
         if self.state.unit_number or self.state.floor_number:
@@ -951,8 +1017,20 @@ class RealEstateTools:
             details.append("Leased" + rent_str if self.state.is_currently_leased else "Vacant")
         if self.state.immediate_occupancy is not None:
             details.append("Immediate Occupancy: Yes" if self.state.immediate_occupancy else "Immediate Occupancy: No")
+        return "; ".join(details)
 
-        self.state.agent_summary = "; ".join(details)
+    @function_tool
+    async def finish_property_intake(self) -> str:
+        """Call when all property details have been collected to wrap up."""
+        missing = self.state.get_missing_fields()
+        if len(missing) > 0 and not getattr(self.state, "impatient_detected", False):
+            next_field = missing[0]
+            q = next_field["question_en"] if self.state.reply_lang == "en" else next_field["question_hi"]
+            return self._fast(q, f"Not all details are collected yet. Smoothly ask: '{q}'")
+
+        self.state.final_disposition = "Qualified Lead"
+        prop_summary = self._build_property_summary()
+        self.state.agent_summary = prop_summary or "All property details captured successfully"
         await self._go(RealEstateStep.CLOSING)
         return "All details captured! Speak the official closing statement now."
 
@@ -983,7 +1061,9 @@ class RealEstateTools:
         slot = f"{preferred_day or ''} {time_slot or ''}".strip() or "General"
         self.state.callback_time_slot = slot
         self.state.final_disposition = "Schedule Callback"
-        self.state.agent_summary = f"Callback scheduled for: {slot}"
+        prop_summary = self._build_property_summary()
+        base = f"Callback scheduled for: {slot}"
+        self.state.agent_summary = f"{base} | Details: {prop_summary}" if prop_summary else base
         await self._go(RealEstateStep.CLOSING)
         return f"Callback scheduled for {slot}. Confirm with customer and speak closing."
 
@@ -1000,7 +1080,9 @@ class RealEstateTools:
         self.state.advisor_handoff_reason = reason.strip()
         self.state.callback_time_slot = preferred_time
         self.state.final_disposition = "Advisor Callback Booked"
-        self.state.agent_summary = f"Advisor handoff booked: {reason}"
+        prop_summary = self._build_property_summary()
+        base = f"Advisor handoff booked: {reason}"
+        self.state.agent_summary = f"{base} | Details: {prop_summary}" if prop_summary else base
         await self._go(RealEstateStep.CLOSING)
         return "Senior advisor callback booked. Acknowledge politely and speak closing."
 
@@ -1012,8 +1094,9 @@ class RealEstateTools:
         """Call when customer asks to send property details or company information on WhatsApp."""
         self.state.whatsapp_number = (phone or self.state.phone).strip()
         self.state.final_disposition = "WhatsApp Info Requested"
-        if not self.state.agent_summary:
-            self.state.agent_summary = f"WhatsApp info requested on: {self.state.whatsapp_number}"
+        prop_summary = self._build_property_summary()
+        base = f"WhatsApp info requested on: {self.state.whatsapp_number}"
+        self.state.agent_summary = f"{base} | Details: {prop_summary}" if prop_summary else base
         await self._go(RealEstateStep.CLOSING)
         return f"WhatsApp info requested for {self.state.whatsapp_number}. Acknowledge and speak closing."
 

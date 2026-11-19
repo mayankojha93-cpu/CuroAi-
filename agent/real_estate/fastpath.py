@@ -101,19 +101,33 @@ def _x_bhk(v: str, open_field: str = "") -> Optional[Dict[str, Any]]:
     return None
 
 
-# ── Area (sq ft) ─────────────────────────────────────────────────────────────
-_AREA = re.compile(
-    r"(\d[\d,]*(?:\.\d+)?)\s*(?:sq\.?\s*(?:ft|feet|foot)|sqft|square\s*(?:feet|foot|ft)|feet|ft)\b"
+# ── Area (sq ft & gaj) ───────────────────────────────────────────────────────
+_GAJ = re.compile(
+    r"(\d[\d,]*(?:\.\d+)?)\s*(?:sq\.?\s*yards?|sq\.?\s*yd|square\s*yards?|gaj|yards?|yd)\b",
+    re.IGNORECASE,
 )
-_OTHER_UNIT = re.compile(r"\b(gaj|yards?|yd|sq\s*yd|sqm|sq\s*m|meters?|metres?|marla|acre|bigha|kanal|biswa)\b")
+_AREA = re.compile(
+    r"(\d[\d,]*(?:\.\d+)?)\s*(?:sq\.?\s*(?:ft|feet|foot)|sqft|square\s*(?:feet|foot|ft)|feet|ft)\b",
+    re.IGNORECASE,
+)
+_OTHER_UNIT = re.compile(r"\b(sqm|sq\s*m|meters?|metres?|marla|acre|bigha|kanal|biswa)\b", re.IGNORECASE)
 _AREA_FILL = {"approx", "approximately", "around", "about", "lagbhag", "kareeb", "karib", "total", "super",
               "area", "carpet", "built", "builtup", "hai", "hoga", "hogi", "sir", "ji", "will", "be", "is",
-              "it", "its", "roughly", "the", "mein", "me", "ka", "ke", "ki", "of", "sqft", "sq", "ft", "feet"}
+              "it", "its", "roughly", "the", "mein", "me", "ka", "ke", "ki", "of", "sqft", "sq", "ft", "feet",
+              "gaj", "yard", "yards"}
 
 
 def _x_area(v: str, open_field: str) -> Optional[Dict[str, Any]]:
     if _OTHER_UNIT.search(v):
-        return None  # not square feet -> let the LLM deal with it
+        return None  # unhandled units (acre, bigha, sqm, etc.) -> let the LLM deal with it
+    mg = _GAJ.search(v)
+    if mg:
+        val = _to_float(mg.group(1))
+        if val is not None:
+            sqft = round(val * 9.0, 2)
+            if 50 <= sqft <= 1_000_000:
+                return {"approx_area_sqft": sqft}
+        return None
     m = _AREA.search(v)
     raw = m.group(1) if m else (_bare_number(v, _AREA_FILL) if open_field == "approx_area" else None)
     val = _to_float(raw) if raw else None
