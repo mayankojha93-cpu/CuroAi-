@@ -244,13 +244,23 @@ def _x_floor_only(v: str) -> Optional[Dict[str, Any]]:
 
 
 # ── Price / rent ─────────────────────────────────────────────────────────────
-_AMT = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(crores?|cr|lakhs?|lacs?|laakh|hazaar|hazar|thousand|k)\b")
-_UNIT_CANON = {"crore": "crore", "crores": "crore", "cr": "crore", "lakh": "lakh", "lakhs": "lakh",
-               "lac": "lakh", "lacs": "lakh", "laakh": "lakh", "hazaar": "thousand", "hazar": "thousand",
-               "thousand": "thousand", "k": "thousand"}
+_AMT = re.compile(
+    r"(\d[\d,]*(?:\.\d+)?)\s*(crores?|cr|lakhs?|lacs?|laakh|hazaar|hazar|thousand|k|ke|"
+    r"लाख|करोड़|करोड|हज़ार|हजार)\b",
+    re.I
+)
+_UNIT_CANON = {
+    "crore": "crore", "crores": "crore", "cr": "crore", "करोड़": "crore", "करोड": "crore",
+    "lakh": "lakh", "lakhs": "lakh", "lac": "lakh", "lacs": "lakh", "laakh": "lakh", "लाख": "lakh",
+    "hazaar": "thousand", "hazar": "thousand", "thousand": "thousand", "हज़ार": "thousand", "हजार": "thousand",
+    "k": "thousand", "ke": "thousand",
+}
 _RENT_FILL = {"rs", "rupees", "rupaye", "rupay", "inr", "approx", "around", "about", "per", "month", "monthly",
               "mahina", "mahine", "ka", "ke", "lagbhag", "sir", "ji", "hai", "hoga", "expect", "expecting",
               "rent", "kiraya", "only"}
+_SALE_FILL = {"rs", "rupees", "rupaye", "rupay", "inr", "approx", "around", "about",
+              "ka", "ke", "lagbhag", "sir", "ji", "hai", "hoga", "expect", "expecting",
+              "price", "daam", "rate", "only", "basically"}
 
 
 def _x_amount(v: str, open_field: str) -> Optional[str]:
@@ -266,8 +276,23 @@ def _x_amount(v: str, open_field: str) -> Optional[str]:
     if open_field in ("monthly_rent", "current_rent"):
         raw = _bare_number(v, _RENT_FILL)
         val = _to_float(raw) if raw else None
-        if val is not None and 1000 <= val <= 99_999_999:
-            return str(int(val)) if float(val).is_integer() else str(val)
+        if val is not None:
+            if 5 <= val < 1000:
+                formatted_num = int(val) if val.is_integer() else val
+                return f"{formatted_num} thousand"
+            elif val >= 1000:
+                return str(int(val)) if float(val).is_integer() else str(val)
+    elif open_field == "sale_price":
+        raw = _bare_number(v, _SALE_FILL)
+        val = _to_float(raw) if raw else None
+        if val is not None:
+            if 0.5 <= val < 10 and "." in raw:
+                return f"{val} crore"
+            elif 5 <= val < 1000:
+                formatted_num = int(val) if val.is_integer() else val
+                return f"{formatted_num} lakh"
+            elif val >= 1000:
+                return str(int(val)) if float(val).is_integer() else str(val)
     return None
 
 
