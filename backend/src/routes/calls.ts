@@ -562,13 +562,39 @@ callsRouter.get('/api/calls/:id/audio', async (req: Request<{ id: string }>, res
         });
       }
 
-      // Auto-sync database record if audio exists
-      if (call.recording_url !== `/api/calls/${callId}/audio` || call.recording_download_status !== 'done') {
-        await query(`UPDATE calls SET recording_url = $1, recording_download_status = 'done' WHERE id = $2`, [`/api/calls/${callId}/audio`, callId]).catch(() => {});
-      }
-
       const stat = fs.statSync(filePath);
       const fileSize = stat.size;
+
+      // Accurately determine the audio file's duration in seconds
+      let accurateDurationSec: number | null = null;
+      if (isWav) {
+        // 16kHz 16-bit mono PCM = 32000 bytes/sec
+        if (fileSize > 44) {
+          accurateDurationSec = Math.max(1, Math.round((fileSize - 44) / 32000));
+        }
+      } else {
+        // Standard 64kbps CBR MP3 = 8000 bytes/sec
+        if (fileSize > 128) {
+          accurateDurationSec = Math.max(1, Math.round(fileSize / 8000));
+        }
+      }
+
+      // Auto-sync database record if audio exists or if recording_duration_seconds differs from actual file
+      const needsDurationUpdate = accurateDurationSec && (
+        !call.recording_duration_seconds ||
+        Math.abs(call.recording_duration_seconds - accurateDurationSec) >= 1
+      );
+
+      if (call.recording_url !== `/api/calls/${callId}/audio` || call.recording_download_status !== 'done' || needsDurationUpdate) {
+        await query(
+          `UPDATE calls
+           SET recording_url = $1,
+               recording_download_status = 'done',
+               recording_duration_seconds = COALESCE($3, recording_duration_seconds)
+           WHERE id = $2`,
+          [`/api/calls/${callId}/audio`, callId, accurateDurationSec]
+        ).catch(() => {});
+      }
 
       if (isDownload) {
         res.setHeader('Content-Disposition', `attachment; filename="call-${callId}.${isWav ? 'wav' : 'mp3'}"`);

@@ -232,6 +232,28 @@ def _starts_with_negation(text: str) -> bool:
     return bool(toks) and toks[0] in _NEG_TOKENS
 
 
+_GREETING_ACK_RE = re.compile(
+    r"^(yes|yeah|yep|yup|haan|han|haanji|hanji|haan\s*ji|ji\s*haan|ji|hello|hi|hey|"
+    r"((haan|han|haanji|hanji|haan\s*ji|ji|yes)\s+)?(boliye|bataiye|kahiye|tell\s+me|speaking|sun\s*raha\s*hoon|sun\s*rahi\s*hoon)|"
+    r"boliye|ji\s*boliye|bataiye|ji\s*bataiye|kahiye|ji\s*kahiye|tell\s+me|yes\s+tell\s+me|who\s+is\s+this|"
+    r"who\s+is\s+speaking|who's\s+this|kaun|kaun\s+bol\s+rahe\s+ho|kaun\s+bol\s+raha\s+hai|"
+    r"speaking|yes\s+speaking|haan\s+sun\s+raha\s+hoon|sun\s+raha\s+hoon|kya\s+kaam\s+hai|"
+    r"kya\s+baat\s+hai|kya\s+hua|ok|okay|alright|yes\s+please)[\s.?!,]*$",
+    re.IGNORECASE
+)
+_GREETING_ACK_DEV = re.compile(
+    r"^(हाँ|हां|हा|हाँजी|हांजी|जी|यस|येस|हेलो|हाय|बोलिए|जी\s*बोलिए|बताइए|जी\s*बताइए|कहिए|"
+    r"कौन|कौन\s*बोल\s*रहा\s*है|सुन\s*रहा\s*हूँ|सुन\s*रहा\s*हूं|क्या\s*काम\s*है|क्या\s*बात\s*है|ओके)[\s.?!,]*$"
+)
+
+
+def _is_greeting_ack(text: str) -> bool:
+    if not text:
+        return False
+    t = text.strip()
+    return bool(_GREETING_ACK_RE.match(t) or _GREETING_ACK_DEV.match(t))
+
+
 # ── Caller asks US for the price/rate ("kya rate chal raha hai? kitne mein bech sakte hain?") ──
 # Handled deterministically (no LLM): speak valuation line + short thank-you, then hang up.
 _PRICE_Q_LATIN = re.compile(
@@ -461,24 +483,22 @@ class RealEstateAgent(Agent):
             tools=tools_instance.tools_for_step(state.step),
         )
 
-    async def _wait_and_drop_ivr(self, kind: str, text: str):
+    async def _drop_ivr_immediately(self, kind: str, text: str):
         try:
-            logger.info(f"⏳ Waiting 5s before dropping call due to carrier IVR ({kind})...")
-            await asyncio.sleep(5.0)
             if self._re_state.hangup_started:
                 return
-            logger.warning(f"⏰ 5s IVR wait completed for ({kind}). Dropping call now.")
+            logger.warning(f"📵 IVR / Voicemail detected ({kind}): '{text[:100]}'. Dropping call immediately.")
             self._re_state.ivr_detected = True
             self._re_state.final_disposition = "Voicemail or IVR Detected"
-            if kind == "hold":
-                self._re_state.agent_summary = "Call placed on hold by callee; timed out after 5s waiting for human."
-            else:
-                self._re_state.agent_summary = f"Carrier announcement / voicemail detected: {text[:100]}"
-
+            self._re_state.agent_summary = f"Voicemail or IVR Detected: {text[:100]}"
+            try:
+                self.session.interrupt(force=True)
+            except Exception:
+                pass
             if self._re_tools.hangup_func:
                 await self._re_tools.hangup_func()
         except asyncio.CancelledError:
-            logger.info(f"IVR 5s drop timer cancelled for ({kind}).")
+            pass
         except Exception as e:
             logger.warning(f"Error in IVR drop task: {e}")
 
@@ -509,30 +529,31 @@ class RealEstateAgent(Agent):
             if self._ivr_long_turns >= 2:
                 kind = "voicemail"
         if kind:
-            logger.warning(f"📵 Carrier announcement ({kind}) detected: '{text[:100]}'")
+            logger.warning(f"📵 Carrier announcement ({kind}) detected: '{text[:100]}'. Dropping call.")
             self._re_state.ivr_detected = True
+            self._re_state.final_disposition = "Voicemail or IVR Detected"
+            self._re_state.agent_summary = f"Voicemail or IVR Detected: {text[:100]}"
             if self._ivr_task is None or self._ivr_task.done():
                 self._ivr_kind = kind
-                self._ivr_task = asyncio.create_task(self._wait_and_drop_ivr(kind, text))
+                self._ivr_task = asyncio.create_task(self._drop_ivr_immediately(kind, text))
             raise StopResponse()
-
-        if self._ivr_task and not self._ivr_task.done():
-            if len(text.split()) > _IVR_HUMAN_MAX_WORDS:
-                logger.info(f"📵 Long speech while IVR timer is running - treating as IVR, staying silent: '{text[:80]}'")
-                raise StopResponse()
-            logger.info("🗣️ Human speech detected; cancelling 5s IVR drop timer.")
-            self._re_state.ivr_detected = False
-            self._ivr_task.cancel()
-            self._ivr_task = None
-            self._ivr_kind = None
 
         state = self._re_state
         state.last_user_text = text
         low_text = text.lower()
 
-        # ── Scenario B, deterministic (no LLM, exact scripted lines) ─────────────────────────
-        from .tools import other_property_question, ask_new_location_question, say_cached
+        # ── Deterministic intake shortcuts (no LLM round trip, instant playout) ──────────
+        from .tools import other_property_question, ask_new_location_question, say_cached, sell_or_rent_question
         tools_ = self._re_tools
+
+        # A: caller acknowledges the opening greeting -> ask qualification question in the NEXT turn
+        if state.step == _Step.INTRODUCTION and _is_greeting_ack(text):
+            has_loc = bool(state.initial_property_location or state.sector_or_location)
+            reply = sell_or_rent_question(state.reply_lang, has_loc=has_loc)
+            state.last_agent_question = reply
+            logger.info(f"👋 Greeting acknowledged -> asking qualification question in next turn (no LLM): '{reply}'")
+            say_cached(self.session, state, reply, True)
+            raise StopResponse()
 
         # B: caller refuses THIS location ("us location pe nahi bechna") -> "any other property?"
         if state.step == _Step.INTRODUCTION and (_rejects_this_location(text) or _is_bare_refusal(text)):

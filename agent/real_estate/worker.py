@@ -943,15 +943,25 @@ async def entrypoint(ctx: agents.JobContext):
     @session.on("user_input_transcribed")
     def on_user_transcribed(ev):
         raw_text = getattr(ev, "transcript", None) or getattr(ev, "text", "")
-        is_final = getattr(ev, "is_final", True)
-        if is_final and raw_text and raw_text.strip():
+        if raw_text and raw_text.strip():
             carrier_kind = classify_carrier_message(raw_text)
             if carrier_kind:
-                logger.warning(f"📵 Carrier announcement ({carrier_kind}) on audio stream: '{raw_text.strip()[:100]}'")
+                logger.warning(f"📵 Carrier announcement ({carrier_kind}) on audio stream: '{raw_text.strip()[:100]}'. Dropping call immediately.")
                 state.add_transcript("system", f"[carrier announcement: {carrier_kind}] {raw_text.strip()}")
+                state.ivr_detected = True
+                state.final_disposition = "Voicemail or IVR Detected"
+                state.agent_summary = f"Voicemail or IVR Detected: {raw_text.strip()[:100]}"
+                try:
+                    session.interrupt(force=True)
+                except Exception:
+                    pass
+                if tools_instance.hangup_func:
+                    asyncio.create_task(tools_instance.hangup_func())
                 return
-            romanized_text = romanize_hindi(raw_text.strip())
-            log_dialogue("customer", romanized_text)
+            is_final = getattr(ev, "is_final", True)
+            if is_final:
+                romanized_text = romanize_hindi(raw_text.strip())
+                log_dialogue("customer", romanized_text)
 
     @session.on("conversation_item_added")
     def on_conversation_item(ev):
@@ -1028,17 +1038,22 @@ async def entrypoint(ctx: agents.JobContext):
         salutation_hi = f"Hello {name_call} ji" if name_call != "Sir" else "Hello Sir"
         if loc:
             clean_loc = loc.split(";")[0].strip()
-            parts = [p.strip() for p in clean_loc.split(",") if p.strip()]
-            spoken_loc = f"{parts[1]}, {parts[0]}" if len(parts) >= 2 else (parts[0] if parts else clean_loc)
+            raw_parts = [p.strip() for p in clean_loc.split(",") if p.strip()]
+            parts = list(dict.fromkeys(raw_parts))
+            if len(parts) >= 2:
+                has_sub = any(kw in parts[1].lower() for kw in ('sector', 'sec', 'phase', 'block', 'pocket', 'plot', 'flat', 'unit'))
+                spoken_loc = f"{parts[1]}, {parts[0]}" if has_sub else f"{parts[0]}, {parts[1]}"
+            else:
+                spoken_loc = parts[0] if parts else clean_loc
             return (
-                f"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. I'm calling about your property in {spoken_loc}... Were you looking to sell or rent it out?"
+                f"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. I'm calling about your property in {spoken_loc}."
                 if state.reply_lang == "en"
-                else f"{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se. Aapki {spoken_loc} wali property ke baare mein call kiya tha... Kya aap use sell karne ka plan kar rahe hain ya rent out?"
+                else f"{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se. Aapki {spoken_loc} wali property ke baare mein call kiya tha."
             )
         return (
-            f"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. We connect property owners directly with verified buyers... Do you own any property that you'd like to sell or rent out?"
+            f"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder."
             if state.reply_lang == "en"
-            else f"{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se. Hum property owners ko direct verified buyers se connect karte hain... Kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"
+            else f"{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se."
         )
 
     greeting = _build_greeting()
@@ -1062,14 +1077,19 @@ async def entrypoint(ctx: agents.JobContext):
             # sequential and after the greeting, so the TTS service is never hit with parallel streams
             from types import SimpleNamespace
             from .prompts import get_closing_text
-            from .tools import other_property_question, ask_new_location_question
+            from .tools import other_property_question, ask_new_location_question, sell_or_rent_question
             try:
                 if prerender_task is not None:
                     await asyncio.wait_for(asyncio.shield(prerender_task), timeout=12.0)
             except Exception:
                 pass
             lang = state.reply_lang
-            lines = [other_property_question(lang), ask_new_location_question(lang)]
+            lines = [
+                sell_or_rent_question(lang, True),
+                sell_or_rent_question(lang, False),
+                other_property_question(lang),
+                ask_new_location_question(lang),
+            ]
             for disp in ('Not Interested', 'Qualified Lead', 'Advisor Callback Booked'):
                 lines.append(get_closing_text(SimpleNamespace(
                     final_disposition=disp, reply_lang=lang, valuation_requested=False, intent=None)))

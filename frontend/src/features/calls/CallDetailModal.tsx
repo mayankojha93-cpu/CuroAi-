@@ -34,10 +34,12 @@ interface TranscriptTurn {
 
 export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose }) => {
   const [activeCall, setActiveCall] = useState<CallRecord | null>(call);
+  const [audioActualDuration, setAudioActualDuration] = useState<number | null>(null);
 
   // Sync activeCall when prop changes and fetch full record from DB
   useEffect(() => {
     setActiveCall(call);
+    setAudioActualDuration(null);
     if (call?.id) {
       fetchCallDetail(call.id)
         .then((freshCall) => {
@@ -91,14 +93,14 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
   const rawDisp = ((activeCall as any).final_disposition || (activeCall as any).call_result || activeCall.call_status || '').toLowerCase();
 
   let canonicalStatus: 'COMPLETED' | 'FAILED' | 'NO_ANSWER' = 'COMPLETED';
-  if (
+  if (rawStatus === 'completed') {
+    canonicalStatus = 'COMPLETED';
+  } else if (
     rawStatus === 'no_answer' ||
     rawStatus === 'no answer' ||
     rawDisp.includes('no answer') ||
     rawDisp.includes('timeout') ||
-    rawDisp.includes('ringing') ||
-    rawDisp.includes('voicemail') ||
-    rawDisp.includes('ivr')
+    rawDisp.includes('ringing')
   ) {
     canonicalStatus = 'NO_ANSWER';
   } else if (rawStatus === 'failed' || rawDisp.includes('dropped') || rawDisp.includes('barrier') || rawDisp.includes('wrong number') || rawDisp.includes('not connected')) {
@@ -493,54 +495,65 @@ export const CallDetailModal: React.FC<CallDetailModalProps> = ({ call, onClose 
 
           {/* Audio Recording Player if available, or carrier processing state */}
           {activeCall.recording_url ? (
-            <div style={{
-              background: '#0F1524',
-              border: '1px solid rgba(56, 189, 248, 0.25)',
-              borderRadius: 12,
-              padding: 16,
-              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)',
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Volume2 size={17} color="#38BDF8" />
-                  <span style={{ fontSize: '0.86rem', fontWeight: 700, color: '#FFFFFF' }}>
-                    Call Audio Recording
-                  </span>
-                  {activeCall.recording_duration_seconds && (
-                    <span style={{ fontSize: '0.74rem', color: '#94A3B8', background: 'rgba(255, 255, 255, 0.06)', padding: '2px 8px', borderRadius: 4 }}>
-                      {Math.floor(activeCall.recording_duration_seconds / 60)}:{(activeCall.recording_duration_seconds % 60).toString().padStart(2, '0')}
-                    </span>
-                  )}
+            (() => {
+              const displayDuration = audioActualDuration ?? activeCall.recording_duration_seconds;
+              return (
+                <div style={{
+                  background: '#0F1524',
+                  border: '1px solid rgba(56, 189, 248, 0.25)',
+                  borderRadius: 12,
+                  padding: 16,
+                  boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <Volume2 size={17} color="#38BDF8" />
+                      <span style={{ fontSize: '0.86rem', fontWeight: 700, color: '#FFFFFF' }}>
+                        Call Audio Recording
+                      </span>
+                      {displayDuration !== undefined && displayDuration !== null && displayDuration > 0 && (
+                        <span style={{ fontSize: '0.74rem', color: '#94A3B8', background: 'rgba(255, 255, 255, 0.06)', padding: '2px 8px', borderRadius: 4 }}>
+                          {Math.floor(displayDuration / 60)}:{(displayDuration % 60).toString().padStart(2, '0')}
+                        </span>
+                      )}
+                    </div>
+                    <a
+                      href={withAuthToken(activeCall.recording_url, true)}
+                      download={`call-${activeCall.id}.mp3`}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{
+                        fontSize: '0.76rem',
+                        color: '#38BDF8',
+                        textDecoration: 'none',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 5,
+                        padding: '4px 10px',
+                        borderRadius: 6,
+                        background: 'rgba(56, 189, 248, 0.1)',
+                        border: '1px solid rgba(56, 189, 248, 0.25)',
+                        fontWeight: 600,
+                      }}
+                    >
+                      <Download size={13} />
+                      Download Audio
+                    </a>
+                  </div>
+                  <audio
+                    controls
+                    src={withAuthToken(activeCall.recording_url)}
+                    onLoadedMetadata={(e) => {
+                      const d = Math.round(e.currentTarget.duration);
+                      if (d && !isNaN(d) && isFinite(d) && d > 0) {
+                        setAudioActualDuration(d);
+                      }
+                    }}
+                    style={{ width: '100%', height: 38, outline: 'none' }}
+                  />
                 </div>
-                <a
-                  href={withAuthToken(activeCall.recording_url, true)}
-                  download={`call-${activeCall.id}.mp3`}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{
-                    fontSize: '0.76rem',
-                    color: '#38BDF8',
-                    textDecoration: 'none',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 5,
-                    padding: '4px 10px',
-                    borderRadius: 6,
-                    background: 'rgba(56, 189, 248, 0.1)',
-                    border: '1px solid rgba(56, 189, 248, 0.25)',
-                    fontWeight: 600,
-                  }}
-                >
-                  <Download size={13} />
-                  Download Audio
-                </a>
-              </div>
-              <audio
-                controls
-                src={withAuthToken(activeCall.recording_url)}
-                style={{ width: '100%', height: 38, outline: 'none' }}
-              />
-            </div>
+              );
+            })()
           ) : (
             <div style={{
               background: '#0F1524',

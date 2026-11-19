@@ -1028,7 +1028,7 @@ ${dialogueText.slice(0, 4000)}`;
       mappedStatus = 'failed';
       failureReason = failureReason || 'Wrong Number';
     } else if (canonicalDisp === 'Voicemail or IVR Detected') {
-      mappedStatus = 'no_answer';
+      mappedStatus = 'completed';
       failureReason = failureReason || 'IVR / voicemail detected: no human answered';
     }
 

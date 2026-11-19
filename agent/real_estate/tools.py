@@ -222,6 +222,21 @@ def other_property_question(lang: str) -> str:
     )
 
 
+def sell_or_rent_question(lang: str, has_loc: bool = True) -> str:
+    """Qualification question asked in turn 2 after opening greeting acknowledgment."""
+    if has_loc:
+        return (
+            "Were you looking to sell or rent it out?"
+            if lang == "en"
+            else "Kya aap use sell karne ka plan kar rahe hain ya rent out?"
+        )
+    return (
+        "Do you own any property that you'd like to sell or rent out?"
+        if lang == "en"
+        else "Kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"
+    )
+
+
 def ask_new_location_question(lang: str) -> str:
     """Scenario B2: asked when the caller says they have another property."""
     return (

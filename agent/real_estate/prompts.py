@@ -262,27 +262,46 @@ Politely acknowledge their time, invoke `book_advisor_handoff(reason="Customer i
 
         if loc:
             clean_loc = loc.split(";")[0].strip()
-            parts = [p.strip() for p in clean_loc.split(",") if p.strip()]
-            spoken_loc = f"{parts[1]}, {parts[0]}" if len(parts) >= 2 else (parts[0] if parts else clean_loc)
-            intro_text = (
-                f'Initial greeting to speak in English: "{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. I\'m calling about your property in {spoken_loc}... Were you looking to sell or rent it out?"'
+            raw_parts = [p.strip() for p in clean_loc.split(",") if p.strip()]
+            parts = list(dict.fromkeys(raw_parts))
+            if len(parts) >= 2:
+                has_sub = any(kw in parts[1].lower() for kw in ('sector', 'sec', 'phase', 'block', 'pocket', 'plot', 'flat', 'unit'))
+                spoken_loc = f"{parts[1]}, {parts[0]}" if has_sub else f"{parts[0]}, {parts[1]}"
+            else:
+                spoken_loc = parts[0] if parts else clean_loc
+            intro_greeting = (
+                f'"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. I\'m calling about your property in {spoken_loc}."'
                 if state.reply_lang == "en"
-                else f'Initial greeting to speak in Hinglish: "{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se. Aapki {spoken_loc} wali property ke baare mein call kiya tha... Kya aap use sell karne ka plan kar rahe hain ya rent out?"'
+                else f'"{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se. Aapki {spoken_loc} wali property ke baare mein call kiya tha."'
+            )
+            next_question = (
+                'Were you looking to sell or rent it out?'
+                if state.reply_lang == "en"
+                else 'Kya aap use sell karne ka plan kar rahe hain ya rent out?'
             )
         else:
-            intro_text = (
-                f'Initial greeting to speak in English: "{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. We connect property owners directly with verified buyers... Do you own any property that you\'d like to sell or rent out?"'
+            intro_greeting = (
+                f'"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder."'
                 if state.reply_lang == "en"
-                else f'Initial greeting to speak in Hinglish: "{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se. Hum property owners ko direct verified buyers se connect karte hain... Kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"'
+                else f'"{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se."'
+            )
+            next_question = (
+                "Do you own any property that you'd like to sell or rent out?"
+                if state.reply_lang == "en"
+                else "Kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"
             )
         return base + f"""
 Current Step: 1. INTRODUCTION
-Goal: Greet the customer and determine if they are considering selling or renting their property{f' at {loc}' if loc else ''}.
+Goal: The opening greeting has ALREADY been spoken. Now ask the customer if they are looking to sell or rent out the property.
 
-{intro_text}
+Opening greeting already spoken: {intro_greeting}
+Qualification question for this next turn: "{next_question}"
 
 MANDATORY INSTRUCTIONS:
-- If the customer indicates interest, OR is considering / thinking about selling, renting, or leasing (e.g. "I am looking to lease out", "Looking to lease", "Lease out", "Lease", "Rent out", "Rent par dena hai", "Kiraye pe dena hai", "I want to sell", "Sell", "Haanji", "Haan", "Yes", "Soch raha hoon", "Sochta hoon", "Sochata rahun", "Thinking about it", "Considering it", "Dekh rahe hain", "Plan hai", "Maybe"):
+- CRITICAL: Never combine the greeting with the question. The greeting was already spoken.
+- If the customer acknowledges or answers the greeting (e.g. "Yes", "Haanji", "Haan", "Hello", "Boliye", "Tell me", "Who is this?", "Yes speaking", "Haan sun raha hoon"):
+  Ask: "{next_question}"
+- If the customer indicates interest, OR mentions selling, renting, or leasing (e.g. "I am looking to lease out", "Looking to lease", "Lease out", "Lease", "Rent out", "Rent par dena hai", "Kiraye pe dena hai", "I want to sell", "Sell", "Thinking about it", "Considering it", "Plan hai", "Maybe"):
   YOU MUST EXECUTE `customer_interested()`.
   - For leasing or renting, pass intent='lease': `customer_interested(intent='lease')`.
   - For selling, pass intent='sale': `customer_interested(intent='sale')`.

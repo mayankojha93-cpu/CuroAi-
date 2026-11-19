@@ -121,11 +121,16 @@ export function matchCanonicalDisposition(
   // 12. Voicemail or IVR Detected
   if (
     upper.includes('VOICEMAIL') ||
+    upper.includes('VOICE MAIL') ||
     upper.includes('IVR') ||
     upper.includes('ANSWERING MACHINE') ||
     upper.includes('MACHINE DETECTED') ||
     upper.includes('CARRIER MESSAGE') ||
-    upper.includes('AUTOMATED MESSAGE')
+    upper.includes('CARRIER ANNOUNCEMENT') ||
+    upper.includes('AUTOMATED MESSAGE') ||
+    upper.includes('AUTOMATED') ||
+    upper.includes('PRE-RECORDED') ||
+    upper.includes('PRE RECORDED')
   ) {
     return 'Voicemail or IVR Detected';
   }
