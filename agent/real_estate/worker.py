@@ -1158,28 +1158,18 @@ async def entrypoint(ctx: agents.JobContext):
     # 4. Silence watchdog
     async def silence_watchdog():
         consecutive_silence = 0
-        last_check_activity = state.last_activity_time
         while not state.hangup_started:
             await asyncio.sleep(0.5)
             if state.hangup_started:
                 break
-            agent_state = getattr(session, "agent_state", "idle")
-            if agent_state in ("speaking", "thinking") or getattr(session, "current_speech", None) is not None:
+            if getattr(session, "agent_state", "idle") in ("speaking", "thinking"):
                 state.last_activity_time = time.time()
-                last_check_activity = state.last_activity_time
                 continue
-
-            # If user activity occurred since last check, reset consecutive silence
-            if state.last_activity_time > last_check_activity:
-                consecutive_silence = 0
-                last_check_activity = state.last_activity_time
-
             idle = time.time() - state.last_activity_time
-            threshold = 10.0 if consecutive_silence == 0 else 6.0
+            threshold = 4.0 if consecutive_silence == 0 else 3.0
             if idle > threshold:
                 consecutive_silence += 1
                 state.last_activity_time = time.time()
-                last_check_activity = state.last_activity_time
                 if consecutive_silence == 1:
                     reprompt = (
                         "Are you still with me? Could you hear me?"
@@ -1211,6 +1201,8 @@ async def entrypoint(ctx: agents.JobContext):
                     state.hangup_started = True
                     await _save_and_shutdown()
                     break
+            elif idle < 1.0:
+                consecutive_silence = 0
 
     asyncio.create_task(silence_watchdog())
 

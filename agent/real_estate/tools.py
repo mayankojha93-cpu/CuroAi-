@@ -1090,24 +1090,8 @@ class RealEstateTools:
         preferred_time: Optional[str] = None,
     ) -> str:
         """Call when customer sounds impatient, asks for pricing/market valuation, or requests a human advisor."""
-        heard = (self.state.last_user_text or "").strip()
-        is_valuation_reason = bool(re.search(r"price|pricing|valuation|rate|market", reason or "", re.I))
-        if is_valuation_reason:
-            # Verify caller actually asked about pricing/market valuation
-            caller_asked_pricing = bool(re.search(
-                r"\b(price|pricing|rate|rates|valuation|value|market|bhav|daam|kitne\s*mein|kitna\s*milega|trends)\b",
-                heard,
-                re.I,
-            ))
-            if not caller_asked_pricing and not self.state.valuation_requested:
-                logger.warning(f"🛑 Rejecting book_advisor_handoff for valuation: caller did not ask about price/valuation ('{heard}')")
-                missing = self.state.get_missing_fields()
-                if missing:
-                    q = missing[0]["question_en"] if self.state.reply_lang == "en" else missing[0]["question_hi"]
-                    return self._fast(q, f"Valuation was not requested. Continue asking: '{q}'", ack="Understood.")
-
         self.state.impatient_detected = "impatient" in reason.lower()
-        if is_valuation_reason:
+        if re.search(r"price|pricing|valuation|rate|market", reason or "", re.I):
             self.state.valuation_requested = True
         self.state.advisor_handoff_reason = reason.strip()
         self.state.callback_time_slot = preferred_time

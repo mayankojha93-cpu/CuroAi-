@@ -156,14 +156,13 @@ class RealEstateState:
         # Caller said the property is standalone / independent (own house, villa, kothi, plot, bungalow, land, etc.):
         # there is no separate unit number or floor to ask for, so 'unit_floor' is skipped.
         loc_and_cat = f"{loc or ''} {category or ''}".lower()
-        standalone_pattern = re.compile(
-            r"\b(villa|villas|kothi|kothis|plot|plots|bungalow|bungalows|bangla|haveli|"
-            r"farmhouse|farm\s*house|farmland|row\s*house|rowhouse|town\s*house|townhouse|standalone|"
-            r"independent\s*(?:house|home|building|property)|single\s*family|"
-            r"open\s*land|zameen|zamin|godown|warehouse|factory|industrial\s*shed)\b",
-            re.I
+        standalone_keywords = (
+            "villa", "kothi", "plot", "bungalow", "bangla", "haveli", "farmhouse",
+            "farm house", "farmland", "row house", "rowhouse", "townhouse", "town house",
+            "standalone", "independent house", "independent home", "independent building",
+            "single family", "land", "zameen", "zamin", "godown", "warehouse", "shed", "factory"
         )
-        is_standalone_init = bool(standalone_pattern.search(loc_and_cat))
+        is_standalone_init = any(k in loc_and_cat for k in standalone_keywords)
         self.is_standalone: bool = is_standalone_init
         if is_standalone_init:
             self.unit_number = "Standalone"
