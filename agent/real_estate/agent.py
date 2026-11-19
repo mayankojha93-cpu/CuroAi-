@@ -7,7 +7,7 @@ from livekit.agents import Agent, StopResponse
 from src.carrier_filter import classify_carrier_message
 from .prompts import get_step_instructions
 from .state import RealEstateState, RealEstateStep as _Step
-from .config import CHAT_CTX_MAX_ITEMS, FAST_TOOL_REPLY, FASTPATH_ENABLED
+from .config import CHAT_CTX_MAX_ITEMS, FAST_TOOL_REPLY, FASTPATH_ENABLED, AGENT_PERSONA_NAME
 from .fastpath import extract as _fastpath_extract
 
 # Extra IVR / voicemail phrases (English + Hinglish + Devanagari). Used IN ADDITION to src.carrier_filter so that
@@ -78,6 +78,8 @@ _FIELD_TO_PARAMS = {
     "society_sector": ("project_or_society",),
     "project_sector": ("project_or_society",),
     "unit_floor": ("unit_number", "floor_number"),
+    "unit_number": ("unit_number",),
+    "floor_number": ("floor_number",),
     "bhk_config": ("bhk_config",),
     "commercial_type": ("commercial_type",),
     "approx_area": ("approx_area_sqft",),
@@ -230,6 +232,132 @@ def _is_bare_refusal(text: str) -> bool:
 def _starts_with_negation(text: str) -> bool:
     toks = _tokens(text)
     return bool(toks) and toks[0] in _NEG_TOKENS
+
+
+# ── Caller asks a QUESTION (why do you need this / who are you ...) ────────────
+# The LLM answers it with plain speech and no tool call. That must NOT count as "not understood",
+# otherwise 3 questions in a row ended the call with "I'm having trouble hearing you".
+_Q_LATIN = re.compile(
+    r"(\?|\b(why|who|what|which|how|where|when|kyun|kyu|kyon|kaun|kaunsi|kaise|kaisa|kisliye|kis\s*liye|kab|kahan|kitna|kitne)\b"
+    r"|^\s*(ye\s+|yeh\s+)?kya\b)",
+    re.I,
+)
+_Q_DEV = re.compile(r"(\?|क्यों|क्यूँ|क्यू|कौन|कैसे|किसलिए|किस\s*लिए|कब|कहाँ|कहां|कितना|कितने|^\s*क्या)")
+
+
+def _is_caller_question(text: str) -> bool:
+    if not text:
+        return False
+    if _Q_DEV.search(text):
+        return True
+    return any(_Q_LATIN.search((c or "").lower()) for c in _variants(text))
+
+
+# ── Caller is busy / someone else answered (a LIVE person, not voicemail) ──────
+# Carrier / voicemail announcements ("the number you have dialed is currently busy ...") carry these markers.
+_CARRIER_MARKERS = re.compile(
+    r"(number\s+you|you\s+have\s+dial+ed|you\s+are\s+(trying|calling)|subscriber|customer\s+you|person\s+you|"
+    r"try\s+again|after\s+the\s+(tone|beep)|switched\s+off|not\s+reachable|out\s+of\s+(coverage|service)|"
+    r"voice\s*mail|mail\s*box|press\s+(star|hash|pound|\d)|jis\s+number|aapne\s+jo|kripya|abhi\s+uplabdh|"
+    r"please\s+hold|your\s+call)",
+    re.I,
+)
+_CARRIER_MARKERS_DEV = re.compile(r"(सब्सक्राइबर|आपके\s*द्वारा|कृपया|बीप|वॉइसमेल|वॉयस\s*मेल)")
+_NOT_BUSY = re.compile(r"(not\s+busy|busy\s+(nahi|nhi|nahin)|free\s+(hoon|hu|hun))", re.I)
+_BUSY_LATIN = re.compile(
+    r"((i\s*am|i'?m|im|main|mai)\s+(currently\s+|abhi\s+|right\s+now\s+|bahut\s+)?(busy|driving|in\s+(a\s+)?meeting)"
+    r"|\b(busy|vyast)\s+(hoon|hun|hu|hai|hain|right\s+now|abhi)\b|\babhi\s+(busy|vyast)\b|\bcurrently\s+busy\b"
+    r"|\bmeeting\s+(mein|me)\b|\bdriving\s+(kar|ho)|\bnot\s+a\s+good\s+time\b|\bbad\s+time\b"
+    r"|\b(call|phone)\s+(me\s+)?(later|back)\b|\bcall\s+later\b|\bbaad\s+(mein|me)\s+(call|baat|phone)"
+    r"|\bthodi\s+der\s+(baad|mein)|\b(kal|shaam|subah)\s+(ko\s+|me\s+|mein\s+)?call\s+kar)",
+    re.I,
+)
+_BUSY_DEV = re.compile(r"(बिज़ी|बिजी|व्यस्त|मीटिंग|ड्राइव|बाद\s*में\s*(कॉल|बात|फोन|करना)|अभी\s*टाइम\s*नहीं|टाइम\s*नहीं\s*है)")
+_OTHER_PERSON_LATIN = re.compile(
+    r"(\b(he|she|owner|malik|papa|father|mummy|mother|bhaiya|bhai|uncle|aunty|saab|sahab|sahib)\b[\w\s,]{0,25}?"
+    r"\b(not\s+(available|here|home|at\s+home|in\s+town)|out\s+of\s+(station|town)|outside|sleeping|busy|"
+    r"nahi\s+(hain|hai|hein)|bahar|available\s+nahi|ghar\s+(pe|par)\s+nahi)\b"
+    r"|\b(wo|woh|vo|ve|unki|unka|unke)\b[\w\s,]{0,25}?\b(nahi\s+(hain|hai|hein)|bahar|ghar\s+(pe|par)\s+nahi|available\s+nahi|busy)\b"
+    r"|\bghar\s+(pe|par)\s+nahi\b|\bnot\s+(at\s+)?home\b|\bbahar\s+(gaye|gayi|gaya)\b"
+    r"|\bi\s*am\s+(his|her)\s+\w+|\bmain\s+(unka|unki|unke)\s+\w+)",
+    re.I,
+)
+_OTHER_PERSON_DEV = re.compile(r"((वो|वह|वे|उनकी|उनका|साहब|मालिक|पापा|मम्मी)[\s\S]{0,20}(नहीं\s*(हैं|है)|बाहर|घर\s*पर\s*नहीं)|मैं\s*उनका|मैं\s*उनकी)")
+
+
+def is_human_unavailable(text: str) -> Optional[str]:
+    """'busy' when the caller says they are busy / call later, 'third_party' when someone else answered and the
+    owner is not available, else None. Always None for carrier / voicemail style announcements."""
+    if not text or len(_tokens(text)) > 16:      # a long monologue is an IVR menu, not a person
+        return None
+    variants = _variants(text)
+    for c in variants:
+        if _CARRIER_MARKERS.search((c or "").lower()) or _CARRIER_MARKERS_DEV.search(c or ""):
+            return None
+    if _OTHER_PERSON_DEV.search(text):
+        return "third_party"
+    if _BUSY_DEV.search(text):
+        return "busy"
+    for c in variants:
+        low = (c or "").lower()
+        if _NOT_BUSY.search(low):
+            continue
+        if _OTHER_PERSON_LATIN.search(low):
+            return "third_party"
+        if _BUSY_LATIN.search(low):
+            return "busy"
+    return None
+
+
+_TIME_HINT = re.compile(
+    r"\b(today|tonight|tomorrow|morning|afternoon|evening|night|aaj|kal|parso|subah|dopahar|shaam|sham|raat|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|somvar|mangalvar|budhvar|guruvar|shukravar|"
+    r"shanivar|ravivar|weekend|baje|\d{1,2}\s*(am|pm))\b",
+    re.I,
+)
+_TIME_HINT_DEV = re.compile(r"(आज|कल|परसों|सुबह|दोपहर|शाम|रात|बजे)")
+
+
+def _has_time_hint(text: str) -> bool:
+    if not text:
+        return False
+    if _TIME_HINT_DEV.search(text):
+        return True
+    return any(_TIME_HINT.search((c or "").lower()) for c in _variants(text))
+
+
+# ── Bare "yes / haan ji / bolo / hello" at the intro = "I'm listening", NOT "I want to sell" ──
+_HELLO_WORDS = {"hello", "hi", "hey", "helo", "hallo", "hullo", "हेलो", "हैलो", "हेल्लो", "हलो"}
+_LISTEN_WORDS = _HELLO_WORDS | {
+    "haan", "han", "haa", "ha", "haanji", "hanji", "ji", "jee", "yes", "yeah", "yep", "yup", "ya", "ok", "okay",
+    "hmm", "hm", "mm", "bolo", "boliye", "boliyeji", "bataiye", "batayiye", "batao", "kahiye", 
+    "sunao", "suno", "sir", "go", "ahead", "tell", "me", "speak", "sure", "achha", "accha", "listening", "please",
+    "haanjiji", "bol", "sunaiye",
+    "हाँ", "हां", "हा", "जी", "हांजी", "हाँजी", "बोलो", "बोलिए", "बोलिये", "बताइए", "बताओ", "कहिए", "कहिये",
+    "ओके", "यस", "येस", "सर", "हम्म", "ठीक", "अच्छा", "सुनाइए",
+}
+
+
+def _is_listening_backchannel(text: str) -> bool:
+    for c in _variants(text):
+        toks = _tokens(c)
+        if toks and len(toks) <= 5 and all(t in _LISTEN_WORDS for t in toks):
+            return True
+    return False
+
+
+def _is_hello_only(text: str) -> bool:
+    for c in _variants(text):
+        toks = _tokens(c)
+        if toks and all(t in _HELLO_WORDS for t in toks):
+            return True
+    return False
+
+
+def _spoken_loc(loc: str) -> str:
+    clean = (loc or "").split(";")[0].strip()
+    parts = [p.strip() for p in clean.split(",") if p.strip()]
+    return f"{parts[1]}, {parts[0]}" if len(parts) >= 2 else (parts[0] if parts else clean)
 
 
 # ── Caller asks US for the price/rate ("kya rate chal raha hai? kitne mein bech sakte hain?") ──
@@ -456,6 +584,7 @@ class RealEstateAgent(Agent):
         self._ivr_task: Optional[asyncio.Task] = None
         self._ivr_kind: Optional[str] = None
         self._ivr_long_turns = 0
+        self._q_exempt = 0
         super().__init__(
             instructions=get_step_instructions(state),
             tools=tools_instance.tools_for_step(state.step),
@@ -482,6 +611,23 @@ class RealEstateAgent(Agent):
         except Exception as e:
             logger.warning(f"Error in IVR drop task: {e}")
 
+    def _cancel_ivr_timer(self):
+        """A live person spoke: stop the 'looks like voicemail, drop in 5s' timer."""
+        if self._ivr_task and not self._ivr_task.done():
+            self._ivr_task.cancel()
+        self._ivr_task = None
+        self._ivr_kind = None
+        self._ivr_long_turns = 0
+        self._re_state.ivr_detected = False
+
+    def _question_exempt(self) -> bool:
+        """True when the caller just asked us a question: the LLM's plain-speech answer is NOT a failed turn.
+        Capped (6 per call) so endless questions cannot stall the call forever."""
+        if _is_caller_question(self._re_state.last_user_text):
+            self._q_exempt += 1
+            return self._q_exempt <= 6
+        return False
+
     async def sync_step(self):
         """Sync instructions and available tools when step changes."""
         await self.update_instructions(get_step_instructions(self._re_state))
@@ -497,6 +643,66 @@ class RealEstateAgent(Agent):
         if self._re_state.closing_spoken:
             raise StopResponse()
         text = (getattr(new_message, "text_content", None) or "").strip()
+
+        # ── Caller is busy / someone else answered: offer a callback (a live person is NOT voicemail) ──
+        _st = self._re_state
+        if text and _st.step != _Step.CLOSING:
+            _unavail = is_human_unavailable(text)
+            if _st.awaiting_callback_time or _unavail:
+                _st.last_user_text = text
+                _has_time = _has_time_hint(text)
+                _romanized = _variants(text)[-1].strip()
+                if _unavail:
+                    self._cancel_ivr_timer()
+                    _st.third_party_answered = _st.third_party_answered or (_unavail == "third_party")
+                from .tools import explicit_dnc_request as _dnc
+                if _st.awaiting_callback_time:
+                    # We just asked "what time should we call back?" -> this reply is the time slot
+                    _st.awaiting_callback_time = False
+                    _wants_out = _dnc(text) or _is_bare_refusal(text)
+                    _short = len(_tokens(text)) <= 6 and not _asks_repeat(text) and not _is_caller_question(text)
+                    if not _wants_out and (_has_time or _short or _unavail):
+                        _slot = None if (_unavail and not _has_time) else _romanized
+                        logger.info(f"📞 Callback time received -> scheduling (no LLM): slot={_slot!r}")
+                        try:
+                            await self._re_tools.schedule_callback(time_slot=_slot)
+                        except Exception as e:
+                            logger.warning(f"Callback scheduling failed, falling back to LLM: {e}")
+                        else:
+                            raise StopResponse()
+                elif _has_time:
+                    # "Busy, call me in the evening" -> time already given
+                    logger.info(f"📞 Busy/unavailable ({_unavail}) with time given -> scheduling (no LLM): '{text}'")
+                    try:
+                        await self._re_tools.schedule_callback(time_slot=_romanized)
+                    except Exception as e:
+                        logger.warning(f"Callback scheduling failed, falling back to LLM: {e}")
+                    else:
+                        raise StopResponse()
+                else:
+                    _en = _st.reply_lang == "en"
+                    if _unavail == "third_party":
+                        _reply = (
+                            "No problem... What time would be good for us to call back, so we can speak with the owner directly?"
+                            if _en else
+                            "Koi baat nahi ji... Kis time par call karun, taaki owner se direct baat ho sake?"
+                        )
+                    else:
+                        _reply = (
+                            "Sure Sir, no problem... What time would suit you for a callback, this evening or tomorrow morning?"
+                            if _en else
+                            "Ji bilkul Sir, koi baat nahi... Aapko kis time call karun, aaj shaam ya kal subah?"
+                        )
+                    logger.info(f"📞 Caller busy/unavailable ({_unavail}) -> asking callback time (no LLM): '{text}'")
+                    _st.awaiting_callback_time = True
+                    _st.last_agent_question = _reply
+                    try:
+                        self.session.say(_reply, allow_interruptions=True)
+                    except Exception as e:
+                        _st.awaiting_callback_time = False
+                        logger.warning(f"Callback question failed, falling back to LLM: {e}")
+                    else:
+                        raise StopResponse()
         kind = classify_carrier_message(text)
         if not kind and _IVR_EXTRA.search(text):
             kind = "voicemail"
@@ -548,6 +754,40 @@ class RealEstateAgent(Agent):
                 logger.warning(f"Location-refusal shortcut failed, falling back to LLM: {e}")
             if ok:
                 raise StopResponse()
+
+        # Bare "yes / haan ji / bolo / hello" at the opening line only means "I'm listening". The opening asks
+        # "sell it, or rent it out?", so a plain yes answers nothing: re-ask it simply (no LLM) instead of
+        # marking the lead interested. A SECOND bare yes falls through to the LLM, which then treats it as interest.
+        if (
+            state.step == _Step.INTRODUCTION
+            and not state.is_interested
+            and state.initial_property_location
+            and _is_listening_backchannel(text)
+        ):
+            _bn = _bump_reask(state, "INTRO|listening")
+            if _bn <= 1:
+                _en = state.reply_lang == "en"
+                _loc = _spoken_loc(state.initial_property_location)
+                if _is_hello_only(text):
+                    _rep = (
+                        f"Hello Sir, this is {AGENT_PERSONA_NAME} from My Estate Finder, about your property in {_loc}. Are you looking to sell it, or rent it out?"
+                        if _en else
+                        f"Hello Sir, main {AGENT_PERSONA_NAME} My Estate Finder se, aapki {_loc} wali property ke baare mein. Aap ise sell karna chahte hain, ya rent par dena?"
+                    )
+                else:
+                    _rep = (
+                        "Sure Sir... Are you looking to sell it, or rent it out?"
+                        if _en else
+                        "Ji Sir... Aap ise sell karna chahte hain, ya rent par dena?"
+                    )
+                logger.info(f"👂 Bare yes/hello at intro -> re-asking sell-or-rent (no LLM, NOT marked interested): '{text}'")
+                state.last_agent_question = _rep
+                try:
+                    self.session.say(_rep, allow_interruptions=True)
+                except Exception as e:
+                    logger.warning(f"Intro backchannel reply failed, falling back to LLM: {e}")
+                else:
+                    raise StopResponse()
 
         # B1 / B2: clean yes / no to "do you have any other property?"
         if state.step == _Step.CHECK_OTHER_PROPERTY:
@@ -1003,6 +1243,14 @@ class RealEstateAgent(Agent):
                 yield recovered
             return
 
+        # The caller asked US something ("why do you need this?"): the LLM's spoken answer is a normal turn,
+        # not a failed one. Speak it and keep going (no failure count, no advisor handoff).
+        if self._question_exempt():
+            logger.info("💬 Caller asked a question -> answered, NOT counted as 'not understood'")
+            for c in held:
+                yield c
+            return
+
         # No tool was called: LLM is responding with speech because it did not understand / get the answer
         q_key = self._re_state.get_active_question_key()
         fail_count = self._re_state.record_question_failure(q_key)
@@ -1060,7 +1308,7 @@ class RealEstateAgent(Agent):
 
         # Nothing usable -> never stay silent: re-ask the question that is currently open.
         q_key = state.get_active_question_key()
-        fail_count = state.record_question_failure(q_key)
+        fail_count = 0 if self._question_exempt() else state.record_question_failure(q_key)
         from .state import RealEstateStep
         if (state.is_interested or state.step in (
             RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.RESIDENTIAL_LEASE,
