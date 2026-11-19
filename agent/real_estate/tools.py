@@ -124,11 +124,12 @@ _DNC_LATIN = re.compile(
 )
 _DNC_DEV = re.compile(r"(कॉल\s*मत|मत\s*कॉल|कॉल\s*न\s*कर|नंबर\s*(हटा|रिमूव|डिलीट)|रिमूव|डू\s*नॉट\s*कॉल|डीएनडी|परेशान\s*मत)")
 _REFUSAL_LATIN = re.compile(
-    r"\b(no|nope|nahi|nhi|nahin|nai|never|mat|don'?t|do\s*not|dont)\b"
-    r"|\bnot\s+(interested|looking|selling|renting|leasing|want|planning|thinking|at\s+all)",
+    r"\b(no|nope|nah|nahi|nahin|nhi|nahii|nai|never|nothing|none|mat|don'?t|do\s*not|dont)\b"
+    r"|\bnot\s+(interested|looking|selling|renting|leasing|want|planning|thinking|at\s+all|really|now)"
+    r"|\b(nothing\s+else|none\s+else|no\s+other|no\s+more)\b",
     re.I,
 )
-_REFUSAL_DEV = re.compile(r"(नहीं|नही|मत|नो\b)")
+_REFUSAL_DEV = re.compile(r"(नहीं|नही|नहि|मत|नो\b|कुछ\s*नहीं|कोई\s*नहीं)")
 
 
 def explicit_dnc_request(text: Any) -> bool:
@@ -184,17 +185,16 @@ def commercial_type_from_speech(text: Any) -> Optional[str]:
 # "independent floor" / "builder floor" are NOT standalone (one floor of a building -> floor matters).
 _STANDALONE_RE = re.compile(
     r"(?<![a-z])("
-    r"stand[\s\-]?alone|standard[\s\-]?alone|standard[\s\-]?allen|standard[\s\-]?alan|"
-    r"free[\s\-]?standing|independent|"
-    r"no\s+(unit|flat|floor|door|house|even)\s*(number|no\.?|num)?|"
-    r"(there\s+is\s+)?no\s+unit|"
-    r"(unit|flat|floor)\s*(number)?\s*(nahi|nahin|not|nhi|hai\s*hi\s*nahi)|"
-    r"entire\s+(building|property|house|office)|"
-    r"whole\s+(building|property|house|office)"
+    r"stand[\s\-]?alone|standard[\s\-]?alone|free[\s\-]?standing|"
+    r"independent\s+(house|villa|building|property|kothi|bungalow|home)|"
+    r"\b(villa|kothi|bungalow|row\s*house)\b|"
+    r"(entire|whole)\s+(building|property|house|office)|"
+    r"(unit|flat|floor)\s*(number)?\s*(hai\s*hi\s*nahi|hota\s*hi\s*nahi|nahi\s*hota)\b|"
+    r"(there\s+is\s+)?no\s+(unit|flat|floor)\s*(number)?"
     r")(?![a-z])",
     re.I
 )
-_STANDALONE_DEV = re.compile(r"(स्टैंड\s?अलोन|स्टैंडअलोन|स्टैंडर्ड\s?अलोन|इंडिपेंडेंट|इंडिपेंडेन्ट|फ्री\s?स्टैंडिंग)")
+_STANDALONE_DEV = re.compile(r"(स्टैंड\s?अलोन|स्टैंडअलोन|स्टैंडर्ड\s?अलोन|इंडिपेंडेंट\s*(हाउस|विला|कोठी|बिल्डिंग)?|विला|कोठी|बंगला)")
 _STANDALONE_NEG_RE = re.compile(
     r"(not\s+(a\s+|an\s+)?(stand[\s\-]?alone|free[\s\-]?standing|independent)"
     r"|(stand[\s\-]?alone|free[\s\-]?standing|independent)\s+(nahi|nahin|nhi)"
@@ -207,6 +207,9 @@ def is_standalone_from_speech(text: Any) -> bool:
     'standalone building'). Used to skip the unit-number / floor question."""
     low = str(text or "").lower().strip()
     if not low:
+        return False
+    # If caller says they do not know / do not remember, that is NOT a standalone property
+    if _DONT_KNOW_RE.search(low) or _DONT_KNOW_DEV.search(low):
         return False
     if _STANDALONE_NEG_RE.search(low):
         return False
@@ -222,8 +225,25 @@ def other_property_question(lang: str) -> str:
     )
 
 
-def sell_or_rent_question(lang: str, has_loc: bool = True) -> str:
-    """Qualification question asked in turn 2 after opening greeting acknowledgment."""
+def sell_or_rent_question(lang: str, has_loc: bool = True, loc: Optional[str] = None, full_context: bool = False) -> str:
+    """Qualification question asked in turn 2 after opening greeting acknowledgment.
+    If full_context is True (e.g. caller interrupted intro or asked who/what/hello),
+    provides full persona, company, and location context so the caller is never confused."""
+    if full_context:
+        clean_loc = loc.split(";")[0].strip() if loc else ""
+        if clean_loc:
+            return (
+                f"Hello Sir, this is Priya from My Estate Finder. I'm calling regarding your property in {clean_loc} — were you looking to sell or rent it out?"
+                if lang == "en"
+                else f"Ji, main Priya baat kar rahi hoon My Estate Finder se. Aapki {clean_loc} wali property ke silsile mein call kiya tha — kya aap use sell karne ka plan kar rahe hain ya rent out?"
+            )
+        else:
+            return (
+                "Hello Sir, this is Priya from My Estate Finder. Were you looking to sell or rent out any property?"
+                if lang == "en"
+                else "Ji, main Priya baat kar rahi hoon My Estate Finder se. Main yeh pooch rahi thi ki kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"
+            )
+
     if has_loc:
         return (
             "Were you looking to sell or rent it out?"
@@ -546,7 +566,13 @@ class RealEstateTools:
         If customer states the new location in the same sentence, pass it in new_location.
         If they also state category (residential/commercial) or intent (sale/rent), pass them."""
         if not has_other:
-            return await self.mark_not_interested()
+            self.state.has_other_property = False
+            self.state.is_interested = False
+            self.state.final_disposition = "Not Interested"
+            if not self.state.agent_summary:
+                self.state.agent_summary = "Customer has no other property to sell or rent"
+            await self._go(RealEstateStep.CLOSING)
+            return "Customer has no other property. Speak polite closing and thank them for their time."
 
         self.state.has_other_property = True
         self.state.is_standalone = False  # new property: decide again from what the caller says
