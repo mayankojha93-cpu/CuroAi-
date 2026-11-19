@@ -223,8 +223,8 @@ def get_closing_text(state: RealEstateState) -> str:
             closing_en = "Thank you for your time, Sir! I’ve noted all the details, and our senior property advisor will connect with you shortly... Have a wonderful day!"
             closing_hi = "Apna time dene ke liye thank you, Sir! Maine details note kar li hain, aur hamare senior property advisor aapse jald hi connect karenge. Have a wonderful day!"
     elif "not interested" in disp:
-        closing_en = "Understood Sir, no problem at all! Thank you for your time... Have a wonderful day!"
-        closing_hi = "Samajh gayi Sir, koi baat nahi! Apna time dene ke liye thank you... Have a wonderful day!"
+        closing_en = "Understood Sir, no problem at all! Thank you for your time."
+        closing_hi = "Samajh gayi Sir, koi baat nahi! Apna time dene ke liye thank you."
     elif "wrong number" in disp:
         closing_en = "Sorry to have bothered you, Sir! Have a great day."
         closing_hi = "Sorry to bother you, Sir! Have a great day."
@@ -311,10 +311,14 @@ MANDATORY INSTRUCTIONS:
   - If the customer already stated intent or category (e.g. "looking to lease out", "lease out", "rent pe dena hai", "sell karna hai", "flat bechna hai"), pass them: `customer_interested(category=..., intent=...)`.
 - If the customer indicates they are NOT interested in selling or renting AT THIS SPECIFIC LOCATION (e.g. "is location pe nahi bechna", "ye wali nahi", "not at this location", "wahan ka nahi bechna", "not that property"):
   YOU MUST EXECUTE `not_interested_in_this_location()`.
-- If the customer asks to repeat the address or asks which property/location it is (e.g. "Can you repeat the address?", "Which address?", "Where is it?", "Konsi property?"):
+- If the customer asks to repeat the address or asks which property/location it is (e.g. "Can you repeat the address?", "Which address?", "Where is it?", "Konsi property?", "Tell me property details", "Konsa flat"):
   - DO NOT call `mark_wrong_number()`.
   - DO NOT call `mark_not_interested()`.
   - {f'Repeat the property location: {loc} and ask' if loc else 'There is NO address on record. Say honestly that you do not have a specific address and are only checking whether they own any property they would like to sell or rent out, then ask'} if they are looking to sell or rent it out.
+- If the customer asks "how did you get my number?" / "number kahan se mila?":
+  Answer warmly: "Actually Sir, aapka number hamare verified property database mein listed tha." and immediately ask: "Kya aap apni property sell ya rent karne ka plan kar rahe hain?"
+- If the customer asks "who is this?" / "are you a broker?" / "kahan se bol rahe ho?":
+  Clarify in 1 sentence: "Hum My Estate Finder se hain, property owners ko verified buyers aur tenants se directly connect karte hain. Kya aap apni property sell ya rent karne ka plan kar rahe hain?"
 - If wrong number / wrong person (e.g. "wrong number", "galat number hai", "I am not this person"): call `mark_wrong_number()`. NEVER call `mark_wrong_number()` when the customer is asking about the address or property location!
 - If completely NOT interested / clear explicit refusal (e.g. "nahi bechna", "not interested", "nahi chahiye", "no"): call `mark_not_interested()`. NEVER call `mark_not_interested()` if they say "soch raha hoon" / "thinking about it"!
 - If busy / callback requested: call `schedule_callback()`.
