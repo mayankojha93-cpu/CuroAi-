@@ -192,75 +192,14 @@ def _x_unit_floor(v: str) -> Optional[Dict[str, Any]]:
     return {"unit_number": units[0].upper(), "floor_number": floor}
 
 
-# ── Only ONE half of unit/floor is still open (the other half is already saved) ──
-_UNIT_BARE_FILL = {"it", "its", "is", "hai", "hoga", "hogi", "sir", "ji", "flat", "unit", "no", "number", "house",
-                   "shop", "office", "plot", "door", "room", "the", "my", "mera", "meri", "ka", "ki", "ke",
-                   "nambar", "wala", "wali", "hmm", "s"}
-_FLOOR_FILL = {"it", "its", "is", "hai", "hoga", "hogi", "sir", "ji", "on", "the", "floor", "flr", "par", "pe",
-               "per", "mein", "me", "ka", "ki", "ke", "wala", "wali", "at", "hmm", "s"}   # "s" = the 's of "it's"
-
-
-def _x_unit_only(v: str) -> Optional[Dict[str, Any]]:
-    """'407' / 'flat 407 hai' / 'B-204' -> unit_number. None if anything else is in the sentence."""
-    toks = [t.strip(".,") for t in re.findall(r"[a-z0-9\-/\.,]+", v)]
-    left = [t for t in toks if t and t not in _UNIT_BARE_FILL]
-    if len(left) == 1 and re.search(r"\d", left[0]) and re.fullmatch(r"[a-z]{0,2}[\-/]?\d{1,5}[a-z]?", left[0]):
-        return {"unit_number": left[0].upper()}
-    return None
-
-
-def _x_floor_only(v: str) -> Optional[Dict[str, Any]]:
-    """'third floor' / '4th' / 'ground floor' / 'floor 3' -> floor_number. None if more is in the sentence."""
-    ms = list(_FLOOR.finditer(v))
-    if len(ms) == 1:
-        m = ms[0]
-        rest = v[:m.start()] + " " + v[m.end():]
-        if re.search(r"\d", rest):          # a unit number came along -> let the LLM split it
-            return None
-        if m.group(1):
-            return {"floor_number": _ordinal(int(m.group(1)))}
-        if m.group(2):
-            return {"floor_number": _ordinal(int(m.group(2)))}
-        if m.group(3):
-            return {"floor_number": _ordinal(_ORD[m.group(3)])}
-        return {"floor_number": "Ground"}
-    if len(ms) > 1:
-        return None
-    toks = [t.strip(".,") for t in re.findall(r"[a-z0-9\.,]+", v)]
-    left = [t for t in toks if t and t not in _FLOOR_FILL]
-    if len(left) != 1:
-        return None
-    t = left[0]
-    mo = re.fullmatch(r"(\d{1,2})(?:st|nd|rd|th)", t)
-    if mo:
-        return {"floor_number": _ordinal(int(mo.group(1)))}
-    if t in _ORD:
-        return {"floor_number": _ordinal(_ORD[t])}
-    if t == "ground":
-        return {"floor_number": "Ground"}
-    if re.fullmatch(r"\d{1,2}", t) and 1 <= int(t) <= 99:
-        return {"floor_number": _ordinal(int(t))}
-    return None
-
-
 # ── Price / rent ─────────────────────────────────────────────────────────────
-_AMT = re.compile(
-    r"(\d[\d,]*(?:\.\d+)?)\s*(crores?|cr|lakhs?|lacs?|laakh|hazaar|hazar|thousand|k|ke|"
-    r"लाख|करोड़|करोड|हज़ार|हजार)\b",
-    re.I
-)
-_UNIT_CANON = {
-    "crore": "crore", "crores": "crore", "cr": "crore", "करोड़": "crore", "करोड": "crore",
-    "lakh": "lakh", "lakhs": "lakh", "lac": "lakh", "lacs": "lakh", "laakh": "lakh", "लाख": "lakh",
-    "hazaar": "thousand", "hazar": "thousand", "thousand": "thousand", "हज़ार": "thousand", "हजार": "thousand",
-    "k": "thousand", "ke": "thousand",
-}
+_AMT = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(crores?|cr|lakhs?|lacs?|laakh|hazaar|hazar|thousand|k)\b")
+_UNIT_CANON = {"crore": "crore", "crores": "crore", "cr": "crore", "lakh": "lakh", "lakhs": "lakh",
+               "lac": "lakh", "lacs": "lakh", "laakh": "lakh", "hazaar": "thousand", "hazar": "thousand",
+               "thousand": "thousand", "k": "thousand"}
 _RENT_FILL = {"rs", "rupees", "rupaye", "rupay", "inr", "approx", "around", "about", "per", "month", "monthly",
               "mahina", "mahine", "ka", "ke", "lagbhag", "sir", "ji", "hai", "hoga", "expect", "expecting",
               "rent", "kiraya", "only"}
-_SALE_FILL = {"rs", "rupees", "rupaye", "rupay", "inr", "approx", "around", "about",
-              "ka", "ke", "lagbhag", "sir", "ji", "hai", "hoga", "expect", "expecting",
-              "price", "daam", "rate", "only", "basically"}
 
 
 def _x_amount(v: str, open_field: str) -> Optional[str]:
@@ -276,23 +215,8 @@ def _x_amount(v: str, open_field: str) -> Optional[str]:
     if open_field in ("monthly_rent", "current_rent"):
         raw = _bare_number(v, _RENT_FILL)
         val = _to_float(raw) if raw else None
-        if val is not None:
-            if 5 <= val < 1000:
-                formatted_num = int(val) if val.is_integer() else val
-                return f"{formatted_num} thousand"
-            elif val >= 1000:
-                return str(int(val)) if float(val).is_integer() else str(val)
-    elif open_field == "sale_price":
-        raw = _bare_number(v, _SALE_FILL)
-        val = _to_float(raw) if raw else None
-        if val is not None:
-            if 0.5 <= val < 10 and "." in raw:
-                return f"{val} crore"
-            elif 5 <= val < 1000:
-                formatted_num = int(val) if val.is_integer() else val
-                return f"{formatted_num} lakh"
-            elif val >= 1000:
-                return str(int(val)) if float(val).is_integer() else str(val)
+        if val is not None and 1000 <= val <= 99_999_999:
+            return str(int(val)) if float(val).is_integer() else str(val)
     return None
 
 
@@ -336,7 +260,7 @@ def _x_occupancy(v: str) -> Optional[Dict[str, Any]]:
 
 # ── Orchestration ────────────────────────────────────────────────────────────
 _OPEN_TO_KEY = {
-    "unit_floor": "unit_floor", "unit_number": "unit_only", "floor_number": "floor_only", "bhk_config": "bhk_config", "approx_area": "approx_area",
+    "unit_floor": "unit_floor", "bhk_config": "bhk_config", "approx_area": "approx_area",
     "furnishing": "furnishing", "sale_price": "amount", "monthly_rent": "amount", "current_rent": "amount",
     "leased_status": "leased_status", "immediate_occupancy": "immediate_occupancy",
 }
@@ -358,14 +282,6 @@ def _scan(v: str, open_field: str) -> Dict[str, Any]:
     ):
         if res:
             found[key] = res
-    if open_field == "unit_number":
-        r = _x_unit_only(v)
-        if r:
-            found["unit_only"] = r
-    if open_field == "floor_number":
-        r = _x_floor_only(v)
-        if r:
-            found["floor_only"] = r
     if open_field == "leased_status":
         r = _x_leased(v)
         if r:
