@@ -53,7 +53,7 @@ from .config import (
     PRERENDER_COMMON,
 )
 from .state import RealEstateState, RealEstateStep
-from .agent import RealEstateAgent
+from .agent import RealEstateAgent, _HUMAN_CALLBACK_RE
 from .tools import RealEstateTools
 from .prompts import _owner_call_name
 from .audio_recorder import RoomAudioRecorder
@@ -937,31 +937,43 @@ async def entrypoint(ctx: agents.JobContext):
 
     @session.on("agent_state_changed")
     def on_agent_state_changed(ev):
-        if getattr(ev, "new_state", None) == "speaking":
+        state.last_activity_time = time.time()
+
+    @session.on("user_state_changed")
+    def on_user_state_changed(ev):
+        new_state = getattr(ev, "new_state", None)
+        if new_state == "speaking":
+            state.consecutive_silence = 0
             state.last_activity_time = time.time()
 
     @session.on("user_input_transcribed")
     def on_user_transcribed(ev):
+        state.consecutive_silence = 0
+        state.last_activity_time = time.time()
+        is_final = getattr(ev, "is_final", True)
+        if not is_final:
+            return  # Never evaluate carrier drops on interim / unfinished speech streams
+
         raw_text = getattr(ev, "transcript", None) or getattr(ev, "text", "")
         if raw_text and raw_text.strip():
-            carrier_kind = classify_carrier_message(raw_text)
-            if carrier_kind:
-                logger.warning(f"📵 Carrier announcement ({carrier_kind}) on audio stream: '{raw_text.strip()[:100]}'. Dropping call immediately.")
-                state.add_transcript("system", f"[carrier announcement: {carrier_kind}] {raw_text.strip()}")
-                state.ivr_detected = True
-                state.final_disposition = "Voicemail or IVR Detected"
-                state.agent_summary = f"Voicemail or IVR Detected: {raw_text.strip()[:100]}"
-                try:
-                    session.interrupt(force=True)
-                except Exception:
-                    pass
-                if tools_instance.hangup_func:
-                    asyncio.create_task(tools_instance.hangup_func())
-                return
-            is_final = getattr(ev, "is_final", True)
-            if is_final:
-                romanized_text = romanize_hindi(raw_text.strip())
-                log_dialogue("customer", romanized_text)
+            # Safety override: if human callback / personal busy pattern is present, never drop as carrier
+            if not _HUMAN_CALLBACK_RE.search(raw_text):
+                carrier_kind = classify_carrier_message(raw_text)
+                if carrier_kind:
+                    logger.warning(f"📵 Carrier announcement ({carrier_kind}) on audio stream: '{raw_text.strip()[:100]}'. Dropping call immediately.")
+                    state.add_transcript("system", f"[carrier announcement: {carrier_kind}] {raw_text.strip()}")
+                    state.ivr_detected = True
+                    state.final_disposition = "Voicemail or IVR Detected"
+                    state.agent_summary = f"Voicemail or IVR Detected: {raw_text.strip()[:100]}"
+                    try:
+                        session.interrupt(force=True)
+                    except Exception:
+                        pass
+                    if tools_instance.hangup_func:
+                        asyncio.create_task(tools_instance.hangup_func())
+                    return
+            romanized_text = romanize_hindi(raw_text.strip())
+            log_dialogue("customer", romanized_text)
 
     @session.on("conversation_item_added")
     def on_conversation_item(ev):
@@ -969,6 +981,8 @@ async def entrypoint(ctx: agents.JobContext):
         item = getattr(ev, "item", None)
         if item:
             role = getattr(item, "role", "unknown")
+            if role in ("user", "customer"):
+                state.consecutive_silence = 0
             raw_content = getattr(item, "content", "")
             content_str = ""
             if isinstance(raw_content, list):
@@ -1084,9 +1098,11 @@ async def entrypoint(ctx: agents.JobContext):
             except Exception:
                 pass
             lang = state.reply_lang
+            loc = state.initial_property_location or state.sector_or_location
             lines = [
                 sell_or_rent_question(lang, True),
                 sell_or_rent_question(lang, False),
+                sell_or_rent_question(lang, has_loc=bool(loc), loc=loc, full_context=True),
                 other_property_question(lang),
                 ask_new_location_question(lang),
             ]
@@ -1178,33 +1194,90 @@ async def entrypoint(ctx: agents.JobContext):
     log_dialogue("assistant", greeting)
     state.last_agent_question = greeting
 
+    # Monitor if opening greeting gets cut off / interrupted by caller
+    if opening_speech is not None and hasattr(opening_speech, "wait_for_playout"):
+        async def _watch_greeting_interruption(sp):
+            try:
+                await sp.wait_for_playout()
+                if getattr(sp, "interrupted", False):
+                    state.opening_speech_interrupted = True
+                    logger.info("⚡ Opening greeting was cut off / interrupted by caller")
+            except Exception:
+                pass
+        asyncio.create_task(_watch_greeting_interruption(opening_speech))
+
     # 4. Silence watchdog
     async def silence_watchdog():
-        consecutive_silence = 0
+        _user_speaking_since = None
         while not state.hangup_started:
             await asyncio.sleep(0.5)
             if state.hangup_started:
                 break
+
+            now = time.time()
+
+            # Caller speaking check: do not treat caller speaking as silence
+            user_speaking = getattr(session, "user_state", "listening") == "speaking"
+            if user_speaking:
+                state.consecutive_silence = 0
+                if _user_speaking_since is None:
+                    _user_speaking_since = now
+                # Guard: cap at 30s so constant line static doesn't keep call alive forever
+                if (now - _user_speaking_since) < 30.0:
+                    state.last_activity_time = now
+                    continue
+            else:
+                _user_speaking_since = None
+
+            # Agent busy check: speaking or generating
             if getattr(session, "agent_state", "idle") in ("speaking", "thinking"):
-                state.last_activity_time = time.time()
+                state.last_activity_time = now
                 continue
-            idle = time.time() - state.last_activity_time
-            threshold = 4.0 if consecutive_silence == 0 else 3.0
-            if idle > threshold:
-                consecutive_silence += 1
-                state.last_activity_time = time.time()
-                if consecutive_silence == 1:
+
+            # Hold grace period (e.g. caller said "ek minute ruko", "hold on")
+            if now < getattr(state, "hold_until", 0.0):
+                state.last_activity_time = now
+                continue
+
+            idle = now - state.last_activity_time
+            has_customer = any(t.get("role") == "customer" for t in state.transcript)
+
+            # Flow requirement:
+            # - After intro: wait 4sec. If silent -> nudge ("Kya aap line par hain? / Are you still with me?")
+            # - After nudge finishes: wait 3sec. If still silent -> drop call.
+            # - Mid-call: allow slightly more breathing room (5.0s nudge, 4.0s drop)
+            silence_limit = 4.0 if not has_customer else 5.0
+            drop_limit = 3.0 if not has_customer else 4.0
+
+            if state.consecutive_silence == 0:
+                if idle > silence_limit:
+                    state.consecutive_silence = 1
                     reprompt = (
                         "Are you still with me? Could you hear me?"
                         if state.reply_lang == "en"
                         else "Kya aap line par hain? Kya aap mujhe sun pa rahe hain?"
                     )
                     try:
-                        session.say(reprompt, allow_interruptions=True)
+                        speech = session.say(reprompt, allow_interruptions=True)
                         log_dialogue("assistant", reprompt)
+                        if hasattr(speech, "wait_for_playout"):
+                            try:
+                                await asyncio.wait_for(speech.wait_for_playout(), timeout=5.0)
+                            except Exception:
+                                pass
                     except Exception:
                         pass
-                elif consecutive_silence >= 2:
+                    # Timer for next silence window starts AFTER prompt playout completes
+                    state.last_activity_time = time.time()
+
+            elif state.consecutive_silence >= 1:
+                if idle > drop_limit:
+                    # Final check: did user start speaking right as timer expired?
+                    if getattr(session, "user_state", "listening") == "speaking":
+                        state.consecutive_silence = 0
+                        state.last_activity_time = time.time()
+                        continue
+
                     goodbye = (
                         "I cannot hear you at the moment. We will call you back later. Have a great day!"
                         if state.reply_lang == "en"
@@ -1213,10 +1286,14 @@ async def entrypoint(ctx: agents.JobContext):
                     try:
                         speech = session.say(goodbye, allow_interruptions=False)
                         log_dialogue("assistant", goodbye)
-                        await asyncio.wait_for(speech.wait_for_playout(), timeout=6.0)
+                        if hasattr(speech, "wait_for_playout"):
+                            try:
+                                await asyncio.wait_for(speech.wait_for_playout(), timeout=6.0)
+                            except Exception:
+                                pass
                     except Exception:
                         pass
-                    has_customer = any(t.get("role") == "customer" for t in state.transcript)
+
                     if not has_customer:
                         state.final_disposition = "Not Connected (No Answer)"
                     elif state.final_disposition in ("Abruptly Disconnected Call", "Not Connected (No Answer)"):
@@ -1224,8 +1301,6 @@ async def entrypoint(ctx: agents.JobContext):
                     state.hangup_started = True
                     await _save_and_shutdown()
                     break
-            elif idle < 1.0:
-                consecutive_silence = 0
 
     asyncio.create_task(silence_watchdog())
 
