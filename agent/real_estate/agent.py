@@ -1,5 +1,6 @@
 import re
 import json
+import time
 import asyncio
 import logging
 from typing import Optional
@@ -31,7 +32,9 @@ _IVR_HUMAN_MAX_WORDS = 15
 # Leak patterns for tool-call text that the LLM sometimes types instead of calling the tool.
 _LEAK_PATTERNS = [
     re.compile(r'<function[^>]*>.*?(?:</function>|$)', re.S),               # <function=x>{...}</function>
-    re.compile(r'\b[A-Za-z]+(?:_[A-Za-z0-9]+)+\s*[\(\{][^)}]*[\)\}]?'),     # tool_name(...) / tool_name{...}
+    re.compile(r'\b[A-Za-z]+(?:_[A-Za-z0-9]+)+\s*[>\(\{][^)}]*[\)\}]?'),   # tool_name(...) / tool_name{...} / tool_name>{...}
+    re.compile(r'\b[A-Za-z]+(?:_[A-Za-z0-9]+)+\s*>\s*\{.*?\}?', re.S),     # tool_name>{...}
+    re.compile(r'\b[A-Za-z]+(?:_[A-Za-z0-9]+)+\s*>', re.S),                # tool_name>
     re.compile(r'\b[A-Za-z]+(?:_[A-Za-z0-9]+)+\b'),                        # lone snake_case identifiers
     re.compile(r'^\s*\{.*$', re.S),                                         # JSON blobs
 ]
@@ -70,7 +73,7 @@ logger = logging.getLogger("real-estate-agent")
 # ── Recovery for "tool call typed as plain text" ──────────────────────────────
 # Llama sometimes prints {"name": "save_property_details", "parameters": {...}} as its reply instead
 # of making a real tool call. The tts_node guard strips it, so the caller heard NOTHING (dead air).
-_TEXT_CALL_RE = re.compile(r'^\s*(?:\{|<function|[a-z]+(?:_[a-z0-9]+)+\s*[\(\{])')
+_TEXT_CALL_RE = re.compile(r'^\s*(?:\{|<function|[a-z]+(?:_[a-z0-9]+)+\s*[>\(\{])')
 
 # get_missing_fields() ids -> save_property_details parameter names
 _FIELD_TO_PARAMS = {
@@ -526,7 +529,7 @@ def _chunk_has_tool_call(chunk) -> bool:
 _INLINE_CALL_RE = re.compile(
     r'<function[=\s>]'
     r'|"name"\s*:\s*"[a-z]+(?:_[a-z0-9]+)+"'
-    r'|\b[a-z]+(?:_[a-z0-9]+)+\s*[\(\{]'
+    r'|\b[a-z]+(?:_[a-z0-9]+)+\s*[>\(\{]'
 )
 
 _Q_LEAD_RE = re.compile(r"^(?:ji sir|sure sir|sorry sir|ji|sure|sorry|sir)\s*[,.]?\s+", re.I)
@@ -548,7 +551,8 @@ def _parse_text_tool_call(raw: str):
     m = (
         re.search(r'"name"\s*:\s*"([A-Za-z_]\w*)"', raw)
         or re.match(r'\s*<function=([A-Za-z_]\w*)', raw)
-        or re.match(r'\s*([a-z]+(?:_[a-z0-9]+)+)\s*[\(\{]', raw)
+        or re.match(r'\s*([a-z]+(?:_[a-z0-9]+)+)\s*[>\(\{]', raw)
+        or re.search(r'\b([a-z]+(?:_[a-z0-9]+)+)\s*[>\(\{]', raw)
     )
     if not m:
         return None, {}
@@ -632,6 +636,9 @@ class RealEstateAgent(Agent):
         await self.update_tools(self._re_tools.tools_for_step(self._re_state.step))
 
     async def on_user_turn_completed(self, turn_ctx, new_message):
+        # Update activity timestamp whenever the customer speaks
+        self._re_state.last_activity_time = time.time()
+
         # LATENCY: a new customer turn invalidates any unspoken fast reply left over from an
         # interrupted previous turn.
         self._re_state.direct_reply = None
