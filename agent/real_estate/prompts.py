@@ -1,5 +1,5 @@
 from typing import List
-from .state import RealEstateState, RealEstateStep
+from .state import RealEstateState, RealEstateStep, clean_spoken_location
 from .config import AGENT_PERSONA_NAME
 
 
@@ -270,9 +270,7 @@ Politely acknowledge their time, invoke `book_advisor_handoff(reason="Customer i
         salutation_hi = f"Hello {name_call} ji" if name_call != "Sir" else "Hello Sir"
 
         if loc:
-            clean_loc = loc.split(";")[0].strip()
-            parts = [p.strip() for p in clean_loc.split(",") if p.strip()]
-            spoken_loc = f"{parts[1]}, {parts[0]}" if len(parts) >= 2 else (parts[0] if parts else clean_loc)
+            spoken_loc = clean_spoken_location(loc)
             intro_text = (
                 f'Initial greeting to speak in English: "{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. I\'m calling about your property in {spoken_loc}... Are you looking to sell it, or rent it out?"'
                 if state.reply_lang == "en"
@@ -539,6 +537,8 @@ CRITICAL MANDATORY INSTRUCTIONS:
    - If the caller's phonetic answer clearly maps to a known option, accept it. If truly ambiguous, ask ONCE more in different words. NEVER ask the same question a third time.
 9. PRICE / RENT ANSWER ACKNOWLEDGMENT (STRICT ANTI-REPETITION):
    - When asking for expected price or rent, if the customer gives an amount (such as "40k", "40, 40k", "40 thousand", "1.5 crore", "50 lakh"), call `save_property_details(expected_sale_price=...)` or `save_property_details(expected_monthly_rent=...)` IMMEDIATELY.
+   - If the customer mentions monthly rent or per month (e.g. "40k per month", "mahine ka 30 hazar"), call `save_property_details(expected_monthly_rent=...)`. The system will automatically pivot to the rental flow.
+   - If the customer mentions sale price, crore, or total price (e.g. "1.5 crore", "bechna hai"), call `save_property_details(expected_sale_price=...)`. The system will automatically pivot to the sale flow.
    - NEVER repeat "What price are you expecting for it?" or "What rent are you expecting?" if the customer just stated a number or price!
    - If that was the last missing detail, acknowledge the price and transition cleanly into the closing.
 """
