@@ -136,8 +136,6 @@ class RealEstateState:
         # Same-question loop guard: how many times in a row the SAME open question was re-asked
         self.reask_key: str = ""
         self.reask_count: int = 0
-        # Question failure tracking: counts failed attempts when caller's answer is not understood
-        self.question_failed_attempts: Dict[str, int] = {}
         # Language-switch evidence (one garbled Hindi-looking turn must not flip an English call)
         self._lang_votes: List[str] = []
 
@@ -174,22 +172,6 @@ class RealEstateState:
                 return f"{self.step.value}|{missing[0]['id']}"
         return self.step.value
 
-    def record_question_success(self, key: Optional[str] = None):
-        """Reset failure counter when a question is successfully answered."""
-        k = key or self.get_active_question_key()
-        self.question_failed_attempts.pop(k, None)
-
-    def record_question_failure(self, key: Optional[str] = None) -> int:
-        """Increment and return failure count when an answer was not understood."""
-        k = key or self.get_active_question_key()
-        count = self.question_failed_attempts.get(k, 0) + 1
-        self.question_failed_attempts[k] = count
-        return count
-
-    def get_question_failure_count(self, key: Optional[str] = None) -> int:
-        k = key or self.get_active_question_key()
-        return self.question_failed_attempts.get(k, 0)
-
     def update_reply_lang(self, text: Optional[str]) -> bool:
         """Detect and follow the customer's language (Hinglish vs English).
         Can switch only once:
@@ -220,6 +202,33 @@ class RealEstateState:
             self._lang_votes.clear()
             return True
         return False
+
+    def _unit_floor_slot(self) -> Dict[str, str]:
+        """Dynamic question for unit and floor depending on whether one, both, or neither is known."""
+        if not self.unit_number and not self.floor_number:
+            return {
+                "id": "unit_floor",
+                "label": "Unit number and floor",
+                "question_en": "Could you share the unit number, and which floor it's on?",
+                "question_hi": "Unit number kya rahega Sir, aur kaun se floor par hai?",
+            }
+        elif not self.unit_number:
+            fl = str(self.floor_number or "").strip()
+            fl_clean = fl if "floor" in fl.lower() else f"{fl} floor"
+            return {
+                "id": "unit_floor",
+                "label": "Unit number",
+                "question_en": f"Got it, {fl_clean}. And what is the unit or flat number?",
+                "question_hi": f"Theek hai Sir, {fl_clean}. Aur unit ya flat number kya hai?",
+            }
+        else:
+            un = str(self.unit_number or "").strip()
+            return {
+                "id": "unit_floor",
+                "label": "Floor number",
+                "question_en": f"Got it, unit {un}. And which floor is it on?",
+                "question_hi": f"Theek hai Sir, flat {un}. Aur kaun se floor par hai?",
+            }
 
     def get_missing_fields(self) -> List[Dict[str, str]]:
         """
@@ -267,12 +276,7 @@ class RealEstateState:
                         "question_hi": "Aur society ya project ka naam kya hai Sir?",
                     })
             if not (self.unit_number and self.floor_number):
-                missing.append({
-                    "id": "unit_floor",
-                    "label": "Unit number and floor",
-                    "question_en": "Could you share the unit number, and which floor it's on?",
-                    "question_hi": "Unit number kya rahega Sir, aur kaun se floor par hai?",
-                })
+                missing.append(self._unit_floor_slot())
             if not self.bhk_config:
                 missing.append({
                     "id": "bhk_config",
@@ -320,12 +324,7 @@ class RealEstateState:
                         "question_hi": "Aur society ya project ka naam kya hai Sir?",
                     })
             if not (self.unit_number and self.floor_number):
-                missing.append({
-                    "id": "unit_floor",
-                    "label": "Unit number and floor",
-                    "question_en": "Could you share the unit number, and which floor it's on?",
-                    "question_hi": "Unit number kya rahega Sir, aur kaun se floor par hai?",
-                })
+                missing.append(self._unit_floor_slot())
             if not self.bhk_config:
                 missing.append({
                     "id": "bhk_config",
@@ -388,12 +387,7 @@ class RealEstateState:
                     "question_hi": "Ye office space hai Sir, retail shop, ya koi aur commercial unit?",
                 })
             if not (self.unit_number and self.floor_number):
-                missing.append({
-                    "id": "unit_floor",
-                    "label": "Unit number and floor",
-                    "question_en": "Could you share the unit number, and which floor it's on?",
-                    "question_hi": "Unit number kya rahega Sir, aur kaun se floor par hai?",
-                })
+                missing.append(self._unit_floor_slot())
             if self.is_currently_leased is None:
                 missing.append({
                     "id": "leased_status",
@@ -456,12 +450,7 @@ class RealEstateState:
                     "question_hi": "Ye office space hai Sir, retail shop, ya koi aur commercial unit?",
                 })
             if not (self.unit_number and self.floor_number):
-                missing.append({
-                    "id": "unit_floor",
-                    "label": "Unit number and floor",
-                    "question_en": "Could you share the unit number, and which floor it's on?",
-                    "question_hi": "Unit number kya rahega Sir, aur kaun se floor par hai?",
-                })
+                missing.append(self._unit_floor_slot())
             if not self.approx_area_sqft:
                 missing.append({
                     "id": "approx_area",
