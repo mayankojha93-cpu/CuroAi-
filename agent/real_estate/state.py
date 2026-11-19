@@ -143,6 +143,10 @@ class RealEstateState:
         self.is_dnc: bool = False
         self.advisor_handoff_reason: Optional[str] = None
         self.impatient_detected: bool = False
+        # Caller said they are busy / the owner is not available: their NEXT reply is the callback time
+        self.awaiting_callback_time: bool = False
+        # Someone other than the owner answered the phone
+        self.third_party_answered: bool = False
 
         # Transcript tracking
         self.transcript: List[Dict[str, Any]] = []
@@ -217,6 +221,31 @@ class RealEstateState:
             return True
         return False
 
+    def _unit_floor_missing(self) -> List[Dict[str, str]]:
+        """Unit number + floor. Asks ONLY for the half that is still missing, never both again."""
+        if self.unit_number and self.floor_number:
+            return []
+        if self.unit_number:
+            return [{
+                "id": "floor_number",
+                "label": "Floor number",
+                "question_en": "And which floor is it on?",
+                "question_hi": "Aur kaun se floor par hai Sir?",
+            }]
+        if self.floor_number:
+            return [{
+                "id": "unit_number",
+                "label": "Unit or flat number",
+                "question_en": "And what's the unit or flat number?",
+                "question_hi": "Aur unit ya flat number kya hai Sir?",
+            }]
+        return [{
+            "id": "unit_floor",
+            "label": "Unit number and floor",
+            "question_en": "Could you share the unit number, and which floor it's on?",
+            "question_hi": "Unit number kya rahega Sir, aur kaun se floor par hai?",
+        }]
+
     def get_missing_fields(self) -> List[Dict[str, str]]:
         """
         Return the list of missing fields for the active branch in strict script order.
@@ -262,13 +291,7 @@ class RealEstateState:
                         "question_en": "And which society or project name is it?",
                         "question_hi": "Aur society ya project ka naam kya hai Sir?",
                     })
-            if not (self.unit_number and self.floor_number):
-                missing.append({
-                    "id": "unit_floor",
-                    "label": "Unit number and floor",
-                    "question_en": "Could you share the unit number, and which floor it's on?",
-                    "question_hi": "Unit number kya rahega Sir, aur kaun se floor par hai?",
-                })
+            missing.extend(self._unit_floor_missing())
             if not self.bhk_config:
                 missing.append({
                     "id": "bhk_config",
@@ -315,13 +338,7 @@ class RealEstateState:
                         "question_en": "And which society or project name is it?",
                         "question_hi": "Aur society ya project ka naam kya hai Sir?",
                     })
-            if not (self.unit_number and self.floor_number):
-                missing.append({
-                    "id": "unit_floor",
-                    "label": "Unit number and floor",
-                    "question_en": "Could you share the unit number, and which floor it's on?",
-                    "question_hi": "Unit number kya rahega Sir, aur kaun se floor par hai?",
-                })
+            missing.extend(self._unit_floor_missing())
             if not self.bhk_config:
                 missing.append({
                     "id": "bhk_config",
@@ -383,13 +400,7 @@ class RealEstateState:
                     "question_en": "Is it an office space, retail shop, or another commercial unit?",
                     "question_hi": "Ye office space hai Sir, retail shop, ya koi aur commercial unit?",
                 })
-            if not (self.unit_number and self.floor_number):
-                missing.append({
-                    "id": "unit_floor",
-                    "label": "Unit number and floor",
-                    "question_en": "Could you share the unit number, and which floor it's on?",
-                    "question_hi": "Unit number kya rahega Sir, aur kaun se floor par hai?",
-                })
+            missing.extend(self._unit_floor_missing())
             if self.is_currently_leased is None:
                 missing.append({
                     "id": "leased_status",
@@ -451,13 +462,7 @@ class RealEstateState:
                     "question_en": "Is it an office space, retail shop, or another commercial unit?",
                     "question_hi": "Ye office space hai Sir, retail shop, ya koi aur commercial unit?",
                 })
-            if not (self.unit_number and self.floor_number):
-                missing.append({
-                    "id": "unit_floor",
-                    "label": "Unit number and floor",
-                    "question_en": "Could you share the unit number, and which floor it's on?",
-                    "question_hi": "Unit number kya rahega Sir, aur kaun se floor par hai?",
-                })
+            missing.extend(self._unit_floor_missing())
             if not self.approx_area_sqft:
                 missing.append({
                     "id": "approx_area",
@@ -490,7 +495,8 @@ class RealEstateState:
         return [
             m for m in missing
             if m["id"] not in self.skipped_fields
-            and not (self.is_standalone and m["id"] == "unit_floor")
+            and not (self.is_standalone and m["id"] in ("unit_floor", "unit_number", "floor_number"))
+            and not ("unit_floor" in self.skipped_fields and m["id"] in ("unit_number", "floor_number"))
         ]
 
     def is_branch_complete(self) -> bool:
