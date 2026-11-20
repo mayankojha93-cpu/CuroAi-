@@ -17,6 +17,7 @@ Pure python, no livekit imports, so it can be unit-tested on its own.
 """
 import re
 from typing import Any, Dict, List, Optional
+from .tools import is_standalone_from_speech
 
 try:  # Sarvam STT often returns Devanagari; we also try a romanised copy
     from src.transliteration import romanize_hindi
@@ -48,7 +49,7 @@ _BLOCK = re.compile(
     r"\blater\b|\bbusy\b|time\s*nahi|time\s*nhi|hurry|jaldi|wrong\s*number|repeat|dobara|dubara|phir\s*se|fir\s*se|"
     r"kya\s*(bola|bole|puch)|pata\s*nahi|pata\s*nhi|nahi\s*pata|yaad\s*nahi|don'?t\s*know|do\s*not\s*know|"
     r"not\s*sure|idea\s*nahi|no\s*idea|cannot\s*share|nahi\s*bata|rate\s*kya|price\s*kya|kitna\s*milega|"
-    r"valuation|market|human|advisor|manager|not\s*interested|interested\s*nahi)"
+    r"valuation|market\s*(?:kya|kitn|bata|trend)|human|advisor|manager|not\s*interested|interested\s*nahi)"
 )
 
 _NUM = re.compile(r"\d[\d,]*(?:\.\d+)?")
@@ -111,6 +112,7 @@ _AREA = re.compile(
     re.IGNORECASE,
 )
 _OTHER_UNIT = re.compile(r"\b(sqm|sq\s*m|meters?|metres?|marla|acre|bigha|kanal|biswa)\b", re.IGNORECASE)
+_AREA_KEYWORDS = re.compile(r"\b(area|carpet|super|built|builtup|size|square)\b", re.IGNORECASE)
 _AREA_FILL = {"approx", "approximately", "around", "about", "lagbhag", "kareeb", "karib", "total", "super",
               "area", "carpet", "built", "builtup", "hai", "hoga", "hogi", "sir", "ji", "will", "be", "is",
               "it", "its", "roughly", "the", "mein", "me", "ka", "ke", "ki", "of", "sqft", "sq", "ft", "feet",
@@ -129,10 +131,23 @@ def _x_area(v: str, open_field: str) -> Optional[Dict[str, Any]]:
                 return {"approx_area_sqft": sqft}
         return None
     m = _AREA.search(v)
-    raw = m.group(1) if m else (_bare_number(v, _AREA_FILL) if open_field == "approx_area" else None)
-    val = _to_float(raw) if raw else None
-    if val is not None and 50 <= val <= 1_000_000:
-        return {"approx_area_sqft": val}
+    if m:
+        val = _to_float(m.group(1))
+        if val is not None and 50 <= val <= 1_000_000:
+            return {"approx_area_sqft": val}
+        return None
+
+    # Bare number without explicit unit
+    if open_field == "approx_area":
+        raw = _bare_number(v, _AREA_FILL)
+        val = _to_float(raw) if raw else None
+        # Indian real estate: residential units are virtually never < 350 sq ft.
+        # Numbers < 350 (e.g. 100, 200) are almost always gaj or flat/floor numbers.
+        # Numbers >= 350 must be plausible areas (multiple of 10 or 25, or explicit area keywords).
+        # Odd flat-like numbers without keywords (e.g. 407, 502) are left for LLM to clarify.
+        if val is not None and 350 <= val <= 100_000:
+            if val % 10 == 0 or val % 25 == 0 or _AREA_KEYWORDS.search(v):
+                return {"approx_area_sqft": val}
     return None
 
 
@@ -207,25 +222,79 @@ def _x_unit_floor(v: str) -> Optional[Dict[str, Any]]:
 
 
 # ── Price / rent ─────────────────────────────────────────────────────────────
-_AMT = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(crores?|cr|lakhs?|lacs?|laakh|hazaar|hazar|thousand|k)\b")
+_AMT = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(crores?|cr|lakhs?|lacs?|laakh|hazaar|hazar|thousand|k)\b", re.IGNORECASE)
 _UNIT_CANON = {"crore": "crore", "crores": "crore", "cr": "crore", "lakh": "lakh", "lakhs": "lakh",
                "lac": "lakh", "lacs": "lakh", "laakh": "lakh", "hazaar": "thousand", "hazar": "thousand",
                "thousand": "thousand", "k": "thousand"}
 _RENT_FILL = {"rs", "rupees", "rupaye", "rupay", "inr", "approx", "around", "about", "per", "month", "monthly",
               "mahina", "mahine", "ka", "ke", "lagbhag", "sir", "ji", "hai", "hoga", "expect", "expecting",
               "rent", "kiraya", "only"}
+_SALE_FILL = {"rs", "rupees", "rupaye", "rupay", "inr", "approx", "around", "about",
+              "lagbhag", "kareeb", "karib", "sir", "ji", "hai", "hoga", "expect", "expecting",
+              "price", "only", "crore", "lakh", "me", "mein", "ka", "ke", "ki", "hogi",
+              "demand", "rate", "cost", "total"}
+
+_SPOKEN_SALE_NUMS = [
+    (re.compile(r"\bone\s+point\s+five\b", re.IGNORECASE), "1.5"),
+    (re.compile(r"\btwo\s+point\s+five\b", re.IGNORECASE), "2.5"),
+    (re.compile(r"\bthree\s+point\s+five\b", re.IGNORECASE), "3.5"),
+    (re.compile(r"\bdedh\b", re.IGNORECASE), "1.5"),
+    (re.compile(r"\bdhai\b", re.IGNORECASE), "2.5"),
+    (re.compile(r"\bfifty\b", re.IGNORECASE), "50"),
+    (re.compile(r"\bsixty\b", re.IGNORECASE), "60"),
+    (re.compile(r"\bseventy\b", re.IGNORECASE), "70"),
+    (re.compile(r"\beighty\b", re.IGNORECASE), "80"),
+    (re.compile(r"\bninety\b", re.IGNORECASE), "90"),
+]
+
+
+_MARKET_RATE_STMT = re.compile(
+    r"\b(jo\s+(bhi\s+)?|as\s+per\s+|according\s+to\s+)?market\s+(rate|price|value)"
+    r"(\s+(pe|par|me|mein|main|hi|hai|hoga|chal\s*raha\s*hai|de\s*denge|chahiye|bik\s*jaye|mil\s*jaye))?\b"
+    r"|मार्केट\s*(रेट|प्राइस|भाव|वैल्यू)",
+    re.IGNORECASE,
+)
+_Q_WORDS = re.compile(r"\b(kya|kitn[aei]|what|batao|bataiye)\b|क्या|कितना|बताओ|बताइए", re.IGNORECASE)
 
 
 def _x_amount(v: str, open_field: str) -> Optional[str]:
-    nums = _NUM.findall(v)
+    if open_field in ("sale_price", "monthly_rent"):
+        if _MARKET_RATE_STMT.search(v) and not _Q_WORDS.search(v):
+            return "Market Rate"
+
+    v_norm = v
+    if open_field == "sale_price":
+        for pat, rep in _SPOKEN_SALE_NUMS:
+            v_norm = pat.sub(rep, v_norm)
+
+    raw_nums = _NUM.findall(v_norm)
+    nums = [n.replace(',', '').rstrip('.') for n in raw_nums]
     # Allow single number OR repeated number (e.g. "40, 40k" or "40k, 40k" said for emphasis)
     if len(nums) > 1 and len(set(nums)) > 1:
         return None  # genuine range / compound amount (e.g. "1 crore 20 lakh") -> LLM
-    m = _AMT.search(v)
+
+    m = _AMT.search(v_norm)
     if m:
         num_str = m.group(1).replace(',', '')
         unit = _UNIT_CANON.get(m.group(2).lower(), m.group(2).lower())
         return f"{num_str} {unit}"
+
+    if open_field == "sale_price":
+        raw = _bare_number(v_norm, _SALE_FILL)
+        val = _to_float(raw) if raw else None
+        if val is not None:
+            if 0.25 <= val < 15:
+                # 0.25 to 14.9 without unit in Indian sale context is Crore (e.g. 1.5, 2, 3.5, 10)
+                clean_num = int(val) if float(val).is_integer() else val
+                return f"{clean_num} crore"
+            elif 15 <= val <= 999:
+                # 15 to 999 without unit is Lakh (e.g. 50, 75, 80, 150)
+                clean_num = int(val) if float(val).is_integer() else val
+                return f"{clean_num} lakh"
+            elif val >= 100_000:
+                # Full rupees amount (e.g. 5000000)
+                return str(int(val)) if float(val).is_integer() else str(val)
+
     if open_field in ("monthly_rent", "current_rent"):
         raw = _bare_number(v, _RENT_FILL)
         val = _to_float(raw) if raw else None
@@ -284,7 +353,6 @@ _AMOUNT_PARAM = {"sale_price": "expected_sale_price", "monthly_rent": "expected_
 
 def _scan(v: str, open_field: str) -> Dict[str, Any]:
     found: Dict[str, Any] = {}
-    from .tools import is_standalone_from_speech
     if open_field == "unit_floor" and is_standalone_from_speech(v):
         return {"unit_floor": {"unit_number": "Standalone", "floor_number": "Ground"}}
     for key, res in (

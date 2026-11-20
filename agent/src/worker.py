@@ -313,7 +313,7 @@ async def entrypoint(ctx: agents.JobContext):
             if recorder:
                 rec_url = await recorder.stop()
                 if rec_url:
-                    setattr(state, "recording_url", rec_url)
+                    state.recording_url = rec_url
             if await asyncio.to_thread(post_outcome_to_backend, state):
                 state.outcome_posted = True
         except Exception as e:

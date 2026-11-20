@@ -249,11 +249,22 @@ class RoomAudioRecorder:
         if os.path.exists(final_file) and os.path.getsize(final_file) > 44:
             logger.info(f"📁 Audio recording successfully preserved at {final_file} ({os.path.getsize(final_file)} bytes)")
             # Asynchronously upload to AWS S3
+            s3_url = None
             try:
-                await self._upload_to_s3(final_file)
+                s3_url = await self._upload_to_s3(final_file)
             except Exception as e:
                 logger.warning(f"S3 upload attempt encountered error: {e}")
-            return self.get_stream_url()
+
+            if s3_url:
+                return s3_url
+
+            s3_configured = bool(os.environ.get("S3_BUCKET"))
+            allow_local = os.environ.get("ALLOW_LOCAL_RECORDING_STREAM", "false").lower() in ("true", "1", "yes")
+            if not s3_configured or allow_local:
+                return self.get_stream_url()
+            else:
+                logger.warning(f"S3 upload failed for call {self.call_id}; suppressing local stream URL to prevent dead links.")
+                return None
         return None
 
     async def _upload_to_s3(self, file_path: str) -> Optional[str]:

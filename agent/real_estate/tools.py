@@ -2,7 +2,7 @@ import re
 import random
 import logging
 import asyncio
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Tuple
 from livekit.agents import function_tool
 from .state import RealEstateState, RealEstateStep
 from .prompts import get_step_instructions, get_closing_text
@@ -123,13 +123,56 @@ _DNC_LATIN = re.compile(
     re.I,
 )
 _DNC_DEV = re.compile(r"(कॉल\s*मत|मत\s*कॉल|कॉल\s*न\s*कर|नंबर\s*(हटा|रिमूव|डिलीट)|रिमूव|डू\s*नॉट\s*कॉल|डीएनडी|परेशान\s*मत)")
-_REFUSAL_LATIN = re.compile(
-    r"\b(no|nope|nah|nahi|nahin|nhi|nahii|nai|never|nothing|none|mat|don'?t|do\s*not|dont)\b"
-    r"|\bnot\s+(interested|looking|selling|renting|leasing|want|planning|thinking|at\s+all|really|now)"
-    r"|\b(nothing\s+else|none\s+else|no\s+other|no\s+more)\b",
-    re.I,
+
+# 1. Phrases indicating positive intent to sell / rent, property answers, or conversational idioms (cannot be a refusal)
+_POSITIVE_OR_ANSWER_RE = re.compile(
+    r"\b("
+    r"(?:main\s+)?(?:sell|bechn[aei]|sale|rent|kiray[ae]|lease)\s*(?:karn[aei]|den[aei]|chahit[aei]|hai|hoga|chahta|chahti)"
+    r"|(?:interested|intrested)\s*(?:hoon|hu|hain|hai)"
+    r"|want\s+to\s+(?:sell|rent|lease|proceed)"
+    r"|looking\s+to\s+(?:sell|rent|lease)"
+    r"|no\s+(?:problem|issue|worries?)|don'?t\s+worry"
+    r"|\d+\s*(?:bhk|bedroom|bed)|flat\s*(?:no\.?|#)?\s*\d+|\d+\s*floor|\d+\s*(?:sq\s*ft|sqft|gaj|yards)"
+    r"|\d+\s*(?:crore|cr|lakh|lac|thousand|k)\b"
+    r")\b",
+    re.IGNORECASE,
 )
-_REFUSAL_DEV = re.compile(r"(नहीं|नही|नहि|मत|नो\b|कुछ\s*नहीं|कोई\s*नहीं)")
+
+# 2. Explicit negative intent phrases (clearly refusing to sell / rent / talk)
+_EXPLICIT_REFUSAL_PHRASES = re.compile(
+    r"\b("
+    r"not\s+(?:interested|looking|selling|renting|leasing|wanting|planning|for\s+sale|at\s+all)"
+    r"|(?:un|not\s+)interested"
+    r"|don'?t\s+want\s+to\s+(?:sell|rent|lease|talk|proceed)"
+    r"|no\s+thanks?|no\s+thank\s+you"
+    r"|(?:nahi|nhi|nahin|na)\s+(?:bechn[aei]|den[aei]|karn[aei]|chahiye|hoga|bataunga|batana|lena)"
+    r"|(?:bechn[aei]|den[aei]|sell\s*karn[aei]|rent\s*pe\s*den[aei])\s*(?:bhi\s*)?(?:nahi|nhi|nahin)"
+    r"|(?:interested|intrested|interest)\s*(?:nahi|nhi|nahin)"
+    r"|(?:nahi|nhi|nahin)\s*(?:interested|intrested)"
+    r"|kuch\s*(?:bhi\s*)?(?:nahi|nhi)\s*(?:bechn[aei]|den[aei]|karn[aei])"
+    r"|(?:koi|kuch)\s*(?:property\s*)?(?:nahi|nhi)\s*(?:bechn[aei]|den[aei])"
+    r"|(?:call|phone)\s*(?:mat|nahi|na)\s*(?:karn[aei]|karo|kijiye|karein|karna)"
+    r"|mat\s*(?:karo|kijiye|karna|karein)?\s*(?:call|phone)"
+    r"|kripya\s*call\s*na\s*kar(?:ein|na)?"
+    r"|never\s*call|stop\s*calling"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_EXPLICIT_REFUSAL_DEV = re.compile(
+    r"(नहीं\s*(बेचना|देना|करना|चाहिए|बताना)|(बेचना|देना)\s*नहीं|इंटरेस्टेड\s*नहीं|रुचि\s*नहीं|कॉल\s*मत\s*करो|फोन\s*मत)"
+)
+
+# 3. Clean bare refusal tokens: when the entire utterance is just "no", "nahi ji", "no thanks"
+_BARE_REFUSAL_WORDS = {
+    "no", "nope", "nah", "nahi", "nahin", "nhi", "nahii", "nai", "na",
+    "नहीं", "नही", "नहि", "नो"
+}
+_REFUSAL_FILL_WORDS = {
+    "ji", "jee", "sir", "madam", "bhai", "bhaiya", "thanks", "thank", "you",
+    "shukriya", "dhanyawad", "re", "baba", "ab", "abhi", "kuch", "kuchh",
+    "bas", "toh", "to", "bhi", "जी", "सर", "मैडम", "भैया", "भाई", "बस", "तो", "भी"
+}
 
 
 def explicit_dnc_request(text: Any) -> bool:
@@ -138,8 +181,32 @@ def explicit_dnc_request(text: Any) -> bool:
 
 
 def explicit_refusal(text: Any) -> bool:
-    t = str(text or "")
-    return bool(_REFUSAL_LATIN.search(t) or _REFUSAL_DEV.search(t))
+    t = str(text or "").strip()
+    if not t:
+        return False
+
+    low = t.lower()
+
+    # If sentence contains positive intent (e.g. "Nahi, main sell karna chahta hoon")
+    # or property details ("Nahi, 3 BHK hai", "No problem"), it is NOT a refusal.
+    if _POSITIVE_OR_ANSWER_RE.search(low):
+        # Unless it also explicitly says "not interested" or "nahi bechna"
+        if not (_EXPLICIT_REFUSAL_PHRASES.search(low) or _EXPLICIT_REFUSAL_DEV.search(t)):
+            return False
+
+    # 1. Matches explicit refusal phrases (e.g. "not interested", "nahi bechna", "don't want to sell")
+    if _EXPLICIT_REFUSAL_PHRASES.search(low) or _EXPLICIT_REFUSAL_DEV.search(t):
+        return True
+
+    # 2. Bare refusal: words in utterance consist entirely of refusal words + polite fillers
+    tokens = [w.strip(".,?!;:-_") for w in re.split(r"[\s,]+", low) if w.strip(".,?!;:-_")]
+    if tokens:
+        has_refusal_word = any(tok in _BARE_REFUSAL_WORDS for tok in tokens)
+        all_filler_or_refusal = all(tok in (_BARE_REFUSAL_WORDS | _REFUSAL_FILL_WORDS) for tok in tokens)
+        if has_refusal_word and all_filler_or_refusal:
+            return True
+
+    return False
 
 
 _DONT_KNOW_RE = re.compile(
@@ -183,22 +250,53 @@ def commercial_type_from_speech(text: Any) -> Optional[str]:
 
 # Standalone / independent property: no separate unit number or floor exists, so we never ask for them.
 # "independent floor" / "builder floor" are NOT standalone (one floor of a building -> floor matters).
+_EXPLICIT_UNIT_RE = re.compile(
+    r"\b(?:flat|unit|apartment|apt|door|room|फ्लैट|यूनिट)\s*(?:no\.?|num(?:ber)?|#)?\s*(?:is\s*)?([a-z]?-?\d{1,5}[a-z]?)\b"
+    r"|\b[a-z]{1,2}[\-/]\d{1,5}\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_FLOOR_RE = re.compile(
+    r"\b("
+    r"\d{1,3}(?:st|nd|rd|th)?\s*(?:floor|flr|manzil|फ्लोर|मंजिल)"
+    r"|(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|top|upper|lower)\s+(?:floor|flr|manzil)"
+    r"|(?:floor|flr|manzil|फ्लोर|मंजिल)\s*(?:no\.?|num(?:ber)?|#)?\s*\d{1,3}"
+    r"|(\d{1,2}|ground|top)\s+(?:pe|par)\b"
+    r")\b",
+    re.IGNORECASE,
+)
+_VILLA_COMMUNITY_RE = re.compile(
+    r"\b(villa|kothi|bungalow|bunglow|विला|कोठी|बंगला)\s+"
+    r"(community|society|heights|enclave|apartments?|apts?|towers?|residency|floors?|greens|view|city|estate|park|phase|block|sector|colony|सोसाइटी|कम्युनिटी)\b"
+    r"|\b(community|society|heights|enclave|apartments?|apts?|towers?|residency|floors?|greens|view|city|estate|park|phase|block|sector|colony|सोसाइटी|कम्युनिटी)\s+"
+    r"(villa|kothi|bungalow|bunglow|विला|कोठी|बंगला)\b",
+    re.IGNORECASE,
+)
+_NO_UNIT_BUT_HAS_NUM_RE = re.compile(
+    r"\b(?:no|nahi|nhi|नहीं|नही)\W+(?:unit|flat|floor|फ्लैट|यूनिट|फ्लोर)\s*(?:no\.?|num(?:ber)?|#)?\s*(?:is|hai|=|:)?\s*([a-z0-9\-]*\d+[a-z0-9\-]*)",
+    re.IGNORECASE,
+)
+
 _STANDALONE_RE = re.compile(
     r"(?<![a-z])("
     r"stand[\s\-]?alone|standard[\s\-]?alone|free[\s\-]?standing|"
-    r"independent\s+(house|villa|building|property|kothi|bungalow|home)|"
-    r"\b(villa|kothi|bungalow|row\s*house)\b|"
-    r"(entire|whole)\s+(building|property|house|office)|"
-    r"(unit|flat|floor)\s*(number)?\s*(hai\s*hi\s*nahi|hota\s*hi\s*nahi|nahi\s*hota)\b|"
-    r"(there\s+is\s+)?no\s+(unit|flat|floor)\s*(number)?"
+    r"independent\s+(house|villa|building|property|kothi|bungalow|bunglow|home|duplex)|"
+    r"(entire|whole|poora|pura|puri|poori)\s+(building|property|house|office|kothi|bungalow|villa)|"
+    r"(single|individual)\s+(house|building|kothi|bungalow|property)|"
+    r"\b(row\s*house|duplex|triplex|farm\s*house|farmhouse)\b|"
+    r"(?:it'?s\s+a\s+|yeh\s+|ye\s+|meri\s+|mera\s+|hamara\s+|apna\s+|is\s+a\s+)\b(villa|kothi|bungalow|bunglow)\b|"
+    r"(unit|flat|floor)\s*(number)?\s*(hai\s*hi\s*nahi|hota\s*hi\s*nahi|nahi\s*hota|nahi\s*hai|nhi\s*hai)\b|"
+    r"(?:there\s+is\s+)?no\s+(?:separate\s+)?(?:unit|flat|floor)\s*(?:number)?\s*(?:hota|hai)?\b|"
+    r"(?:koi\s+)?(?:unit|flat|floor)\s*(?:number)?\s*(?:nahi|nhi)\s*(?:hota|hai)?\b"
     r")(?![a-z])",
-    re.I
+    re.IGNORECASE,
 )
-_STANDALONE_DEV = re.compile(r"(स्टैंड\s?अलोन|स्टैंडअलोन|स्टैंडर्ड\s?अलोन|इंडिपेंडेंट\s*(हाउस|विला|कोठी|बिल्डिंग)?|विला|कोठी|बंगला)")
+_STANDALONE_DEV = re.compile(r"(स्टैंड\s?अलोन|स्टैंडअलोन|स्टैंडर्ड\s?अलोन|इंडिपेंडेंट\s*(हाउस|विला|कोठी|बिल्डिंग)|(पूरा|पूरी)\s*(मकान|बिल्डिंग|कोठी|बंगला))")
 _STANDALONE_NEG_RE = re.compile(
     r"(not\s+(a\s+|an\s+)?(stand[\s\-]?alone|free[\s\-]?standing|independent)"
     r"|(stand[\s\-]?alone|free[\s\-]?standing|independent)\s+(nahi|nahin|nhi)"
-    r"|(stand[\s\-]?alone|free[\s\-]?standing|independent)\s+(floor|builder))"
+    r"|(stand[\s\-]?alone|free[\s\-]?standing|independent|builder)\s+(floor|builder)"
+    r"|floor\s+in\s+(a\s+)?(villa|kothi|bungalow|building))",
+    re.IGNORECASE,
 )
 
 
@@ -212,6 +310,15 @@ def is_standalone_from_speech(text: Any) -> bool:
     if _DONT_KNOW_RE.search(low) or _DONT_KNOW_DEV.search(low):
         return False
     if _STANDALONE_NEG_RE.search(low):
+        return False
+    # If caller gave an explicit unit number or floor, the property is NOT standalone
+    if _EXPLICIT_UNIT_RE.search(low) or _EXPLICIT_FLOOR_RE.search(low):
+        return False
+    # If "no unit" was just conversational negation before stating the unit number (e.g. "no, unit number is 402")
+    if _NO_UNIT_BUT_HAS_NUM_RE.search(low):
+        return False
+    # If "villa" / "kothi" / "bungalow" is part of a society / community name (e.g. "Villa community", "Villa heights")
+    if _VILLA_COMMUNITY_RE.search(low):
         return False
     return bool(_STANDALONE_RE.search(low) or _STANDALONE_DEV.search(low))
 
@@ -233,15 +340,15 @@ def sell_or_rent_question(lang: str, has_loc: bool = True, loc: Optional[str] = 
         clean_loc = loc.split(";")[0].strip() if loc else ""
         if clean_loc:
             return (
-                f"Hello Sir, this is Priya from My Estate Finder. I'm calling regarding your property in {clean_loc} — were you looking to sell or rent it out?"
+                f"Hello Sir, this is {AGENT_PERSONA_NAME} from My Estate Finder. I'm calling regarding your property in {clean_loc} — were you looking to sell or rent it out?"
                 if lang == "en"
-                else f"Ji, main Priya baat kar rahi hoon My Estate Finder se. Aapki {clean_loc} wali property ke silsile mein call kiya tha — kya aap use sell karne ka plan kar rahe hain ya rent out?"
+                else f"Ji, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se. Aapki {clean_loc} wali property ke silsile mein call kiya tha — kya aap use sell karne ka plan kar rahe hain ya rent out?"
             )
         else:
             return (
-                "Hello Sir, this is Priya from My Estate Finder. Were you looking to sell or rent out any property?"
+                f"Hello Sir, this is {AGENT_PERSONA_NAME} from My Estate Finder. Were you looking to sell or rent out any property?"
                 if lang == "en"
-                else "Ji, main Priya baat kar rahi hoon My Estate Finder se. Main yeh pooch rahi thi ki kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"
+                else f"Ji, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se. Main yeh pooch rahi thi ki kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"
             )
 
     if has_loc:
@@ -300,16 +407,46 @@ def say_cached(session, state, text: str, allow_interruptions: bool = True):
     return session.say(text, allow_interruptions=allow_interruptions)
 
 
-def _grounded(category, intent, heard):
-    """Category / intent from the LLM are accepted ONLY if the caller's latest words support them.
-    A bare "haan ji" must never become residential + sale (the LLM invents that). When the caller really
-    said it, it is read from their own words; with no transcript at all the LLM value is the only source."""
-    heard = (heard or "").strip()
-    if heard:
-        c = classify_category(heard)
-        i = classify_intent(heard)
-        return c or classify_category(category), i or classify_intent(intent)
-    return classify_category(category), classify_intent(intent)
+def _grounded(category: Optional[str], intent: Optional[str], heard: Any) -> Tuple[Optional[str], Optional[str]]:
+    """Category / intent are accepted ONLY if supported by customer's speech.
+    Supports either a single utterance or multiple recent utterances (as a string, list, or tuple).
+    Prevents hallucinated category/intent when customer only gave a bare acknowledgement ('haan ji')."""
+    if isinstance(heard, (list, tuple)):
+        heard_text = " ".join(str(t) for t in heard if t).strip()
+    else:
+        heard_text = str(heard or "").strip()
+
+    c = classify_category(heard_text) if heard_text else None
+    i = classify_intent(heard_text) if heard_text else None
+
+    cat_out = None
+    if c:
+        cat_out = c
+    elif category and heard_text:
+        cand_c = classify_category(category)
+        if cand_c and classify_category(heard_text) == cand_c:
+            cat_out = cand_c
+
+    int_out = None
+    if i:
+        int_out = i
+    elif intent and heard_text:
+        cand_i = classify_intent(intent)
+        if cand_i and classify_intent(heard_text) == cand_i:
+            int_out = cand_i
+
+    # If no transcript is available at all, accept LLM values as sole fallback
+    if not heard_text:
+        cat_out = classify_category(category)
+        int_out = classify_intent(intent)
+
+    return cat_out, int_out
+
+
+def _estimate_speech_duration(text: str) -> float:
+    """Estimated duration of spoken text in seconds: ~2.8 words per second + 1.5s buffer."""
+    words = len((text or "").split())
+    return max(4.0, (words / 2.8) + 1.5)
 
 
 class RealEstateTools:
@@ -367,9 +504,11 @@ class RealEstateTools:
             return fallback
         en = self.state.reply_lang == "en"
         if echo:
-            # "3 BHK... perfect Sir... " / "704 on 7th floor... noted Sir... " -> sounds like an attentive real person
+            # Natural conversational flow: acknowledgement first, then confirmed detail
+            # e.g. "Noted Sir, Semi-furnished." or "Theek hai ji, 3 BHK."
             short = self._pick(self._SHORT_ACK_EN if en else self._SHORT_ACK_HI)
-            ack = f"{echo[:1].upper()}{echo[1:]}... {short}..."
+            clean_short = short.replace(",", "").strip().rstrip(".")
+            ack = f"{clean_short.capitalize()}, {echo}."
         elif ack == "auto":
             ack = self._pick(self._ACK_EN if en else self._ACK_HI)
         text = f"{ack} {question}".strip() if ack else question
@@ -454,14 +593,14 @@ class RealEstateTools:
         if next_step == RealEstateStep.CLOSING:
             self._speak_closing_and_hangup()
 
-    def _speak_closing_and_hangup(self):
+    def _speak_closing_and_hangup(self, explicit_text: Optional[str] = None):
         """Say the closing line ourselves (uninterruptible, so a 'haan haan' backchannel cannot cut it
         off), then hang up only after playout finishes."""
-        if self.state.closing_spoken or not self.agent:
+        if self.state.closing_spoken or self._hangup_scheduled:
             return
         self.state.closing_spoken = True
-        self._hangup_scheduled = True  # we own the hangup; skip the fixed-delay fallback
-        text = get_closing_text(self.state)
+        self._hangup_scheduled = True  # we own the hangup; skip any duplicate or delayed hangup
+        text = explicit_text or get_closing_text(self.state)
         if self.log_dialogue_func:
             self.log_dialogue_func("assistant", text)
         else:
@@ -469,17 +608,24 @@ class RealEstateTools:
             print(f"\n\033[1;36m🤖 [Agent ({AGENT_PERSONA_NAME})]:\033[0m {text}\n", flush=True)
             logger.info(f"🤖 [Agent]: \"{text}\"")
 
+        session = getattr(self.agent, "session", None)
+        if not session:
+            logger.warning("No agent session available for closing speech; triggering hangup directly.")
+            if self.hangup_func:
+                asyncio.create_task(self.hangup_func())
+            return
+
         async def _run():
             try:
-                handle = say_cached(self.agent.session, self.state, text, allow_interruptions=False)
+                handle = say_cached(session, self.state, text, allow_interruptions=False)
                 if hasattr(handle, "wait_for_playout"):
                     await handle.wait_for_playout()
                 else:
-                    await asyncio.sleep(4.0)
+                    await asyncio.sleep(_estimate_speech_duration(text))
             except Exception as e:
                 logger.warning(f"Closing speech failed: {e}")
-                await asyncio.sleep(3.5)
-            await asyncio.sleep(0.4)
+                await asyncio.sleep(_estimate_speech_duration(text))
+            await asyncio.sleep(0.5)
             if self.hangup_func:
                 await self.hangup_func()
 
@@ -503,7 +649,8 @@ class RealEstateTools:
         if not self.state.owner_name_confirmed:
             self.state.owner_name_confirmed = (self.state.owner_name or "").strip() or "Sir"
 
-        detected_cat, detected_int = _grounded(category, intent, self.state.last_user_text)
+        context_speech = self.state.get_recent_speech_context(max_turns=3)
+        detected_cat, detected_int = _grounded(category, intent, context_speech)
 
         if detected_cat:
             self.state.category = detected_cat
@@ -601,7 +748,8 @@ class RealEstateTools:
                 self.state.sector_or_location = clean_loc
                 self.state.project_or_society = clean_loc
 
-        classified_cat, classified_int = _grounded(category, intent, self.state.last_user_text)
+        context_speech = self.state.get_recent_speech_context(max_turns=3)
+        classified_cat, classified_int = _grounded(category, intent, context_speech)
         if classified_cat:
             self.state.category = classified_cat
         if classified_int:
@@ -673,7 +821,8 @@ class RealEstateTools:
             self.state.sector_or_location = clean_loc
             self.state.project_or_society = clean_loc
 
-        classified_cat, classified_int = _grounded(category, intent, self.state.last_user_text)
+        context_speech = self.state.get_recent_speech_context(max_turns=3)
+        classified_cat, classified_int = _grounded(category, intent, context_speech)
         if classified_cat:
             self.state.category = classified_cat
         if classified_int:
@@ -755,15 +904,11 @@ class RealEstateTools:
     ) -> str:
         """Set property category (residential/commercial) and intent (sale/lease/rent)."""
         self._apply_standalone()
-        # The LLM sometimes invents category='residential', intent='sale' after a bare "haan".
-        # Accept an argument only if the caller's latest words actually support it.
-        heard = (self.state.last_user_text or "").strip()
-        classified_cat = classify_category(category)
-        if classified_cat and (not heard or classify_category(heard) == classified_cat):
+        context_speech = self.state.get_recent_speech_context(max_turns=3)
+        classified_cat, classified_int = _grounded(category, intent, context_speech)
+        if classified_cat:
             self.state.category = classified_cat
-
-        classified_int = classify_intent(intent)
-        if classified_int and (not heard or classify_intent(heard) == classified_int):
+        if classified_int:
             self.state.intent = classified_int
 
         # If both category and intent are established, transition to the respective branch 4.1 to 4.4
@@ -847,9 +992,6 @@ class RealEstateTools:
             self.state.floor_number = clean_floor
 
         clean_bhk = _clean_str(bhk_config)
-        if clean_bhk:
-            self.state.bhk_config = clean_bhk
-
         clean_comm = _clean_str(commercial_type)
         if clean_comm:
             # NEVER assume the unit type: keep only what the caller actually said in their latest words.
@@ -861,8 +1003,6 @@ class RealEstateTools:
                 else:
                     logger.info(f"Ignoring commercial_type='{clean_comm}' from LLM: caller did not say it ('{heard[:80]}')")
                     clean_comm = None
-        if clean_comm:
-            self.state.commercial_type = clean_comm
 
         # Dynamic category switching and step realignment.
         # Only allowed in early turns or if category was not set (e.g. not in audience DB).
@@ -876,6 +1016,7 @@ class RealEstateTools:
             if clean_comm or cat_hint == "commercial":
                 self.state.category = "commercial"
                 self.state.bhk_config = None  # Commercial properties never have BHK
+                self.state.commercial_type = clean_comm
                 if self.state.step in (RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.CATEGORY_SELECT):
                     target_step = RealEstateStep.COMMERCIAL_LEASE if (self.state.intent == "lease") else RealEstateStep.COMMERCIAL_SALE
                     await self._go(target_step)
@@ -884,11 +1025,22 @@ class RealEstateTools:
             elif clean_bhk or cat_hint == "residential":
                 self.state.category = "residential"
                 self.state.commercial_type = None  # Residential properties never have commercial type
+                self.state.bhk_config = clean_bhk
                 if self.state.step in (RealEstateStep.COMMERCIAL_SALE, RealEstateStep.CATEGORY_SELECT):
                     target_step = RealEstateStep.RESIDENTIAL_LEASE if (self.state.intent == "lease") else RealEstateStep.RESIDENTIAL_SALE
                     await self._go(target_step)
                 elif self.state.step == RealEstateStep.COMMERCIAL_LEASE:
                     await self._go(RealEstateStep.RESIDENTIAL_LEASE)
+        else:
+            # Category is locked during intake branches! Strictly enforce matching slot types.
+            if self.state.category == "commercial":
+                self.state.bhk_config = None  # Commercial properties never have BHK
+                if clean_comm:
+                    self.state.commercial_type = clean_comm
+            elif self.state.category == "residential":
+                self.state.commercial_type = None  # Residential properties never have commercial type
+                if clean_bhk:
+                    self.state.bhk_config = clean_bhk
 
         if approx_area_sqft is not None:
             try:
@@ -1128,17 +1280,12 @@ class RealEstateTools:
         await self._go(RealEstateStep.CLOSING)
         return "Wrong number identified. Apologize politely and conclude."
 
-    async def _delayed_hangup(self):
-        """Wait for closing speech playout through TTS to the caller phone, then disconnect cleanly.
-        Closing line is ~2s of audio; 3.5s gives a comfortable 1.5s buffer without dead air.
-        """
-        if self._hangup_scheduled:
+    async def _delayed_hangup(self, agent_text: Optional[str] = None):
+        """Wait for closing speech playout through TTS to the caller phone, then disconnect cleanly."""
+        if self._hangup_scheduled or self.state.closing_spoken:
             return
-        self._hangup_scheduled = True
-        logger.info("Delayed hangup scheduled: waiting 3.5s for TTS speech playout...")
-        await asyncio.sleep(3.5)  # LATENCY: was 6.5s — closing line is ~2s; 3.5s is enough buffer
-        if self.hangup_func:
-            await self.hangup_func()
+        logger.info("Executing closing speech and playout-backed hangup...")
+        self._speak_closing_and_hangup(explicit_text=agent_text)
 
     # ── Tool Filtering per Step ────────────────────────────────────
 

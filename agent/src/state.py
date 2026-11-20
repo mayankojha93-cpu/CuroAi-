@@ -90,6 +90,7 @@ class ConversationState:
         self.stt_retry_count: int = 0      # Tracks STT failures (max 2 retries per spec)
         self.is_completed: bool = False
         self.hangup_started: bool = False  # clean_hangup runs at most once
+        self.recording_url: Optional[str] = None
 
     def update_reply_lang(self, text: Optional[str]) -> bool:
         """Follow the customer's language. Can switch only once:
