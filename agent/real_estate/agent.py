@@ -734,19 +734,18 @@ class RealEstateAgent(Agent):
             raise StopResponse()
         text = (getattr(new_message, "text_content", None) or "").strip()
         kind = None
-        # Safety override: carrier detection only runs during initial intro before human engagement
-        if self._re_state.step == _Step.INTRODUCTION and not _HUMAN_CALLBACK_RE.search(text):
+        # Safety override: carrier detection runs before property qualification or human engagement
+        if not _HUMAN_CALLBACK_RE.search(text) and not self._re_state.is_interested:
             kind = classify_carrier_message(text)
-            if not kind and _IVR_EXTRA.search(text):
-                kind = "voicemail"
-            if not kind:
-                # Looping IVR menus / voicemail greetings: long speech turns back to back while still at the intro
-                if len(text.split()) >= _IVR_LONG_WORDS:
+            if not kind and self._re_state.step == _Step.INTRODUCTION:
+                if _IVR_EXTRA.search(text):
+                    kind = "voicemail"
+                elif len(text.split()) >= _IVR_LONG_WORDS:
                     self._ivr_long_turns += 1
+                    if self._ivr_long_turns >= 2:
+                        kind = "voicemail"
                 else:
                     self._ivr_long_turns = 0
-                if self._ivr_long_turns >= 2:
-                    kind = "voicemail"
         elif _HUMAN_CALLBACK_RE.search(text):
             logger.info(f"🗣️ Human callback / personal busy pattern in customer utterance: '{text}' -> bypassing IVR filter")
         if kind:

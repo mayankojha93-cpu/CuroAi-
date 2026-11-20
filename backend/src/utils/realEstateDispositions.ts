@@ -80,11 +80,21 @@ export function matchRealEstateDisposition(
     upper.includes('CARRIER ANNOUNCEMENT') ||
     upper.includes('CARRIER MESSAGE') ||
     upper.includes('AUTOMATED MESSAGE') ||
+    upper.includes('RECORD YOUR MESSAGE') ||
+    upper.includes('AT THE TONE') ||
+    upper.includes('AFTER THE BEEP') ||
+    upper.includes('AFTER THE TONE') ||
+    upper.includes('FINISHED RECORDING') ||
     upper.includes('WAITING FOR HUMAN') ||
     summaryUpper.includes('WAITING FOR HUMAN') ||
     summaryUpper.includes('VOICEMAIL') ||
     /\bIVR\b/.test(summaryUpper) ||
     summaryUpper.includes('CARRIER ANNOUNCEMENT') ||
+    summaryUpper.includes('RECORD YOUR MESSAGE') ||
+    summaryUpper.includes('AT THE TONE') ||
+    summaryUpper.includes('AFTER THE BEEP') ||
+    summaryUpper.includes('AFTER THE TONE') ||
+    summaryUpper.includes('FINISHED RECORDING') ||
     (upper.includes('HOLD') && (upper.includes('CALLEE') || upper.includes('SUBSCRIBER') || upper.includes('TIMED OUT'))) ||
     (summaryUpper.includes('HOLD') && (summaryUpper.includes('CALLEE') || summaryUpper.includes('SUBSCRIBER') || summaryUpper.includes('TIMED OUT')))
   ) {
