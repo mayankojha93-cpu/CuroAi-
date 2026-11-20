@@ -1007,15 +1007,17 @@ export class CampaignService {
         );
         const activeCount = activeRes.rows[0]?.active_count || 0;
 
-        let pendingCount = 0;
+        let readyCount = 0;
+        let futureRetryCount = 0;
         if (campaign.pipeline === 'real_estate') {
           const pendingRes = await pool.query(
-            `SELECT COUNT(*)::int as pending_count
+            `SELECT 
+               COUNT(*) FILTER (WHERE next_attempt_time IS NULL OR next_attempt_time <= NOW())::int as ready_count,
+               COUNT(*) FILTER (WHERE next_attempt_time > NOW())::int as future_retry_count
              FROM real_estate_leads
              WHERE (campaign_id = $1 OR id IN (SELECT re_lead_id FROM calls WHERE campaign_id = $1))
                AND lead_status NOT IN ('NOT_INTERESTED', 'DO_NOT_CALL', 'QUALIFIED')
                AND total_attempts < COALESCE(max_attempts, 3)
-               AND (next_attempt_time IS NULL OR next_attempt_time <= NOW())
                AND id NOT IN (
                  SELECT re_lead_id FROM calls
                  WHERE status IN ('initiated', 'dialing', 'answered')
@@ -1024,14 +1026,17 @@ export class CampaignService {
                )`,
             [campaignId]
           );
-          pendingCount = pendingRes.rows[0]?.pending_count || 0;
+          readyCount = pendingRes.rows[0]?.ready_count || 0;
+          futureRetryCount = pendingRes.rows[0]?.future_retry_count || 0;
         } else {
           const pendingRes = await pool.query(
-            `SELECT COUNT(*)::int as pending_count
+            `SELECT 
+               COUNT(*) FILTER (WHERE next_attempt_time IS NULL OR next_attempt_time <= NOW())::int as ready_count,
+               COUNT(*) FILTER (WHERE next_attempt_time > NOW())::int as future_retry_count
              FROM customers
              WHERE campaign_id = $1
+               AND is_closed = FALSE
                AND total_attempts < COALESCE(max_attempts, 3)
-               AND (next_attempt_time IS NULL OR next_attempt_time <= NOW())
                AND id NOT IN (
                  SELECT customer_id FROM calls
                  WHERE status IN ('initiated', 'dialing', 'answered')
@@ -1040,17 +1045,18 @@ export class CampaignService {
                )`,
             [campaignId]
           );
-          pendingCount = pendingRes.rows[0]?.pending_count || 0;
+          readyCount = pendingRes.rows[0]?.ready_count || 0;
+          futureRetryCount = pendingRes.rows[0]?.future_retry_count || 0;
         }
 
         const maxConcurrent = campaign.max_concurrent_calls || 5;
-        if (pendingCount > 0 && activeCount < maxConcurrent) {
+        if (readyCount > 0 && activeCount < maxConcurrent) {
           // Available slot exists! Trigger dispatch
           await this.startCampaign(campaignId).catch((err) => {
             logger.warn({ campaignId, err: err?.message }, 'Auto-dialer slot dispatch failed');
           });
-        } else if (pendingCount === 0 && activeCount === 0) {
-          // Check if any leads ever existed for this campaign
+        } else if (readyCount === 0 && futureRetryCount === 0 && activeCount === 0) {
+          // All contacts have reached a final status or exhausted max retries, and no calls are active.
           const totalRes = campaign.pipeline === 'real_estate'
             ? await pool.query(`SELECT COUNT(*)::int as total FROM real_estate_leads WHERE campaign_id = $1`, [campaignId])
             : await pool.query(`SELECT COUNT(*)::int as total FROM customers WHERE campaign_id = $1`, [campaignId]);
@@ -1059,6 +1065,12 @@ export class CampaignService {
             await this.updateCampaignStatus(campaignId, 'COMPLETED');
             logger.info({ campaignId, name: campaign.name }, '🎉 All campaign contacts completed. Campaign marked COMPLETED.');
           }
+        } else if (readyCount === 0 && futureRetryCount > 0 && activeCount === 0) {
+          // Leads are waiting for retry cooldown period; leave campaign in RUNNING status so it automatically dials when due.
+          logger.debug(
+            { campaignId, name: campaign.name, futureRetryCount },
+            'Campaign waiting for retry cooldown to elapse; remaining in RUNNING status.'
+          );
         }
       }
     } catch (err: any) {

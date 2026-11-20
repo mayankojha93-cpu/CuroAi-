@@ -139,18 +139,36 @@ export function matchRealEstateDisposition(
     return 'WhatsApp Info Requested';
   }
 
-  // 4. Advisor Callback Booked (Handoff / Impatience / Valuation)
+  // 4. Not Interested (Must take precedence over partial mentions, but after DNC & Wrong Number)
+  if (
+    isInterested === false ||
+    upper.includes('NOT INTERESTED') ||
+    upper.includes('DECLINED') ||
+    upper.includes('REFUSED') ||
+    upper.includes('NAHI BECHNI') ||
+    upper.includes('NO INTENT')
+  ) {
+    return 'Not Interested';
+  }
+
+  // 5. Advisor Callback Booked (Handoff / Impatience / Valuation / Pricing / Interested Partial Details)
   if (
     upper.includes('ADVISOR') ||
     upper.includes('HANDOFF') ||
     upper.includes('HUMAN') ||
     upper.includes('VALUATION') ||
-    upper.includes('IMPATIENT')
+    upper.includes('IMPATIENT') ||
+    upper.includes('PRICING') ||
+    summaryUpper.includes('ADVISOR') ||
+    summaryUpper.includes('VALUATION') ||
+    summaryUpper.includes('PRICING') ||
+    upper.includes('PARTIAL') ||
+    upper.includes('INTERESTED')
   ) {
     return 'Advisor Callback Booked';
   }
 
-  // 5. Schedule Callback
+  // 6. Schedule Callback
   if (
     upper.includes('CALLBACK') ||
     upper.includes('CALL BACK') ||
@@ -165,26 +183,13 @@ export function matchRealEstateDisposition(
     return 'Schedule Callback';
   }
 
-  // 6. Not Interested (Must take precedence over any partial property mentions)
-  if (
-    isInterested === false ||
-    upper.includes('NOT INTERESTED') ||
-    upper.includes('DECLINED') ||
-    upper.includes('REFUSED') ||
-    upper.includes('NAHI BECHNI') ||
-    upper.includes('NO INTENT')
-  ) {
-    return 'Not Interested';
-  }
-
-  // 7. Abrupt Disconnect (Runs BEFORE Qualified Lead: if call was disconnected/hung up early, it is NEVER a qualified lead!)
+  // 7. Abrupt Disconnect (Early hang-up with no interest or property details captured)
   if (
     upper.includes('DISCONNECT') ||
     upper.includes('ABRUPT') ||
     upper.includes('DROPPED') ||
     upper.includes('HANGUP') ||
     upper.includes('HUNG UP') ||
-    upper.includes('PARTIAL') ||
     upper.includes('CUT')
   ) {
     return 'Abruptly Disconnected Call';

@@ -757,6 +757,17 @@ class RealEstateAgent(Agent):
         else:
             state.hold_until = 0.0
 
+        # Check for pricing, market rate, or valuation inquiries
+        _PRICE_QUERY_RE = re.compile(
+            r"\b(price|pricing|rate|rates|average\s*price|selling\s*price|valuation|bhav|kitna\s*milega|market\s*rate|market\s*trend|market\s*price)\b",
+            re.IGNORECASE,
+        )
+        if _PRICE_QUERY_RE.search(low_text):
+            state.valuation_requested = True
+            if not state.advisor_handoff_reason:
+                state.advisor_handoff_reason = "Customer inquired about property pricing/valuation"
+            logger.info(f"💰 Customer asked about property pricing/valuation: '{text}' -> marking valuation_requested = True")
+
         # ── Deterministic intake shortcuts (no LLM round trip, instant playout) ──────────
         tools_ = self._re_tools
 
