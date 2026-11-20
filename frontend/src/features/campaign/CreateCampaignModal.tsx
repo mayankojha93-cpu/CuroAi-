@@ -279,6 +279,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
         max_call_duration_minutes: Number(maxCallDurationMinutes) || 5,
         expected_dispositions: expectedDispositions,
         status: 'RUNNING',
+        pipeline: isRealEstate ? 'real_estate' : 'airtel',
         total_contacts: contactCount,
         contacts: validContacts,
       });

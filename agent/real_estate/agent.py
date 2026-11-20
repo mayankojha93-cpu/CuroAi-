@@ -62,6 +62,8 @@ _IVR_HUMAN_MAX_WORDS = 15
 # Leak patterns for tool-call text that the LLM sometimes types instead of calling the tool.
 _LEAK_PATTERNS = [
     re.compile(r'<function[^>]*>.*?(?:</function>|$)', re.S),               # <function=x>{...}</function>
+    re.compile(r'</?function[^>]*>?'),                                      # stray </function> / <function> fragments
+    re.compile(r'(?i)\bset\s+category\s+and\b.*$', re.S),                   # tool name read out as words ("Set category and intent")
     re.compile(r'\b[A-Za-z]+(?:_[A-Za-z0-9]+)+\s*[\(\{][^)}]*[\)\}]?'),     # tool_name(...) / tool_name{...}
     re.compile(r'\b[A-Za-z]+(?:_[A-Za-z0-9]+)+\b'),                        # lone snake_case identifiers
     re.compile(r'^\s*\{.*$', re.S),                                         # JSON blobs
@@ -232,6 +234,29 @@ def _rejects_this_location(text: str) -> bool:
     return False
 
 
+# Caller lives in the property himself ("hum khud rahte hain usmein", "we stay there", "apna ghar hai").
+# That is neither sell nor rent: treated like refusing THIS property -> "any other property?".
+_SELF_OCC_LATIN = re.compile(
+    r"(khud\s+(hi\s+)?(reh|rah)\w*|(reh|rah)\w*\s*(hain|hai|hu|hoon)?\s*khud\b"
+    r"|(hum|ham|main|mai)\s+(hi\s+)?(yahin|yahan|yaha|usi\s*mein|usmein|isi\s*mein|usme|isme)?\s*(reh|rah)\w*\s*(hain|hai|hu|hoon|hun)\b"
+    r"|apna\s+(ghar|makaan|makan|flat)\b|own\s+use|self\s*[- ]?occup\w*"
+    r"|we\s+(live|stay)\s+(in|there|here)|i\s+(live|stay)\s+(in|there|here))",
+    re.I,
+)
+_SELF_OCC_DEV = re.compile(
+    r"(खुद\s*(ही\s*)?रह|(हम|मैं)\s*(ही\s*)?(यहीं|यहाँ|यहां|उसमें|इसमें)?\s*रह\w*\s*(हैं|है|हूँ|हूं)|अपना\s*(घर|मकान|फ्लैट))"
+)
+
+
+def _is_self_occupied(text: str) -> bool:
+    if not text:
+        return False
+    for c in _variants(text):
+        if _SELF_OCC_DEV.search(c) or _SELF_OCC_LATIN.search((c or "").lower()):
+            return True
+    return False
+
+
 _NEG_TOKENS = {"nahi", "nahin", "nhi", "nahii", "no", "nope", "nah", "not", "never", "nothing", "none",
                "नहीं", "नही", "नहि", "नो"}
 _STRONG_AFF = {"haan", "han", "haa", "ha", "haanji", "hanji", "yes", "yeah", "yep", "yup", "bilkul", "zaroor", "sure",
@@ -302,10 +327,10 @@ def _other_property_answer(text: str):
     return None
 
 
-_REFUSAL_FILL = {"toh", "to", "ji", "jee", "sir", "abhi", "bilkul", "bas", "तो", "जी", "सर", "अभी", "बिल्कुल"}
+_REFUSAL_FILL = {"toh", "to", "ji", "jee", "sir", "abhi", "bilkul", "bas", "kuch", "kuchh", "bhi", "yar", "yaar", "bhai", "तो", "जी", "सर", "अभी", "बिल्कुल", "कुछ"}
 _DIRECT_NOT_INTERESTED = re.compile(
-    r"\b(not\s+interested|nahi\s+bechna|nahi\s+dena|nahi\s+chahiye|nahi\s+karna)\b"
-    r"|(नॉट\s*इंटरेस्टेड|नहीं\s*बेचना|नहीं\s*देना|नहीं\s*चाहिए)",
+    r"\b(not\s+interested|nahi\s+bechna|nahi\s+dena|nahi\s+chahiye|nahi\s+karna|nahi\s+karne|kat\s+karo|kaat\s+do|kaato|kaat\s*karo|call\s+kaat[a-z]*|phone\s+kaat[a-z]*|cut\s+the\s+call|abhi\s+kuch\s+nahi|abhi\s+kuchh\s+nahi|kuch\s+nahi|kuchh\s+nahi|abhi\s+nahi)\b"
+    r"|(नॉट\s*इंटरेस्टेड|नहीं\s*बेचना|नहीं\s*देना|नहीं\s*चाहिए|कॉल\s*काटो|काट\s*दो|कुछ\s*नहीं|अभी\s*नहीं)",
     re.I,
 )
 
@@ -775,9 +800,36 @@ class RealEstateAgent(Agent):
         _intro_refusal = _rejects_this_location(text) or _starts_with_negation(text)
         _intro_int = None if _intro_refusal else classify_intent(text)
 
+        # A0: caller lives in the property himself -> not a sale/rent lead for THIS property. Never re-ask
+        # sell-or-rent; acknowledge and ask the standard "any other property?" question (no LLM).
+        if state.step in (_Step.INTRODUCTION, _Step.CATEGORY_SELECT) and not _intro_int and _is_self_occupied(text):
+            logger.info(f"🏠 Owner-occupied ('we live there ourselves') -> asking about another property (no LLM): '{text}'")
+            try:
+                await tools_.not_interested_in_this_location()
+                _q = state.direct_reply or other_property_question(state.reply_lang)
+                state.direct_reply = None
+                _lead = "Understood Sir, you live there yourself. " if state.reply_lang == "en" else "Ji samajh gayi Sir, aap khud rehte hain wahan. "
+                self.speak_and_stop(_lead + _q, allow_interruptions=True)
+            except Exception as e:
+                logger.warning(f"Owner-occupied shortcut failed, falling back to LLM: {e}")
+
         # A: caller acknowledges or interrupts opening greeting -> ask qualification question
         if state.step == _Step.INTRODUCTION and _is_greeting_ack(text) and not state.greeting_acknowledged:
             state.greeting_acknowledged = True
+            # The caller answered the greeting in Hindi ("haan boliye") but the first reply would still go out in the
+            # stale default language (language detection only runs after these shortcuts). Follow the caller now.
+            if (
+                state.reply_lang == "en"
+                and not state.language_switched
+                and (re.search(r"[\u0900-\u097F]", text) or re.search(r"\b(boliye|bataiye|kahiye|haan|haanji|hanji|kaun|kya)\b", low_text))
+            ):
+                state.reply_lang = "hi"
+                logger.info(f"🌐 Caller answered greeting in Hindi -> reply language set to hi: '{text}'")
+                if self.on_language_change:
+                    try:
+                        self.on_language_change("hi")
+                    except Exception as e:
+                        logger.warning(f"Language switch callback failed: {e}")
             loc = state.initial_property_location or state.sector_or_location
             has_loc = bool(loc)
             was_interrupted = getattr(state, "opening_speech_interrupted", False) or _is_pickup_or_identity_query(text)
@@ -813,6 +865,12 @@ class RealEstateAgent(Agent):
                 if en else
                 "Ji, aap ise sell karna chahte hain ya rent par dena? Please batayein."
             )
+            if re.fullmatch(r"\W*(hello|hi|hey|helo|हेलो|हैलो)\W*", text.strip().lower()):
+                clarify = (
+                    "Yes Sir, I can hear you. I was asking, would you like to sell your property, or give it on rent?"
+                    if en else
+                    "Ji Sir, main sun rahi hoon. Main pooch rahi thi, aap property sell karna chahte hain ya rent par dena?"
+                )
             logger.info(f"🤔 Caller gave ambiguous 'yes' to sell-or-rent -> asking to choose: '{clarify}'")
             self.speak_and_stop(clarify, allow_interruptions=True)
 
@@ -838,15 +896,15 @@ class RealEstateAgent(Agent):
             except Exception as e:
                 logger.warning(f"Location-refusal shortcut failed, falling back to LLM: {e}")
 
-        # B-alt: caller gives general refusal ("nahi", "no sir", "nahi bechna", "not interested") to selling/renting -> clean polite close
-        if state.step == _Step.INTRODUCTION and (_is_bare_refusal(text) or _DIRECT_NOT_INTERESTED.search(text)):
-            logger.info(f"🛑 General refusal at INTRODUCTION -> mark_not_interested (no LLM): '{text}'")
+        # B-alt: caller gives general refusal ("nahi", "no sir", "nahi bechna", "not interested", "kat karo") to selling/renting -> clean polite close & hangup
+        if state.step in (_Step.INTRODUCTION, _Step.CATEGORY_SELECT) and (_is_bare_refusal(text) or _DIRECT_NOT_INTERESTED.search(text)):
+            logger.info(f"🛑 General refusal at {state.step.value} -> mark_not_interested & closing (no LLM): '{text}'")
             try:
                 await tools_.mark_not_interested()
+                tools_._speak_closing_and_hangup()
             except Exception as e:
                 logger.warning(f"mark_not_interested shortcut failed, falling back to LLM: {e}")
-            else:
-                raise StopResponse()
+            raise StopResponse()
 
         # B1 / B2: clean yes / no to "do you have any other property?"
         if state.step == _Step.CHECK_OTHER_PROPERTY:

@@ -26,6 +26,7 @@ export interface ParsedTelecomLead {
   circle_new20?: string;
   allocated_to?: string;
   product_name?: string;
+  category?: string;
 }
 
 /**
@@ -225,6 +226,8 @@ export function parseCsvToLeads(csvText: string): ParsedTelecomLead[] {
       headerMap['cust_email'] = index;
     } else if (header.includes('subsname') || header.includes('subscribername') || header.includes('customername') || header === 'name' || header === 'subs_name') {
       headerMap['name'] = index;
+    } else if (header.includes('category') || header === 'cat' || header.includes('proptype') || header.includes('propertytype') || header.includes('propertycategory')) {
+      headerMap['category'] = index;
     } else if (header.includes('check')) {
       headerMap['check'] = index;
     } else if (header.includes('phone') || header.includes('mobile') || header.includes('contact')) {
@@ -269,6 +272,7 @@ export function parseCsvToLeads(csvText: string): ParsedTelecomLead[] {
     const rawCircleNew = headerMap['circle_new'] !== undefined ? row[headerMap['circle_new']] : '';
     const rawCircleNew20 = headerMap['circle_new20'] !== undefined ? row[headerMap['circle_new20']] : '';
     const rawAllocatedTo = headerMap['allocated_to'] !== undefined ? row[headerMap['allocated_to']] : '';
+    const rawCategory = headerMap['category'] !== undefined ? row[headerMap['category']] : '';
 
     // Collect all candidate phones from all phone columns for this row
     const candidatePhones: string[] = [];
@@ -329,6 +333,7 @@ export function parseCsvToLeads(csvText: string): ParsedTelecomLead[] {
       circle_new: rawCircleNew.trim() || undefined,
       circle_new20: rawCircleNew20.trim() || undefined,
       allocated_to: rawAllocatedTo.trim() || undefined,
+      category: rawCategory.trim() || undefined,
       product_name: 'Airtel IP TV',
       language: 'hi',
     });

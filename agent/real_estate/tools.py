@@ -99,10 +99,18 @@ _LEASE_STT = re.compile(
 )
 
 
+_RHETORICAL_OR_NEG_INTENT_RE = re.compile(
+    r"\b(kyun|kyon|why|nahi|nahin|mat|kahan|kaise|nhi)\b.*(bech|sell|sale|rent|kiray|lease)|(bech|sell|sale|rent|kiray|lease).*\b(kyun|kyon|why|nahi|nahin|mat|nhi)\b",
+    re.I,
+)
+
+
 def classify_intent(val: Any) -> Optional[str]:
     if not val:
         return None
     val_low = str(val).lower().strip()
+    if _RHETORICAL_OR_NEG_INTENT_RE.search(val_low):
+        return None
     is_lease = _kw_in(val_low, _LEASE_WORDS) or bool(_LEASE_STT.search(val_low))
     is_sale = _kw_in(val_low, _SALE_WORDS)
     if is_lease and is_sale:
@@ -154,13 +162,17 @@ _EXPLICIT_REFUSAL_PHRASES = re.compile(
     r"|(?:call|phone)\s*(?:mat|nahi|na)\s*(?:karn[aei]|karo|kijiye|karein|karna)"
     r"|mat\s*(?:karo|kijiye|karna|karein)?\s*(?:call|phone)"
     r"|kripya\s*call\s*na\s*kar(?:ein|na)?"
+    r"|(?:kat|kaat)\s*(?:karo|do|kijiye|kar\s*do)|call\s*(?:kaat|kat)\s*(?:do|karo)|cut\s*the\s*call|phone\s*(?:rakho|kaato|kaat\s*do)"
+    r"|(?:kyun|kyon|why)\s*(?:bechn[aei]|den[aei]|chahenge|chahein)"
+    r"|abhi\s*(?:kuch|kuchh)?\s*(?:nahi|nhi)"
+    r"|kuch\s*(?:nahi|nhi)"
     r"|never\s*call|stop\s*calling"
     r")\b",
     re.IGNORECASE,
 )
 
 _EXPLICIT_REFUSAL_DEV = re.compile(
-    r"(नहीं\s*(बेचना|देना|करना|चाहिए|बताना)|(बेचना|देना)\s*नहीं|इंटरेस्टेड\s*नहीं|रुचि\s*नहीं|कॉल\s*मत\s*करो|फोन\s*मत)"
+    r"(नहीं\s*(बेचना|देना|करना|चाहिए|बताना)|(बेचना|देना)\s*नहीं|इंटरेस्टेड\s*नहीं|रुचि\s*नहीं|कॉल\s*मत\s*करो|फोन\s*मत|कॉल\s*काटो|काट\s*दो|कुछ\s*नहीं|अभी\s*नहीं)"
 )
 
 # 3. Clean bare refusal tokens: when the entire utterance is just "no", "nahi ji", "no thanks"
@@ -171,7 +183,7 @@ _BARE_REFUSAL_WORDS = {
 _REFUSAL_FILL_WORDS = {
     "ji", "jee", "sir", "madam", "bhai", "bhaiya", "thanks", "thank", "you",
     "shukriya", "dhanyawad", "re", "baba", "ab", "abhi", "kuch", "kuchh",
-    "bas", "toh", "to", "bhi", "जी", "सर", "मैडम", "भैया", "भाई", "बस", "तो", "भी"
+    "bas", "toh", "to", "bhi", "yar", "yaar", "जी", "सर", "मैडम", "भैया", "भाई", "बस", "तो", "भी"
 }
 
 
@@ -656,6 +668,9 @@ class RealEstateTools:
             self.state.category = detected_cat
         if detected_int:
             self.state.intent = detected_int
+
+        if not self.state.category:
+            self.state.category = "residential"
 
         # If both category and intent are already known from the utterance:
         if self.state.category and self.state.intent:
