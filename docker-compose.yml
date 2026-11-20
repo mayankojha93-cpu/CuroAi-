@@ -56,6 +56,7 @@ services:
       - .env
     environment:
       BACKEND_URL: http://backend:3000
+      RECORDING_STORAGE_DIR: /app/recordings
     volumes:
       - recordings_data:/app/recordings
     depends_on:
@@ -73,6 +74,7 @@ services:
       - .env
     environment:
       BACKEND_URL: http://backend:3000
+      RECORDING_STORAGE_DIR: /app/recordings
     volumes:
       - recordings_data:/app/recordings
     depends_on:

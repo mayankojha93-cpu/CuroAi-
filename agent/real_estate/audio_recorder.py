@@ -11,9 +11,13 @@ logger = logging.getLogger("audio_recorder")
 
 
 def get_recordings_dir() -> str:
-    # Set RECORDING_STORAGE_DIR to the SAME absolute path for the agent and the backend.
+    # Explicitly prioritize RECORDING_STORAGE_DIR if configured
+    env_dir = os.environ.get("RECORDING_STORAGE_DIR")
+    if env_dir:
+        os.makedirs(env_dir, exist_ok=True)
+        return env_dir
+
     candidates = [
-        os.environ.get("RECORDING_STORAGE_DIR"),
         os.path.abspath(os.path.join(os.path.dirname(__file__), "../../recordings")),
         os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../recordings")),
         os.path.abspath("./recordings"),
@@ -265,7 +269,8 @@ class RoomAudioRecorder:
                 logger.warning(f"S3 upload attempt encountered error: {e}")
 
             if s3_url:
-                self._final_result = s3_url
+                # Use backend stream URL so the browser plays seekable audio via backend proxy without S3 CORS issues
+                self._final_result = self.get_stream_url()
             else:
                 s3_configured = bool(os.environ.get("S3_BUCKET"))
                 allow_local = os.environ.get("ALLOW_LOCAL_RECORDING_STREAM", "false").lower() in ("true", "1", "yes")

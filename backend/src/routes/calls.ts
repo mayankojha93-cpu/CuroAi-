@@ -508,7 +508,9 @@ callsRouter.get('/api/calls/:id/audio', async (req: Request<{ id: string }>, res
           }
 
           // Browser Audio Player (<audio> element)
-          if (isProxy) {
+          // Default to proxy streaming so audio plays directly without S3 CORS or cross-origin redirect blocks
+          const shouldRedirect = req.query.stream === 'redirect' || req.query.redirect === 'true';
+          if (!shouldRedirect) {
             const s3StreamInfo = await s3Service.getS3Stream(s3Info.s3Key, req.headers.range);
             res.status(s3StreamInfo.statusCode);
             res.setHeader('Content-Type', s3StreamInfo.contentType);
@@ -530,11 +532,12 @@ callsRouter.get('/api/calls/:id/audio', async (req: Request<{ id: string }>, res
       }
     }
 
-    // 2. Check local disk fallback
+    // 2. Check local disk fallback (prefer agent 2-way recording, fallback to exotel)
     const storageDir = getRecordingsDir();
     const possibleFiles = [
       path.join(storageDir, `${callId}.mp3`),
       path.join(storageDir, `${callId}.wav`),
+      path.join(storageDir, `${callId}-exotel.mp3`),
     ];
 
     let filePath: string | null = null;
