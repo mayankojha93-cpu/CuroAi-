@@ -504,9 +504,11 @@ class RealEstateTools:
             return fallback
         en = self.state.reply_lang == "en"
         if echo:
-            # "3 BHK... perfect Sir... " / "704 on 7th floor... noted Sir... " -> sounds like an attentive real person
+            # Natural conversational flow: acknowledgement first, then confirmed detail
+            # e.g. "Noted Sir, Semi-furnished." or "Theek hai ji, 3 BHK."
             short = self._pick(self._SHORT_ACK_EN if en else self._SHORT_ACK_HI)
-            ack = f"{echo[:1].upper()}{echo[1:]}... {short}..."
+            clean_short = short.replace(",", "").strip().rstrip(".")
+            ack = f"{clean_short.capitalize()}, {echo}."
         elif ack == "auto":
             ack = self._pick(self._ACK_EN if en else self._ACK_HI)
         text = f"{ack} {question}".strip() if ack else question
