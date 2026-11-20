@@ -396,6 +396,18 @@ def _apply_disconnect_disposition(state: RealEstateState):
         "Interested (Disconnected)",
         "Partial Details Captured (Disconnected)",
     ):
+        # 0. Check if any customer turn in transcript was an IVR / Voicemail announcement
+        if not state.ivr_detected:
+            for turn in state.transcript:
+                if turn.get("role") in ("customer", "user"):
+                    t_text = (turn.get("text") or "").strip()
+                    if t_text and not _HUMAN_CALLBACK_RE.search(t_text):
+                        if classify_carrier_message(t_text):
+                            state.ivr_detected = True
+                            state.final_disposition = "Voicemail or IVR Detected"
+                            state.agent_summary = f"Voicemail or IVR Detected: {t_text[:100]}"
+                            return
+
         callee_asked_valuation = getattr(state, "valuation_requested", False)
         advisor_mentioned = False
         if not callee_asked_valuation:
@@ -762,14 +774,31 @@ async def entrypoint(ctx: agents.JobContext):
                 return
 
         norm_role = "assistant" if is_agent else "customer"
-        # The same line reaches us from several events (user_input_transcribed, conversation_item_added,
-        # speak_and_stop). Drop an identical (role, text) seen in the last few seconds, even when a line from
-        # the other speaker was logged in between.
         _now = time.time()
-        _key = (norm_role, clean.lower())
-        if _now - _last_logged.get(_key, 0.0) < 4.0:
-            return
-        _last_logged[_key] = _now
+        new_text_low = clean.lower()
+
+        # 1. Transcript-level deduplication: check the last turn of the same role
+        if state.transcript and state.transcript[-1].get("role") == norm_role:
+            last_entry = state.transcript[-1]
+            last_text = (last_entry.get("text") or "").strip()
+            last_text_low = last_text.lower()
+            last_time = last_entry.get("time", 0.0)
+            if _now - last_time < 15.0:
+                # Exact duplicate or truncated prefix (e.g. caller hung up mid-greeting)
+                if last_text_low == new_text_low or last_text_low.startswith(new_text_low):
+                    return
+                # If new text is the full version of an earlier partial snippet, upgrade it in-place
+                if new_text_low.startswith(last_text_low):
+                    last_entry["text"] = clean
+                    return
+
+        # 2. Window-level deduplication: drop repeats within 12 seconds across identical or substring phrases
+        for (r, t_logged), logged_time in list(_last_logged.items()):
+            if r == norm_role and (_now - logged_time < 12.0):
+                if t_logged == new_text_low or t_logged.startswith(new_text_low) or new_text_low.startswith(t_logged):
+                    return
+
+        _last_logged[(norm_role, new_text_low)] = _now
         if len(_last_logged) > 200:
             for _k in [k for k, v in _last_logged.items() if _now - v > 30.0]:
                 _last_logged.pop(_k, None)
@@ -1043,8 +1072,8 @@ async def entrypoint(ctx: agents.JobContext):
 
         raw_text = getattr(ev, "transcript", None) or getattr(ev, "text", "")
         if raw_text and raw_text.strip():
-            # Safety override: carrier detection only runs during initial intro before human engagement
-            if state.step == RealEstateStep.INTRODUCTION and not _HUMAN_CALLBACK_RE.search(raw_text):
+            # Safety override: carrier detection runs before property qualification or human engagement
+            if not _HUMAN_CALLBACK_RE.search(raw_text) and not state.is_interested:
                 carrier_kind = classify_carrier_message(raw_text)
                 if carrier_kind:
                     logger.warning(f"📵 Carrier announcement ({carrier_kind}) on audio stream: '{raw_text.strip()[:100]}'. Dropping call immediately.")

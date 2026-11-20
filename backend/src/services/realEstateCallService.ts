@@ -959,6 +959,23 @@ ${dialogueText.slice(0, 4000)}`;
       }
     }
 
+    // Scan transcript turns for voicemail / IVR patterns if final_disposition is not already terminal
+    if (data.transcript && Array.isArray(data.transcript)) {
+      const voicemailRegex = /\b(record your message|at the tone|after the (beep|tone)|voice\s*mail|answering machine|mail\s*box is full|finished recording|which is not available)\b/i;
+      const humanCallbackRegex = /\b(call (me )?(back|later)|later|busy|meeting|driving|shaam ko|kal call|baad mein)\b/i;
+      for (const turn of data.transcript) {
+        if (turn && (turn.role === 'customer' || turn.role === 'user') && turn.text) {
+          if (!humanCallbackRegex.test(turn.text) && voicemailRegex.test(turn.text)) {
+            data.final_disposition = 'Voicemail or IVR Detected';
+            if (!data.agent_summary || !data.agent_summary.toLowerCase().includes('voicemail')) {
+              data.agent_summary = `Voicemail or IVR Detected: ${turn.text.substring(0, 100)}`;
+            }
+            break;
+          }
+        }
+      }
+    }
+
     // 2. Standardize disposition to 2nd pipeline Canonical Dispositions
     let canonicalDisp: RealEstateCanonicalDisposition = matchRealEstateDisposition(
       data.final_disposition,
