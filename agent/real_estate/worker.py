@@ -396,14 +396,41 @@ def _apply_disconnect_disposition(state: RealEstateState):
         "Interested (Disconnected)",
         "Partial Details Captured (Disconnected)",
     ):
-        if details_captured:
-            state.final_disposition = "Partial Details Captured (Disconnected)"
-            summary_desc = ", ".join(details_captured[:4])
-            state.agent_summary = f"Partial details captured ({summary_desc}) but caller disconnected before call completion"
-        elif state.is_interested or state.intent:
-            state.final_disposition = "Interested (Disconnected)"
+        callee_asked_valuation = getattr(state, "valuation_requested", False)
+        advisor_mentioned = False
+        if not callee_asked_valuation:
+            for turn in state.transcript:
+                t_text = (turn.get("text") or "").lower()
+                role = turn.get("role")
+                if role == "customer" and any(k in t_text for k in ["price", "rate", "valuation", "market", "bhav", "kitna milega", "average price", "selling price", "rent kitna"]):
+                    callee_asked_valuation = True
+                if role in ("assistant", "agent") and any(k in t_text for k in ["advisor will share", "advisor will connect", "senior advisor", "advisor aapse"]):
+                    advisor_mentioned = True
+
+        is_interested = state.is_interested or (state.intent in ("sell", "rent", "lease"))
+
+        # Interested callers who shared property details, inquired about pricing/valuation, or were promised an advisor follow-up
+        # are actionable Advisor Callback Booked leads, NOT abruptly disconnected calls!
+        if (is_interested and (details_captured or callee_asked_valuation or advisor_mentioned)) or callee_asked_valuation:
+            state.final_disposition = "Advisor Callback Booked"
+            state.valuation_requested = True
+            desc_parts = []
+            if state.intent:
+                desc_parts.append(f"to {state.intent}")
+            if details_captured:
+                desc_parts.append(", ".join(details_captured[:4]))
+            if callee_asked_valuation:
+                desc_parts.append("pricing/market valuation requested")
+            summary_desc = " | ".join(desc_parts) if desc_parts else "property details captured"
+            state.agent_summary = f"Caller expressed interest ({summary_desc}); advisor follow-up booked"
+        elif is_interested:
+            state.final_disposition = "Advisor Callback Booked"
             intent_desc = f"to {state.intent}" if state.intent else ""
-            state.agent_summary = f"Caller expressed interest {intent_desc} but disconnected before property details could be captured".strip()
+            state.agent_summary = f"Caller expressed interest {intent_desc}; senior advisor follow-up scheduled".strip()
+        elif details_captured:
+            summary_desc = ", ".join(details_captured[:4])
+            state.final_disposition = "Advisor Callback Booked"
+            state.agent_summary = f"Property details captured ({summary_desc}); senior advisor follow-up scheduled"
         else:
             state.final_disposition = "Abruptly Disconnected Call"
             if not has_customer_speech:
