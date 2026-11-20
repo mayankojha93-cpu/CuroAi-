@@ -53,8 +53,8 @@ from .config import (
     PRERENDER_COMMON,
 )
 from .state import RealEstateState, RealEstateStep
-from .agent import RealEstateAgent, _HUMAN_CALLBACK_RE
-from .tools import RealEstateTools
+from .agent import RealEstateAgent, _HUMAN_CALLBACK_RE, _is_bare_refusal, _DIRECT_NOT_INTERESTED
+from .tools import RealEstateTools, explicit_refusal
 from .prompts import _owner_call_name
 from .audio_recorder import RoomAudioRecorder
 from src.transliteration import romanize_hindi
@@ -432,11 +432,24 @@ def _apply_disconnect_disposition(state: RealEstateState):
             state.final_disposition = "Advisor Callback Booked"
             state.agent_summary = f"Property details captured ({summary_desc}); senior advisor follow-up scheduled"
         else:
-            state.final_disposition = "Abruptly Disconnected Call"
-            if not has_customer_speech:
-                state.agent_summary = state.agent_summary or "Customer answered the call but hung up during introduction"
+            # Check if caller expressed negative refusal in any customer turn
+            caller_refused = False
+            for turn in state.transcript:
+                if turn.get("role") in ("customer", "user"):
+                    t_text = (turn.get("text") or "").strip()
+                    if t_text and (explicit_refusal(t_text) or _is_bare_refusal(t_text) or _DIRECT_NOT_INTERESTED.search(t_text)):
+                        caller_refused = True
+                        break
+
+            if caller_refused:
+                state.final_disposition = "Not Interested"
+                state.agent_summary = "Customer not interested in selling or renting property"
             else:
-                state.agent_summary = state.agent_summary or "Customer hung up abruptly during the call"
+                state.final_disposition = "Abruptly Disconnected Call"
+                if not has_customer_speech:
+                    state.agent_summary = state.agent_summary or "Customer answered the call but hung up during introduction"
+                else:
+                    state.agent_summary = state.agent_summary or "Customer hung up abruptly during the call"
 
 
 def post_re_outcome_sync(state: RealEstateState) -> bool:
@@ -730,7 +743,7 @@ async def entrypoint(ctx: agents.JobContext):
     agent.on_language_change = _set_tts_language
 
     # ── Console & Transcript Logger ────────────────────────────────
-    _last_logged = {"role": None, "text": None}
+    _last_logged = {}
 
     def _mark_answered():
         if getattr(state, "answered_at", None) is None:
@@ -749,10 +762,17 @@ async def entrypoint(ctx: agents.JobContext):
                 return
 
         norm_role = "assistant" if is_agent else "customer"
-        if _last_logged["role"] == norm_role and _last_logged["text"] == clean:
+        # The same line reaches us from several events (user_input_transcribed, conversation_item_added,
+        # speak_and_stop). Drop an identical (role, text) seen in the last few seconds, even when a line from
+        # the other speaker was logged in between.
+        _now = time.time()
+        _key = (norm_role, clean.lower())
+        if _now - _last_logged.get(_key, 0.0) < 4.0:
             return
-        _last_logged["role"] = norm_role
-        _last_logged["text"] = clean
+        _last_logged[_key] = _now
+        if len(_last_logged) > 200:
+            for _k in [k for k, v in _last_logged.items() if _now - v > 30.0]:
+                _last_logged.pop(_k, None)
 
         now_str = datetime.now().strftime("%H:%M:%S")
         if is_agent:

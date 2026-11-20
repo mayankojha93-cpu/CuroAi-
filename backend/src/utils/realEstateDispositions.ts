@@ -146,7 +146,9 @@ export function matchRealEstateDisposition(
     upper.includes('DECLINED') ||
     upper.includes('REFUSED') ||
     upper.includes('NAHI BECHNI') ||
-    upper.includes('NO INTENT')
+    upper.includes('NO INTENT') ||
+    summaryUpper.includes('NOT INTERESTED') ||
+    summaryUpper.includes('REFUSED')
   ) {
     return 'Not Interested';
   }
