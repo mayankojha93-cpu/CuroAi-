@@ -115,18 +115,22 @@ callsRouter.post(
       if (custWithCamp.rows.length > 0 && custWithCamp.rows[0].pipeline === 'real_estate') {
         const custRow = custWithCamp.rows[0];
         let leadId: string;
-        const existingLead = await query('SELECT id FROM real_estate_leads WHERE phone = $1', [custRow.phone]);
+        const existingLead = await query('SELECT id, category, campaign_id FROM real_estate_leads WHERE phone = $1', [custRow.phone]);
         if (existingLead.rows.length > 0) {
           leadId = existingLead.rows[0].id;
+          if (!existingLead.rows[0].category && custRow.category) {
+            await query('UPDATE real_estate_leads SET category = $1 WHERE id = $2', [custRow.category, leadId]);
+          }
           if (!existingLead.rows[0].campaign_id && custRow.campaign_id) {
             await query('UPDATE real_estate_leads SET campaign_id = $1 WHERE id = $2', [custRow.campaign_id, leadId]);
           }
         } else {
+          const custCat = custRow.category || 'residential';
           const newLead = await query(
-            `INSERT INTO real_estate_leads (id, campaign_id, owner_name, phone, preferred_language, lead_status)
-             VALUES (gen_random_uuid(), $1, $2, $3, 'en', 'NEW')
+            `INSERT INTO real_estate_leads (id, campaign_id, owner_name, phone, preferred_language, lead_status, property_location, category)
+             VALUES (gen_random_uuid(), $1, $2, $3, 'en', 'NEW', $4, $5)
              RETURNING id`,
-            [custRow.campaign_id, custRow.name, custRow.phone]
+            [custRow.campaign_id, custRow.name, custRow.phone, custRow.address === 'Address On Record' ? null : custRow.address, custCat]
           );
           leadId = newLead.rows[0].id;
         }

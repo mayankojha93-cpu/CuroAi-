@@ -141,7 +141,7 @@ campaignsRouter.post(
   validateRequest(createCampaignSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const pipeline = req.user?.assigned_pipeline || 'airtel';
+      const pipeline = req.body.pipeline || (req.user?.assigned_pipeline && req.user.assigned_pipeline !== 'all' ? req.user.assigned_pipeline : (req.body.voice_pipeline?.includes('Priya') || req.body.script?.includes('Estate') ? 'real_estate' : 'airtel'));
       const campaign = await campaignService.createCampaign({ ...req.body, pipeline });
       return res.status(201).json({
         success: true,

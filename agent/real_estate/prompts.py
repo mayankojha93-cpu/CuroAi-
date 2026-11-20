@@ -456,11 +456,11 @@ MANDATORY RULES FOR THIS STEP:
   * COMMERCIAL: the unit type FIRST ("Is it an office space, retail shop, or another commercial unit?"), then unit number and floor. NEVER assume or skip the unit type; record only what the caller says.
 - Do NOT ask location or society. Jump directly to the next question above.
 - Do NOT jump to CLOSING or call any termination tool from this step. There is no reason to close here.
-- If category is ALREADY CONFIRMED ('{state.category}'), NEVER ask whether it is residential or commercial! If intent (sell vs rent) is missing, ask ONLY: "Are you looking to sell or rent it out?"
+- If category is ALREADY CONFIRMED ('{state.category or "residential"}'), NEVER ask whether it is residential or commercial! If intent (sell vs rent) is missing, ask ONLY: "Are you looking to sell or rent it out?"
 - If category is unknown:
   * If customer says "commercial" but has NOT said sell or rent → ask "Are you looking to sell it or rent it out?"
-  * If customer says "sell" but has NOT said residential or commercial → ask "Is it a residential or commercial property?"
-  * If customer says "rent" but has NOT said residential or commercial → ask "Is it a residential or commercial property?"
+  * If customer says "sell" but category is not specified → assume residential: call `set_category_and_intent(category='residential', intent='sale')` immediately without asking category.
+  * If customer says "rent" but category is not specified → assume residential: call `set_category_and_intent(category='residential', intent='lease')` immediately without asking category.
 - If the caller's answer is unclear or garbled, ask ONCE more using different wording to clarify whether it is residential or commercial. NEVER make assumptions or use defaults.
 """
 

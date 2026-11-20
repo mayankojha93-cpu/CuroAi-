@@ -657,6 +657,9 @@ class RealEstateTools:
         if detected_int:
             self.state.intent = detected_int
 
+        if not self.state.category:
+            self.state.category = "residential"
+
         # If both category and intent are already known from the utterance:
         if self.state.category and self.state.intent:
             cat = self.state.category

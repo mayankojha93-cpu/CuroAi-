@@ -590,6 +590,9 @@ async def entrypoint(ctx: agents.JobContext):
             if backend_cat and not raw_category:
                 raw_category = backend_cat
 
+    if not raw_category or raw_category.lower() in ("none", "null", "undefined", ""):
+        raw_category = "residential"
+
     clean_owner = (owner_name or "").strip()
     if not clean_owner or clean_owner.lower() in ("property owner", "test subscriber", "test customer", "none", "null", "undefined", "customer"):
         owner_name = None

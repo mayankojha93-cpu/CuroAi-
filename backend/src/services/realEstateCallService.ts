@@ -231,6 +231,17 @@ export class RealEstateCallService {
     }
     const lead = leadRes.rows[0];
 
+    // Ensure category is populated: fallback to customers table or default to 'residential'
+    if (!lead.category || !lead.category.trim()) {
+      const custRes = await query(
+        `SELECT category FROM customers WHERE phone = $1 AND category IS NOT NULL AND TRIM(category) != '' LIMIT 1`,
+        [lead.phone]
+      );
+      const cat = custRes.rows[0]?.category?.trim() || 'residential';
+      lead.category = cat.toLowerCase().includes('comm') ? 'commercial' : 'residential';
+      await query(`UPDATE real_estate_leads SET category = $1 WHERE id = $2`, [lead.category, leadId]).catch(() => {});
+    }
+
     if (!lead.phone) {
       throw new AppError('Real estate lead phone number is required', 400);
     }
@@ -315,7 +326,7 @@ export class RealEstateCallService {
         : null;
 
       const effectiveLocation = realLocationOrNull(propertyLocation) || realLocationOrNull(lead?.property_location);
-      const effectiveCategory = lead?.category || null;
+      const effectiveCategory = (lead?.category || 'residential').toLowerCase();
 
       const metaPayload = JSON.stringify({
         callId,
