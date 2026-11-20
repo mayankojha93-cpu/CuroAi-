@@ -1539,13 +1539,18 @@ export class CallService {
       : matchCanonicalDisposition(row.final_disposition || row.call_status || row.status, row.duration_seconds, row.status);
 
     let recUrl = row.recording_url;
+    if (recUrl && (recUrl.includes('s3.') || recUrl.includes('amazonaws.com'))) {
+      recUrl = `/api/calls/${row.id}/audio`;
+    }
     if (!recUrl) {
       const storageDir = getRecordingsDir();
       const mp3Path = path.join(storageDir, `${row.id}.mp3`);
       const wavPath = path.join(storageDir, `${row.id}.wav`);
+      const exotelPath = path.join(storageDir, `${row.id}-exotel.mp3`);
       const mp3Exists = fs.existsSync(mp3Path) && fs.statSync(mp3Path).size > 44;
       const wavExists = fs.existsSync(wavPath) && fs.statSync(wavPath).size > 44;
-      if (mp3Exists || wavExists) {
+      const exotelExists = fs.existsSync(exotelPath) && fs.statSync(exotelPath).size > 44;
+      if (mp3Exists || wavExists || exotelExists) {
         recUrl = `/api/calls/${row.id}/audio`;
         query(`UPDATE calls SET recording_url = $1, recording_download_status = 'done' WHERE id = $2`, [recUrl, row.id]).catch(() => {});
       }
@@ -1723,12 +1728,17 @@ export class CallService {
     const storageDir = getRecordingsDir();
     return res.rows.map((row: any) => {
       let recUrl = row.recording_url;
+      if (recUrl && (recUrl.includes('s3.') || recUrl.includes('amazonaws.com'))) {
+        recUrl = `/api/calls/${row.id}/audio`;
+      }
       if (!recUrl) {
         const mp3Path = path.join(storageDir, `${row.id}.mp3`);
         const wavPath = path.join(storageDir, `${row.id}.wav`);
+        const exotelPath = path.join(storageDir, `${row.id}-exotel.mp3`);
         const mp3Exists = fs.existsSync(mp3Path) && fs.statSync(mp3Path).size > 44;
         const wavExists = fs.existsSync(wavPath) && fs.statSync(wavPath).size > 44;
-        if (mp3Exists || wavExists) {
+        const exotelExists = fs.existsSync(exotelPath) && fs.statSync(exotelPath).size > 44;
+        if (mp3Exists || wavExists || exotelExists) {
           recUrl = `/api/calls/${row.id}/audio`;
           query(`UPDATE calls SET recording_url = $1, recording_download_status = 'done' WHERE id = $2`, [recUrl, row.id]).catch(() => {});
         }

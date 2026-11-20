@@ -158,24 +158,26 @@ export function getRecordingsDir(): string {
 export async function saveRecordingLocally(url: string, callId: string): Promise<string | null> {
   const storageDir = getRecordingsDir();
 
-  const filename = `${callId}.mp3`;
+  // Save Exotel recording with distinct filename so it never truncates or overwrites the agent's 2-way recording
+  const filename = `${callId}-exotel.mp3`;
+  const tmpPath = path.join(storageDir, `${filename}.part`);
   const filePath = path.join(storageDir, filename);
   const streamUrl = `/api/calls/${callId}/audio`;
 
   return new Promise((resolve) => {
-    const file = fs.createWriteStream(filePath);
+    const file = fs.createWriteStream(tmpPath);
     const protocol = url.startsWith('https') ? https : http;
     const req = protocol.get(url, (res) => {
       // Follow redirects (Exotel S3 download links often 302 redirect)
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         file.close();
-        fs.unlink(filePath, () => {});
+        try { fs.unlinkSync(tmpPath); } catch {}
         return saveRecordingLocally(res.headers.location, callId).then(resolve);
       }
 
       if (res.statusCode !== 200) {
         file.close();
-        fs.unlink(filePath, () => {});
+        try { fs.unlinkSync(tmpPath); } catch {}
         logger.warn({ callId, statusCode: res.statusCode }, 'Failed to download recording — non-200 response');
         resolve(null);
         return;
@@ -183,11 +185,19 @@ export async function saveRecordingLocally(url: string, callId: string): Promise
       res.pipe(file);
       file.on('finish', () => {
         file.close();
-        logger.info({ callId, filePath }, 'Recording downloaded and saved to storage');
+        try {
+          fs.renameSync(tmpPath, filePath);
+        } catch (renameErr: any) {
+          logger.warn({ callId, err: renameErr.message }, 'Failed renaming temp Exotel recording file');
+          resolve(null);
+          return;
+        }
+
+        logger.info({ callId, filePath }, 'Exotel recording downloaded and saved to storage');
 
         if (s3Service.isConfigured()) {
-          const s3Key = s3Service.getKeyForCall(callId, 'mp3');
-          s3Service.uploadFile(filePath, s3Key, 'audio/mpeg', { 'call-id': callId })
+          const s3Key = `recordings/${callId}-exotel.mp3`;
+          s3Service.uploadFile(filePath, s3Key, 'audio/mpeg', { 'call-id': callId, 'source': 'exotel' })
             .then(() => {
               logger.info({ callId, s3Key }, 'Exotel recording saved and uploaded to S3');
             })
@@ -201,11 +211,15 @@ export async function saveRecordingLocally(url: string, callId: string): Promise
     });
     req.on('error', (e) => {
       file.close();
-      fs.unlink(filePath, () => {});
+      try { fs.unlinkSync(tmpPath); } catch {}
       logger.warn({ callId, err: e.message }, 'Error downloading recording file');
       resolve(null);
     });
-    req.setTimeout(35000, () => { req.destroy(); resolve(null); });
+    req.setTimeout(35000, () => {
+      req.destroy();
+      try { fs.unlinkSync(tmpPath); } catch {}
+      resolve(null);
+    });
   });
 }
 

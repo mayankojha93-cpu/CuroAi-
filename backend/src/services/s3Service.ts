@@ -157,8 +157,10 @@ export class S3Service {
     const candidateKeys = [
       `recordings/${callId}.mp3`,
       `recordings/${callId}.wav`,
+      `recordings/${callId}-exotel.mp3`,
       `${callId}.mp3`,
       `${callId}.wav`,
+      `${callId}-exotel.mp3`,
     ];
 
     for (const key of candidateKeys) {
