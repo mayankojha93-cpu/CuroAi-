@@ -53,7 +53,7 @@ from .config import (
     PRERENDER_COMMON,
 )
 from .state import RealEstateState, RealEstateStep
-from .agent import RealEstateAgent, _HUMAN_CALLBACK_RE, _is_bare_refusal, _DIRECT_NOT_INTERESTED
+from .agent import RealEstateAgent, _HUMAN_CALLBACK_RE, _is_bare_refusal, _DIRECT_NOT_INTERESTED, _clean_leaks
 from .tools import RealEstateTools, explicit_refusal
 from .prompts import _owner_call_name
 from .audio_recorder import RoomAudioRecorder
@@ -769,7 +769,7 @@ async def entrypoint(ctx: agents.JobContext):
             return
         is_agent = role in ("assistant", "agent")
         if is_agent:
-            clean = re.sub(r'\b[a-zA-Z_][a-zA-Z0-9_]*\s*\{[^}]*\}', '', clean).strip()
+            clean = _clean_leaks(clean).strip()
             if not clean:
                 return
 
@@ -1123,7 +1123,7 @@ async def entrypoint(ctx: agents.JobContext):
                 log_dialogue("customer", romanize_hindi(content_str.strip()))
 
             elif role == "assistant" and content_str:
-                clean_agent_text = re.sub(r'\b[a-zA-Z_][a-zA-Z0-9_]*\s*\{[^}]*\}', '', content_str).strip()
+                clean_agent_text = _clean_leaks(content_str).strip()
                 if clean_agent_text:
                     log_dialogue("assistant", clean_agent_text)
 

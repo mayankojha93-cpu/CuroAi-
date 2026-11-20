@@ -7,7 +7,7 @@ from typing import Optional
 from livekit.agents import Agent, StopResponse
 from src.carrier_filter import classify_carrier_message
 from .prompts import get_step_instructions
-from .state import RealEstateState, RealEstateStep as _Step
+from .state import RealEstateState, RealEstateStep, RealEstateStep as _Step
 from .config import CHAT_CTX_MAX_ITEMS, FAST_TOOL_REPLY, FASTPATH_ENABLED
 from .fastpath import extract as _fastpath_extract
 from .tools import (
@@ -59,26 +59,55 @@ _IVR_LONG_WORDS = 30
 _IVR_HUMAN_MAX_WORDS = 15
 
 
+# All known real estate tool names for precise pattern matching and recovery
+ALL_RE_TOOLS = {
+    "customer_interested",
+    "not_interested_in_this_location",
+    "has_other_property",
+    "set_new_property_location",
+    "confirm_owner_name",
+    "set_category_and_intent",
+    "save_property_details",
+    "customer_does_not_know",
+    "finish_property_intake",
+    "mark_not_interested",
+    "schedule_callback",
+    "book_advisor_handoff",
+    "request_whatsapp_info",
+    "suppress_contact_dnc",
+    "mark_wrong_number",
+}
+
+_TOOL_NAMES_PATTERN = "|".join(sorted(ALL_RE_TOOLS, key=len, reverse=True))
+
 # Leak patterns for tool-call text that the LLM sometimes types instead of calling the tool.
 _LEAK_PATTERNS = [
-    re.compile(r'<function[^>]*>.*?(?:</function>|$)', re.S),               # <function=x>{...}</function>
-    re.compile(r'</?function[^>]*>?'),                                      # stray </function> / <function> fragments
-    re.compile(r'(?i)\bset\s+category\s+and\b.*$', re.S),                   # tool name read out as words ("Set category and intent")
-    re.compile(r'\b[A-Za-z]+(?:_[A-Za-z0-9]+)+\s*[\(\{][^)}]*[\)\}]?'),     # tool_name(...) / tool_name{...}
-    re.compile(r'\b[A-Za-z]+(?:_[A-Za-z0-9]+)+\b'),                        # lone snake_case identifiers
-    re.compile(r'^\s*\{.*$', re.S),                                         # JSON blobs
+    re.compile(r"<(?:function|tool_call|call)[^>]*>.*?(?:</(?:function|tool_call|call)>|$)", re.S | re.I),
+    re.compile(r"</?(?:function|tool_call|call)[^>]*>?", re.I),
+    re.compile(r"(?i)\bset\s+category\s+and\b.*$", re.S),
+    # Tool call with arguments (parentheses, braces, >, :, or Python kwargs)
+    re.compile(r"\b(?:" + _TOOL_NAMES_PATTERN + r"|[a-z]+(?:_[a-z0-9]+)+)\s*(?:[\(\{>:].*?[\)\}]|>[^\s]+)", re.S | re.I),
+    # Lone tool names or snake_case identifiers
+    re.compile(r"\b(?:" + _TOOL_NAMES_PATTERN + r")\b", re.I),
+    re.compile(r"\b[A-Za-z]+(?:_[A-Za-z0-9]+)+\b"),
+    # Any residual JSON or dictionary blobs or XML tags
+    re.compile(r"[>:]?\s*\{[^{}]*\}", re.S),
+    re.compile(r"^\s*\{.*$", re.S),
+    re.compile(r"</?[a-zA-Z0-9_:-]+[^>]*>", re.S),
 ]
 
 
 def _clean_leaks(s: str) -> str:
     for p in _LEAK_PATTERNS:
         s = p.sub('', s)
-    return s
+    return s.strip("` \n\t")
 
 
 def _call_open(buf: str) -> bool:
-    """True while a call-like region ((...), {...}, <function>...) is still unclosed."""
+    """True while a call-like region ((...), {...}, <function>..., <tool_call>...) is still unclosed."""
     if "<function" in buf and "</function>" not in buf:
+        return True
+    if "<tool_call" in buf and "</tool_call>" not in buf:
         return True
     return any(buf.count(a) > buf.count(b) for a, b in (("(", ")"), ("{", "}"), ("<", ">")))
 
@@ -101,9 +130,15 @@ def _soften_tts_phrase(s: str) -> str:
 logger = logging.getLogger("real-estate-agent")
 
 # ── Recovery for "tool call typed as plain text" ──────────────────────────────
-# Llama sometimes prints {"name": "save_property_details", "parameters": {...}} as its reply instead
-# of making a real tool call. The tts_node guard strips it, so the caller heard NOTHING (dead air).
-_TEXT_CALL_RE = re.compile(r'^\s*(?:\{|<function|[a-z]+(?:_[a-z0-9]+)+\s*[\(\{])')
+# Llama sometimes prints {"name": "save_property_details", "parameters": {...}} or
+# customer_interested>{"intent": "sale"} or not_interested_in_this_location as its reply instead
+# of making a real tool call.
+_TEXT_CALL_RE = re.compile(
+    r"^\s*[`]*(?:\{|<function|<tool_call|<call:|"
+    + r"(?:" + _TOOL_NAMES_PATTERN + r")\b|"
+    + r"[a-z]+(?:_[a-z0-9]+)+\s*[\(\{>:~])",
+    re.I
+)
 
 # get_missing_fields() ids -> save_property_details parameter names
 _FIELD_TO_PARAMS = {
@@ -620,39 +655,90 @@ def _chunk_has_tool_call(chunk) -> bool:
 
 # A tool call typed as text ANYWHERE in the reply (not just at the start), e.g.
 # "Third floor, noted Sir. <function=save_property_details>{...}</function> Is the property leased?"
+# or "customer_interested>{\"intent\": \"sale\"}" or "mark_not_interested"
 _INLINE_CALL_RE = re.compile(
-    r'<function[=\s>]'
-    r'|"name"\s*:\s*"[a-z]+(?:_[a-z0-9]+)+"'
-    r'|\b[a-z]+(?:_[a-z0-9]+)+\s*[\(\{]'
+    r"<function[=\s>]"
+    r"|<tool_call"
+    r"|<call:[a-z_]+"
+    r"|\"name\"\s*:\s*\"[a-z]+(?:_[a-z0-9]+)+\""
+    r"|\b(?:" + _TOOL_NAMES_PATTERN + r")\b"
+    r"|\b[a-z]+(?:_[a-z0-9]+)+\s*[\(\{>:]",
+    re.I
 )
 
 
 def _parse_text_tool_call(raw: str):
-    """Best-effort parse of a text-typed tool call, tolerant of truncated JSON."""
-    m = (
-        re.search(r'"name"\s*:\s*"([A-Za-z_]\w*)"', raw)
-        or re.match(r'\s*<function=([A-Za-z_]\w*)', raw)
-        or re.match(r'\s*([a-z]+(?:_[a-z0-9]+)+)\s*[\(\{]', raw)
-    )
-    if not m:
+    """Best-effort parse of a text-typed tool call, tolerant of truncated JSON or python kwargs."""
+    raw_clean = (raw or "").strip("` \n\t")
+    name = None
+    # 1. JSON name
+    m = re.search(r'"name"\s*:\s*"([A-Za-z_]\w*)"', raw_clean)
+    if m:
+        name = m.group(1)
+    if not name:
+        m = (
+            re.search(r'<function[=\s]([A-Za-z_]\w*)', raw_clean)
+            or re.search(r'<call:([A-Za-z_]\w*)', raw_clean)
+            or re.search(r'\b(' + _TOOL_NAMES_PATTERN + r')\b', raw_clean)
+            or re.match(r'\s*([a-z]+(?:_[a-z0-9]+)+)\b', raw_clean)
+        )
+        if m:
+            name = m.group(1)
+
+    if not name:
         return None, {}
-    name = m.group(1)
-    pm = re.search(r'"(?:parameters|arguments)"\s*:\s*\{(.*)', raw, re.S)
-    body = pm.group(1) if pm else raw
+
     args = {}
-    for k, v in re.findall(r'"(\w+)"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|true|false|null)', body):
-        if k == "name" or v == "null":
-            continue
-        if v.startswith('"'):
+    # 2. Try JSON object in raw
+    json_match = re.search(r'\{[^{}]*\}', raw_clean, re.DOTALL)
+    if json_match:
+        j_str = json_match.group(0)
+        try:
+            parsed = json.loads(j_str)
+            if isinstance(parsed, dict):
+                args.update(parsed)
+        except Exception:
             try:
-                val = json.loads(v)
+                import ast
+                parsed = ast.literal_eval(j_str)
+                if isinstance(parsed, dict):
+                    args.update(parsed)
             except Exception:
-                val = v.strip('"')
-        elif v in ("true", "false"):
-            val = v == "true"
-        else:
-            val = float(v) if "." in v else int(v)
-        args[k] = val
+                pass
+
+    # 3. Try python kwarg style key=val or key="val" or key='val'
+    if not args:
+        matches = re.findall(
+            r'(\w+)\s*=\s*(?:["\'](.*?)["\']|([0-9]+(?:\.[0-9]+)?)|(True|False|None))',
+            raw_clean
+        )
+        for k, s_val, num_val, bool_val in matches:
+            if s_val:
+                args[k] = s_val
+            elif num_val:
+                args[k] = float(num_val) if "." in num_val else int(num_val)
+            elif bool_val:
+                args[k] = True if bool_val == "True" else (False if bool_val == "False" else None)
+
+    # 4. Fallback regex for "key": "value"
+    if not args:
+        pm = re.search(r'"(?:parameters|arguments)"\s*:\s*\{(.*)', raw_clean, re.S)
+        body = pm.group(1) if pm else raw_clean
+        for k, v in re.findall(r'"(\w+)"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|true|false|null)', body):
+            if k == "name" or v == "null":
+                continue
+            if v.startswith('"'):
+                try:
+                    val = json.loads(v)
+                except Exception:
+                    val = v.strip('"')
+            elif v in ("true", "false"):
+                val = v == "true"
+            else:
+                val = float(v) if "." in v else int(v)
+            args[k] = val
+
+    args.pop("name", None)
     return name, args
 
 
@@ -1362,6 +1448,12 @@ class RealEstateAgent(Agent):
         state = self._re_state
         name, args = _parse_text_tool_call(raw)
         logger.warning(f"🩹 Tool call typed as text -> recovering: name={name} args={args} raw={raw[:160]!r}")
+
+        # Step-tool aliases for model tolerance
+        if name == "set_category_and_intent" and state.step == RealEstateStep.INTRODUCTION:
+            name = "customer_interested"
+        elif name == "customer_interested" and state.step == RealEstateStep.CATEGORY_SELECT:
+            name = "set_category_and_intent"
 
         allowed = set()
         for t in self._re_tools.tools_for_step(state.step):
