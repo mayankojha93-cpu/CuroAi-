@@ -258,11 +258,22 @@ class RoomAudioRecorder:
         final_file = self.mp3_path if os.path.exists(self.mp3_path) else self.wav_path
         if os.path.exists(final_file) and os.path.getsize(final_file) > 44:
             logger.info(f"📁 Recording preserved at {final_file} ({os.path.getsize(final_file)} bytes)")
+            s3_url = None
             try:
-                await self._upload_to_s3(final_file)
+                s3_url = await self._upload_to_s3(final_file)
             except Exception as e:
                 logger.warning(f"S3 upload attempt encountered error: {e}")
-            self._final_result = self.get_stream_url()
+
+            if s3_url:
+                self._final_result = s3_url
+            else:
+                s3_configured = bool(os.environ.get("S3_BUCKET"))
+                allow_local = os.environ.get("ALLOW_LOCAL_RECORDING_STREAM", "false").lower() in ("true", "1", "yes")
+                if not s3_configured or allow_local:
+                    self._final_result = self.get_stream_url()
+                else:
+                    logger.warning(f"S3 upload failed for call {self.call_id}; suppressing local stream URL to prevent dead links.")
+                    self._final_result = None
         else:
             logger.warning(f"No usable audio was captured for call {self.call_id} (frames: {self._frames_written})")
             self._final_result = None
