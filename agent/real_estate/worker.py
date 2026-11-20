@@ -927,7 +927,7 @@ async def entrypoint(ctx: agents.JobContext):
                 await recorder.stop_capture()
                 rec_url = await recorder.finalize()
                 if rec_url:
-                    setattr(state, "recording_url", rec_url)
+                    state.recording_url = rec_url
             except Exception as e:
                 logger.warning(f"Error finalizing audio recording: {e}")
 
