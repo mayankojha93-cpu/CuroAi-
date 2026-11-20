@@ -10,6 +10,19 @@ from .prompts import get_step_instructions
 from .state import RealEstateState, RealEstateStep as _Step
 from .config import CHAT_CTX_MAX_ITEMS, FAST_TOOL_REPLY, FASTPATH_ENABLED
 from .fastpath import extract as _fastpath_extract
+from .tools import (
+    classify_category,
+    classify_intent,
+    is_standalone_from_speech,
+    commercial_type_from_speech,
+    _DONT_KNOW_RE,
+    _DONT_KNOW_DEV,
+    extract_question,
+    say_cached,
+    sell_or_rent_question,
+    other_property_question,
+    ask_new_location_question,
+)
 
 # Extra IVR / voicemail phrases (English + Hinglish + Devanagari). Used IN ADDITION to src.carrier_filter so that
 # menus / voicemail prompts the carrier filter misses are still caught instead of being answered by the LLM.
@@ -588,19 +601,6 @@ _INLINE_CALL_RE = re.compile(
     r'|\b[a-z]+(?:_[a-z0-9]+)+\s*[\(\{]'
 )
 
-_Q_LEAD_RE = re.compile(r"^(?:ji sir|sure sir|sorry sir|ji|sure|sorry|sir)\s*[,.]?\s+", re.I)
-
-
-def _extract_question(spoken: str) -> str:
-    """The question part of a spoken line: from the first sentence that ends with '?' to the end.
-    Drops acks like 'Okay.' and re-ask leads like 'Ji Sir,' so a later 'repeat' sounds clean."""
-    parts = re.split(r"(?<=[.!?।])\s+", (spoken or "").strip())
-    for i, p in enumerate(parts):
-        if p.rstrip().endswith("?"):
-            q = " ".join(parts[i:]).strip()
-            return _Q_LEAD_RE.sub("", q).strip()
-    return ""
-
 
 def _parse_text_tool_call(raw: str):
     """Best-effort parse of a text-typed tool call, tolerant of truncated JSON."""
@@ -670,6 +670,34 @@ class RealEstateAgent(Agent):
         await self.update_instructions(get_step_instructions(self._re_state))
         await self.update_tools(self._re_tools.tools_for_step(self._re_state.step))
 
+    def speak_and_stop(self, text: str, allow_interruptions: bool = True, use_cached: bool = True):
+        """Speaks the agent line (via say_cached or session.say), logs it to the
+        transcript and database, updates last_agent_question, and raises StopResponse().
+        Ensures deterministic shortcuts never cause missing agent turns in the transcript.
+        """
+        clean = (text or "").strip()
+        if clean:
+            self._re_state.last_agent_question = extract_question(clean) or clean
+            log_fn = getattr(self._re_tools, "log_dialogue_func", None)
+            if log_fn:
+                log_fn("assistant", clean)
+            else:
+                self._re_state.add_transcript("assistant", clean)
+                logger.info(f"🤖 [Agent]: \"{clean}\"")
+
+            try:
+                sess = self.session
+            except Exception:
+                sess = None
+
+            if sess:
+                if use_cached:
+                    say_cached(sess, self._re_state, clean, allow_interruptions=allow_interruptions)
+                else:
+                    sess.say(clean, allow_interruptions=allow_interruptions)
+
+        raise StopResponse()
+
     async def on_user_turn_completed(self, turn_ctx, new_message):
         # LATENCY: a new customer turn invalidates any unspoken fast reply left over from an
         # interrupted previous turn.
@@ -730,7 +758,6 @@ class RealEstateAgent(Agent):
             state.hold_until = 0.0
 
         # ── Deterministic intake shortcuts (no LLM round trip, instant playout) ──────────
-        from .tools import other_property_question, ask_new_location_question, say_cached, sell_or_rent_question, classify_intent
         tools_ = self._re_tools
 
         # Proactive intent check for INTRODUCTION step
@@ -744,10 +771,8 @@ class RealEstateAgent(Agent):
             has_loc = bool(loc)
             was_interrupted = getattr(state, "opening_speech_interrupted", False) or _is_pickup_or_identity_query(text)
             reply = sell_or_rent_question(state.reply_lang, has_loc=has_loc, loc=loc, full_context=was_interrupted)
-            state.last_agent_question = reply
             logger.info(f"👋 Greeting acknowledged (full_context={was_interrupted}) -> asking qualification: '{reply}'")
-            say_cached(self.session, state, reply, True)
-            raise StopResponse()
+            self.speak_and_stop(reply, allow_interruptions=True)
 
         # A1: caller answered "Sell" or "Rent" directly at INTRODUCTION step -> capture intent and move to intake
         if state.step == _Step.INTRODUCTION and _intro_int:
@@ -766,10 +791,8 @@ class RealEstateAgent(Agent):
                 first_q = missing[0]["question_en"] if state.reply_lang == "en" else missing[0]["question_hi"]
                 ack = "Great, Sir! " if state.reply_lang == "en" else "Ji bilkul Sir! "
                 reply = ack + first_q
-                state.last_agent_question = reply
                 logger.info(f"🎯 Intent '{_intro_int}' recognized from '{text}' at intro -> transitioning to {state.step.value}: '{reply}'")
-                say_cached(self.session, state, reply, True)
-                raise StopResponse()
+                self.speak_and_stop(reply, allow_interruptions=True)
 
         # A2: caller answered ambiguous "Haan" / "Yes" AFTER greeting was already acknowledged -> prompt to choose
         if state.step == _Step.INTRODUCTION and state.greeting_acknowledged and _is_greeting_ack(text) and not _intro_int:
@@ -779,10 +802,8 @@ class RealEstateAgent(Agent):
                 if en else
                 "Ji, aap ise sell karna chahte hain ya rent par dena? Please batayein."
             )
-            state.last_agent_question = clarify
             logger.info(f"🤔 Caller gave ambiguous 'yes' to sell-or-rent -> asking to choose: '{clarify}'")
-            say_cached(self.session, state, clarify, True)
-            raise StopResponse()
+            self.speak_and_stop(clarify, allow_interruptions=True)
 
         # A3: caller asks "Number kahan se mila?" / "How did you get my number?"
         if state.step == _Step.INTRODUCTION and _asks_number_source(text):
@@ -792,26 +813,19 @@ class RealEstateAgent(Agent):
                 if en else
                 "Actually Sir, aapka number hamare verified property database mein listed tha. Kya aap apni property sell ya rent karne ka plan kar rahe hain?"
             )
-            state.last_agent_question = _rep
             logger.info(f"📱 'How did you get my number?' query -> explaining source: '{_rep}'")
-            say_cached(self.session, state, _rep, True)
-            raise StopResponse()
+            self.speak_and_stop(_rep, allow_interruptions=True)
 
         # B: caller refuses THIS SPECIFIC location ("us location pe nahi bechna", "wahan ka nahi") -> "any other property?"
         if state.step == _Step.INTRODUCTION and _rejects_this_location(text):
             logger.info(f"📍 Refused THIS location -> asking about another property (no LLM): '{text}'")
-            ok = False
             try:
                 await tools_.not_interested_in_this_location()
                 reply = state.direct_reply or other_property_question(state.reply_lang)
                 state.direct_reply = None
-                state.last_agent_question = reply
-                say_cached(self.session, state, reply, True)
-                ok = True
+                self.speak_and_stop(reply, allow_interruptions=True)
             except Exception as e:
                 logger.warning(f"Location-refusal shortcut failed, falling back to LLM: {e}")
-            if ok:
-                raise StopResponse()
 
         # B-alt: caller gives general refusal ("nahi", "no sir", "nahi bechna", "not interested") to selling/renting -> clean polite close
         if state.step == _Step.INTRODUCTION and (_is_bare_refusal(text) or _DIRECT_NOT_INTERESTED.search(text)):
@@ -828,25 +842,20 @@ class RealEstateAgent(Agent):
             _ans = _other_property_answer(text)
             if _ans is not None:
                 logger.info(f"🏘️ Other property answer = {_ans} (no LLM): '{text}'")
-                ok = False
                 try:
                     await tools_.has_other_property(has_other=_ans)
                     if _ans:
                         reply = state.direct_reply or ask_new_location_question(state.reply_lang)
                         state.direct_reply = None
-                        state.last_agent_question = reply
-                        say_cached(self.session, state, reply, True)
+                        self.speak_and_stop(reply, allow_interruptions=True)
                     else:
                         tools_._speak_closing_and_hangup()
-                    ok = True
+                        raise StopResponse()
                 except Exception as e:
                     logger.warning(f"Other-property shortcut failed, falling back to LLM: {e}")
-                if ok:
-                    raise StopResponse()
 
         # Caller says "standalone" / "independent" property -> no unit number or floor exists, so
         # get_missing_fields() stops asking for them. Checked on every pre-closing intake turn.
-        from .tools import is_standalone_from_speech, _DONT_KNOW_RE, _DONT_KNOW_DEV
         from .state import RealEstateStep as _SS
         standalone_changed = False
         if (
@@ -880,9 +889,7 @@ class RealEstateAgent(Agent):
                     next_q = missing_after[0]["question_en"] if state.reply_lang == "en" else missing_after[0]["question_hi"]
                     lead = "No problem Sir. " if state.reply_lang == "en" else "Koi baat nahi Sir. "
                     reply = lead + next_q
-                    state.last_agent_question = reply
-                    say_cached(self.session, state, reply, True)
-                    raise StopResponse()
+                    self.speak_and_stop(reply, allow_interruptions=True)
                 else:
                     tools_._speak_closing_and_hangup()
                     raise StopResponse()
@@ -902,9 +909,7 @@ class RealEstateAgent(Agent):
                     next_q = missing_after[0]["question_en"] if state.reply_lang == "en" else missing_after[0]["question_hi"]
                     lead = "Market rate, noted Sir. " if state.reply_lang == "en" else "Market rate, note kar liya Sir. "
                     reply = lead + next_q
-                    state.last_agent_question = reply
-                    say_cached(self.session, state, reply, True)
-                    raise StopResponse()
+                    self.speak_and_stop(reply, allow_interruptions=True)
                 else:
                     tools_._speak_closing_and_hangup()
                     raise StopResponse()
@@ -913,7 +918,6 @@ class RealEstateAgent(Agent):
         # no tool call, nothing skipped). Runs BEFORE category detection because the caller's
         # words often quote the question itself ("residential hai ya commercial hai na?").
         from .state import RealEstateStep as _S
-        from .tools import classify_category, classify_intent
         _intake = (_S.RESIDENTIAL_SALE, _S.RESIDENTIAL_LEASE, _S.COMMERCIAL_SALE, _S.COMMERCIAL_LEASE)
         if state.step in _intake or state.step == _S.CATEGORY_SELECT:
             _neutral = _is_neutral_utterance(text)
@@ -972,14 +976,8 @@ class RealEstateAgent(Agent):
                         _reask, _no_lead = _alt, True
             if _reask:
                 lead = "" if _no_lead else ("Sure, " if state.reply_lang == "en" else "Ji, ")
-                state.last_agent_question = _reask
                 logger.info(f"🔁 Repeat/backchannel -> re-asking open question (no LLM): '{_reask}'")
-                try:
-                    self.session.say(lead + _reask, allow_interruptions=True)
-                except Exception as e:
-                    logger.warning(f"Re-ask failed, falling back to LLM: {e}")
-                else:
-                    raise StopResponse()
+                self.speak_and_stop(lead + _reask, allow_interruptions=True)
 
         # Caller asks to repeat or clarify location at INTRODUCTION step
         if state.step == _S.INTRODUCTION and (_asks_repeat(text) or _asks_location_clarification(text)):
@@ -1002,18 +1000,11 @@ class RealEstateAgent(Agent):
                 logger.info("🔁 Intro clarification asked 3x -> letting the LLM handle it")
             else:
                 logger.info(f"🔁 Repeat / location clarification at intro -> '{_rep}'")
-                state.last_agent_question = _rep
-                try:
-                    self.session.say(lead + _rep, allow_interruptions=True)
-                except Exception as e:
-                    logger.warning(f"Intro repeat failed: {e}")
-                else:
-                    raise StopResponse()
+                self.speak_and_stop(lead + _rep, allow_interruptions=True)
 
         # Caller indicates they are thinking/considering at INTRODUCTION step (e.g. "Sochata rahun", "Soch raha hoon")
         if state.step == _S.INTRODUCTION and _is_considering(text):
             state.is_interested = True
-            from .tools import classify_category, classify_intent
             _cat = classify_category(text)
             _int = classify_intent(text)
             if _cat:
@@ -1028,14 +1019,8 @@ class RealEstateAgent(Agent):
                 _rep = "Understood! Are you looking to sell or rent it out?" if en else "Ji samajh gayi. Aap ise sell karne ka soch rahe hain ya rent par dene ka?"
             else:
                 _rep = "Understood! Are you looking to sell or rent it out?" if en else "Ji samajh gayi. Aap ise sell karne ka soch rahe hain ya rent par dene ka?"
-            state.last_agent_question = _rep
             logger.info(f"🤔 Considering/thinking at intro -> moving to category/intent: '{_rep}'")
-            try:
-                self.session.say(_rep, allow_interruptions=True)
-            except Exception as e:
-                logger.warning(f"Intro considering reply failed: {e}")
-            else:
-                raise StopResponse()
+            self.speak_and_stop(_rep, allow_interruptions=True)
 
         # "Repeat" at ANY other step (other-property, new location, name): say the last question
         # we actually asked, verbatim. Repeating only happens when the caller asks for it.
@@ -1050,12 +1035,7 @@ class RealEstateAgent(Agent):
             if q_to_repeat:
                 lead = "Sure, " if state.reply_lang == "en" else "Ji, "
                 logger.info(f"🔁 Repeat requested -> re-asking last question (no LLM): '{q_to_repeat}'")
-                try:
-                    self.session.say(lead + q_to_repeat, allow_interruptions=True)
-                except Exception as e:
-                    logger.warning(f"Re-ask failed, falling back to LLM: {e}")
-                else:
-                    raise StopResponse()
+                self.speak_and_stop(lead + q_to_repeat, allow_interruptions=True)
 
         # Caller asks "Are you a broker?" / "Kya aap broker ho?"
         if _asks_if_broker(text) and state.step != _S.CLOSING:
@@ -1075,13 +1055,7 @@ class RealEstateAgent(Agent):
                     "Ji, hum My Estate Finder se hain. Hum property owners ko direct verified buyers aur tenants se connect karte hain. Kya aap apni property sell ya rent karne ka soch rahe hain?"
                 )
             logger.info(f"🏢 'Are you a broker?' query -> explaining platform: '{_rep}'")
-            state.last_agent_question = _rep
-            try:
-                self.session.say(_rep, allow_interruptions=True)
-            except Exception as e:
-                logger.warning(f"Broker query reply failed: {e}")
-            else:
-                raise StopResponse()
+            self.speak_and_stop(_rep, allow_interruptions=True)
 
         impatient_phrases = (
             "jaldi bolo", "jaldi batao", "time nahi", "time nhi", "bahut sawal", "kitna sawal",
@@ -1093,7 +1067,6 @@ class RealEstateAgent(Agent):
             state.impatient_detected = True
 
         # Proactively detect category & intent directly from caller utterance
-        from .tools import classify_category, classify_intent, commercial_type_from_speech
         from .state import RealEstateStep
 
         # A refusal ("nahi, us location pe nahi bechna") must not be read as an intent ('bechna' -> sale).
@@ -1246,8 +1219,7 @@ class RealEstateAgent(Agent):
                                 if _m:
                                     _fp_reply = _m[0]["question_en"] if state.reply_lang == "en" else _m[0]["question_hi"]
                             if _fp_reply:
-                                state.last_agent_question = _extract_question(_fp_reply) or _fp_reply
-                                self.session.say(_fp_reply, allow_interruptions=True)
+                                self.speak_and_stop(_fp_reply, allow_interruptions=True)
                         raise StopResponse()
 
     async def llm_node(self, chat_ctx, tools, model_settings):
@@ -1375,13 +1347,13 @@ class RealEstateAgent(Agent):
                 if not _call_open(buf) and buf.rstrip().endswith((".", "?", "!", "\u0964")):
                     out, buf = _soften_tts_phrase(_clean_leaks(buf)), ""
                     if out.strip():
-                        _q = _extract_question(out)
+                        _q = extract_question(out)
                         if _q:
                             self._re_state.last_agent_question = _q   # for "repeat that"
                         yield out
             out = _soften_tts_phrase(_clean_leaks(buf))
             if out.strip():
-                _q = _extract_question(out)
+                _q = extract_question(out)
                 if _q:
                     self._re_state.last_agent_question = _q
                 yield out
