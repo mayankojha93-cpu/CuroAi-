@@ -2,7 +2,15 @@ import re
 import time
 from enum import Enum
 from typing import Optional, List, Dict, Any
-from src.lang import detect_language
+
+try:
+    from src.lang import detect_language
+except ImportError:
+    try:
+        from ..src.lang import detect_language
+    except Exception:
+        def detect_language(text: Optional[str]) -> Optional[str]:
+            return None
 
 
 class RealEstateStep(str, Enum):
@@ -135,6 +143,7 @@ class RealEstateState:
         self.hangup_started: bool = False
         self.outcome_posted: bool = False
         self.ivr_detected: bool = False
+        self.recording_url: Optional[str] = None
         self.silence_count: int = 0
         # Same-question loop guard: how many times in a row the SAME open question was re-asked
         self.reask_key: str = ""
