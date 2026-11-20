@@ -17,6 +17,7 @@ Pure python, no livekit imports, so it can be unit-tested on its own.
 """
 import re
 from typing import Any, Dict, List, Optional
+from .tools import is_standalone_from_speech
 
 try:  # Sarvam STT often returns Devanagari; we also try a romanised copy
     from src.transliteration import romanize_hindi
@@ -352,7 +353,6 @@ _AMOUNT_PARAM = {"sale_price": "expected_sale_price", "monthly_rent": "expected_
 
 def _scan(v: str, open_field: str) -> Dict[str, Any]:
     found: Dict[str, Any] = {}
-    from .tools import is_standalone_from_speech
     if open_field == "unit_floor" and is_standalone_from_speech(v):
         return {"unit_floor": {"unit_number": "Standalone", "floor_number": "Ground"}}
     for key, res in (
