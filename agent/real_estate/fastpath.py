@@ -196,6 +196,37 @@ def _ordinal(n: int) -> str:
     return f"{n}{suf}"
 
 
+def _pick_unit_number(units: List[str]) -> Optional[str]:
+    """Pick unit number from candidates, resolving natural spoken repetitions like 'D-17, 17 number'."""
+    if not units:
+        return None
+    cleaned = [u.strip(".,;: -_") for u in units if u.strip(".,;: -_")]
+    if not cleaned:
+        return None
+    if len(cleaned) == 1:
+        return cleaned[0].upper()
+
+    # Check if candidates are repetitions (e.g., ['d-17', '17'] or ['17', '17'])
+    digits_map = {}
+    for u in cleaned:
+        d = re.sub(r"\D", "", u)
+        if d:
+            digits_map.setdefault(d, []).append(u)
+
+    if len(digits_map) == 1:
+        cands = list(digits_map.values())[0]
+        # Prefer candidate with alphanumeric prefix (e.g. 'D-17' over '17')
+        with_alpha = [c for c in cands if any(ch.isalpha() or ch in "-/" for ch in c)]
+        if with_alpha:
+            return with_alpha[0].upper()
+        return cands[0].upper()
+
+    # Also handle doubled numbers like '1717' when the caller repeated '17'
+    if len(cleaned) == 1:
+        return cleaned[0].upper()
+    return None
+
+
 def _x_unit_floor(v: str) -> Optional[Dict[str, Any]]:
     ms = list(_FLOOR.finditer(v))
     if len(ms) != 1:
@@ -216,9 +247,38 @@ def _x_unit_floor(v: str) -> Optional[Dict[str, Any]]:
     rest = v[:m.start()] + " " + v[m.end():]
     units = re.findall(r"\b[a-z]{0,2}[\-/]?\d{1,5}[a-z]?\b", rest)
     units = [u for u in units if re.search(r"\d", u)]
-    if len(units) != 1:
+    unit = _pick_unit_number(units)
+    if not unit:
         return None
-    return {"unit_number": units[0].upper(), "floor_number": floor}
+    return {"unit_number": unit, "floor_number": floor}
+
+
+def _x_floor_only(v: str) -> Optional[Dict[str, Any]]:
+    ms = list(_FLOOR.finditer(v))
+    if len(ms) != 1:
+        return None
+    m = ms[0]
+    if m.group(1):
+        floor = _ordinal(int(m.group(1)))
+    elif m.group(2):
+        floor = _ordinal(int(m.group(2)))
+    elif m.group(3):
+        floor = _ordinal(_ORD[m.group(3)])
+    else:
+        floor = "Ground"
+    return {"floor_number": floor}
+
+
+def _x_unit_only(v: str) -> Optional[Dict[str, Any]]:
+    # When floor is not present, look for unit number
+    if _FLOOR.search(v):
+        return None
+    units = re.findall(r"\b(?:flat|unit|door|room|no\.?|number)?\s*([a-z]{0,2}[\-/]?\d{1,5}[a-z]?)\b", v, re.I)
+    units = [u for u in units if re.search(r"\d", u)]
+    unit = _pick_unit_number(units)
+    if unit:
+        return {"unit_number": unit}
+    return None
 
 
 # ── Price / rent ─────────────────────────────────────────────────────────────
@@ -359,11 +419,23 @@ def _scan(v: str, open_field: str) -> Dict[str, Any]:
         ("bhk_config", _x_bhk(v, open_field)),
         ("approx_area", _x_area(v, open_field)),
         ("furnishing", _x_furnishing(v)),
-        ("unit_floor", _x_unit_floor(v)),
         ("amount", _x_amount(v, open_field)),
     ):
         if res:
             found[key] = res
+    if open_field == "unit_floor":
+        uf = _x_unit_floor(v)
+        if uf:
+            found["unit_floor"] = uf
+        else:
+            fl = _x_floor_only(v)
+            if fl:
+                found["unit_floor"] = fl
+            un = _x_unit_only(v)
+            if un:
+                found["unit_floor"] = un
+    elif _x_unit_floor(v):
+        found["unit_floor"] = _x_unit_floor(v)
     if open_field == "leased_status":
         r = _x_leased(v)
         if r:
@@ -392,3 +464,98 @@ def extract(open_field: str, text: str) -> Optional[Dict[str, Any]]:
         if found:
             return None   # caller said more than the open field (or something else) -> LLM splits it
     return None
+
+
+def extract_all_slots(text: str) -> Dict[str, Any]:
+    """Proactively extract all recognizable real estate slots mentioned anywhere in `text`.
+    Used on every caller turn so multi-slot answers (e.g. 'house, 3 BHK, for rent, fully furnished')
+    are completely captured in one turn and never re-asked.
+    """
+    slots: Dict[str, Any] = {}
+    if not text or not text.strip():
+        return slots
+
+    from .tools import (
+        classify_category,
+        classify_intent,
+        commercial_type_from_speech,
+        explicit_refusal,
+        explicit_dnc_request,
+    )
+
+    t = text.strip()
+    if explicit_refusal(t) or explicit_dnc_request(t):
+        return slots
+
+    low = t.lower()
+
+    # Category & Intent
+    cat = classify_category(t)
+    if cat:
+        slots["category"] = cat
+
+    intn = classify_intent(t)
+    if intn:
+        slots["intent"] = intn
+
+    # Standalone check
+    if is_standalone_from_speech(t):
+        slots["is_standalone"] = True
+        slots["unit_number"] = "Standalone"
+        slots["floor_number"] = "Ground"
+
+    # BHK configuration
+    bhk = _x_bhk(low, open_field="bhk_config")
+    if bhk and "bhk_config" in bhk:
+        slots["bhk_config"] = bhk["bhk_config"]
+        # Explicit BHK always confirms residential
+        slots["category"] = "residential"
+
+    # Commercial unit type
+    comm_type = commercial_type_from_speech(t)
+    if comm_type and comm_type != "Other":
+        slots["commercial_type"] = comm_type
+        slots["category"] = "commercial"
+
+    # Area in sqft / gaj
+    area = _x_area(low, open_field="approx_area")
+    if area and "approx_area_sqft" in area:
+        slots["approx_area_sqft"] = area["approx_area_sqft"]
+
+    # Furnishing
+    fur = _x_furnishing(low)
+    if fur and "furnishing_status" in fur:
+        slots["furnishing_status"] = fur["furnishing_status"]
+
+    # Unit and Floor
+    if not slots.get("is_standalone"):
+        uf = _x_unit_floor(low)
+        if uf:
+            slots.update(uf)
+        else:
+            fl = _x_floor_only(low)
+            if fl:
+                slots.update(fl)
+            un = _x_unit_only(low)
+            if un:
+                slots.update(un)
+
+    # Occupancy
+    occ = _x_occupancy(low)
+    if occ and "immediate_occupancy" in occ:
+        slots["immediate_occupancy"] = occ["immediate_occupancy"]
+
+    # Leased status
+    ls = _x_leased(low)
+    if ls and "is_currently_leased" in ls:
+        slots["is_currently_leased"] = ls["is_currently_leased"]
+
+    # Price / Rent
+    rent = _x_amount(low, open_field="monthly_rent")
+    if rent:
+        slots["expected_monthly_rent"] = rent
+    price = _x_amount(low, open_field="sale_price")
+    if price:
+        slots["expected_sale_price"] = price
+
+    return slots

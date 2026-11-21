@@ -15,6 +15,9 @@ def get_base_persona(state: RealEstateState) -> str:
 - 'Not looking to sell/rent':
   Accept politely and execute `mark_not_interested()`. Do NOT prolong the call or ask about future plans: "Understood Sir, no problem at all! Thank you for your time."
   Call `mark_not_interested()` immediately.
+- 'Already sold / Already rented / Don\'t have property':
+  Accept politely and execute `mark_not_interested()`. Do NOT prolong the call, do NOT ask about other properties, and NEVER call `book_advisor_handoff()`: "Understood Sir, no problem at all! Thank you for your time."
+  Call `mark_not_interested()` immediately.
 - 'Where did you get my number?':
   Answer warmly and transparently: "Actually Sir, your number was listed in our verified property database where owners indicated interest. If you prefer, I can remove your number from our calling list immediately."
   If they ask to remove -> call `suppress_contact_dnc()`.
@@ -50,6 +53,9 @@ def get_base_persona(state: RealEstateState) -> str:
         objections = f"""Objection Handling Guide (Always respond warmly like an Indian property sales executive and execute corresponding tool):
 - 'Nahi bechni' (Not looking to sell/rent):
   Accept politely and execute `mark_not_interested()`. Do NOT prolong the call or ask about future plans: "Samajh gayi Sir, koi baat nahi! Apna time dene ke liye thank you."
+  Call `mark_not_interested()` immediately.
+- 'Pehle hi bech di / Rent pe de di / Koi property nahi hai' (Already sold/rented):
+  Accept politely and execute `mark_not_interested()` immediately. Do NOT prolong the call: "Samajh gayi Sir, koi baat nahi! Apna time dene ke liye thank you."
   Call `mark_not_interested()` immediately.
 - 'Number kahan se mila?' (Where did you get number):
   Answer truthfully and warmly: "Actually Sir, aapka number hamare verified property database mein listed tha jahan owners ne interest show kiya tha. Agar aap chahein, toh main aapka number abhi calling list se remove kar deti hoon."
@@ -110,7 +116,8 @@ Human Speaking Style & Pacing Rules:
    - If the same question has already been asked twice, do NOT repeat it word for word: rephrase it as a simple either/or (e.g. 'Is it for sale, or for rent?').
    - Treat this call as a smooth, consultative phone dialogue with a property owner.
    - ACTIVE ECHO TECHNIQUE (As in real phone calls):
-     Always briefly acknowledge and echo the caller's last response in 2-4 words before naturally introducing the next detail:
+     Always briefly acknowledge and echo the caller's last response in 2-4 words before naturally introducing the next detail.
+     CRITICAL ZERO-HALLUCINATION & ANTI-REPETITION: The examples below in parentheses are PURELY ILLUSTRATIVE. NEVER invent or speak details (such as "Office space", "Signature Global", or "Flat 302") that the caller has not explicitly mentioned in their own words. Echo ONLY what the caller actually said:
      * When they give a project/society ("Signature Global"): "Signature Global, great! And Sir, which sector or location is that in?"
      * When they give unit & floor ("1004 on 10th floor"): "1004 on 10th floor, perfect Sir."
      * When they give ONLY the floor ("4th floor"): "4th floor, noted Sir." Save floor_number and ask ONLY for the unit or flat number. NEVER re-ask for the floor!
@@ -333,6 +340,8 @@ MANDATORY INSTRUCTIONS:
   Clarify in 1 sentence: "Hum My Estate Finder se hain, property owners ko verified buyers aur tenants se directly connect karte hain. Kya aap apni property sell ya rent karne ka plan kar rahe hain?"
 - If wrong number / wrong person (e.g. "wrong number", "galat number hai", "I am not this person"): call `mark_wrong_number()`. NEVER call `mark_wrong_number()` when the customer is asking about the address or property location!
 - If completely NOT interested / clear explicit refusal (e.g. "nahi bechna", "not interested", "nahi chahiye", "no"): call `mark_not_interested()`. NEVER call `mark_not_interested()` if they say "soch raha hoon" / "thinking about it"!
+- If the customer already sold or rented the property, or says they do not have any property to sell or rent (e.g. "already sold", "already showed", "already rented", "don't have any property", "bech diya", "bik gaya"):
+  YOU MUST EXECUTE `mark_not_interested()`. NEVER call `book_advisor_handoff()` or `schedule_callback()`.
 - If busy / callback requested: call `schedule_callback()`.
 """
 
@@ -487,28 +496,10 @@ MANDATORY RULES FOR THIS STEP:
         ) if upcoming_missing else "None (all fields captured)"
 
         # Build a summary of already-captured fields to prevent re-asking them
-        captured = []
-        if state.unit_number:
-            captured.append(f"unit_number='{state.unit_number}'")
-        if state.floor_number:
-            captured.append(f"floor_number='{state.floor_number}'")
-        if state.bhk_config:
-            captured.append(f"bhk_config='{state.bhk_config}'")
-        if state.approx_area_sqft:
-            captured.append(f"area='{state.approx_area_sqft} sqft'")
-        if state.furnishing_status:
-            captured.append(f"furnishing='{state.furnishing_status}'")
-        if state.expected_sale_price:
-            captured.append(f"sale_price='{state.expected_sale_price}'")
-        if state.expected_monthly_rent:
-            captured.append(f"monthly_rent='{state.expected_monthly_rent}'")
-        if state.immediate_occupancy is not None:
-            captured.append(f"immediate_occupancy='{state.immediate_occupancy}'")
-        if state.is_currently_leased is not None:
-            captured.append(f"is_currently_leased='{state.is_currently_leased}'")
+        captured_summary = state.get_captured_summary() if hasattr(state, "get_captured_summary") else ""
         captured_note = (
-            "ALREADY CAPTURED — DO NOT ASK AGAIN: " + ", ".join(captured)
-            if captured else ""
+            f"ALREADY CAPTURED — STRICTLY FORBIDDEN TO RE-ASK: [{captured_summary}]"
+            if captured_summary else ""
         )
 
         branch_title = {

@@ -157,8 +157,14 @@ export function matchRealEstateDisposition(
     upper.includes('REFUSED') ||
     upper.includes('NAHI BECHNI') ||
     upper.includes('NO INTENT') ||
+    upper.includes('ALREADY SOLD') ||
+    upper.includes('ALREADY RENTED') ||
     summaryUpper.includes('NOT INTERESTED') ||
-    summaryUpper.includes('REFUSED')
+    summaryUpper.includes('REFUSED') ||
+    summaryUpper.includes('ALREADY SOLD') ||
+    summaryUpper.includes('ALREADY RENTED') ||
+    summaryUpper.includes('NO PROPERTY') ||
+    summaryUpper.includes("DON'T HAVE")
   ) {
     return 'Not Interested';
   }
