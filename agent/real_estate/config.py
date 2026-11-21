@@ -79,10 +79,15 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 LLM_FALLBACK = os.getenv("LLM_FALLBACK", "1") == "1"
 LLM_ATTEMPT_TIMEOUT = float(os.getenv("LLM_ATTEMPT_TIMEOUT", "4.0"))
 
-# FASTPATH_ENABLED=1 : clean answers to the open intake question (BHK, area, furnishing, unit/floor, price,
-#                      leased/vacant, occupancy, commercial type) are parsed with regex and the LLM call is
-#                      skipped entirely (turn = EOU + TTS only). Anything unclear still goes to the LLM.
+# FASTPATH_ENABLED=1 : a reply that is ONLY a clean value for the open intake question ("3 BHK", "1200 sq ft",
+#                      "semi furnished", "407 4th floor", "50 lakh", "vacant") is read with regex and the LLM call
+#                      is skipped (turn = EOU + TTS only). If the sentence contains ANYTHING besides the value
+#                      (a negation, a question, an objection, a 2nd fact, an unknown word) the LLM handles it.
+#                      Regex reads values; the LLM decides meaning.
 FASTPATH_ENABLED = os.getenv("FASTPATH_ENABLED", "1") == "1"
+# Deterministic (no-LLM) shortcuts that act on the caller's MEANING (don't-know, market-rate, repeat, bare
+# yes/no ...) are only allowed for utterances up to this many words. Longer sentences always go to the LLM.
+SHORTCUT_MAX_TOKENS = int(os.getenv("SHORTCUT_MAX_TOKENS", "5"))
 # PRERENDER_GREETING=1 : while the phone is still ringing the opening line is synthesised in advance and
 #                        played from memory the moment the callee answers (no TTS wait on "Hello?").
 #                        Costs one greeting's worth of TTS characters for calls that are never answered.

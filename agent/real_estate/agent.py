@@ -8,8 +8,8 @@ from livekit.agents import Agent, StopResponse
 from src.carrier_filter import classify_carrier_message
 from .prompts import get_step_instructions
 from .state import RealEstateState, RealEstateStep, RealEstateStep as _Step
-from .config import CHAT_CTX_MAX_ITEMS, FAST_TOOL_REPLY, FASTPATH_ENABLED
-from .fastpath import extract as _fastpath_extract, extract_all_slots as _fastpath_extract_all
+from .config import CHAT_CTX_MAX_ITEMS, FAST_TOOL_REPLY, FASTPATH_ENABLED, SHORTCUT_MAX_TOKENS
+from .fastpath import extract as _fastpath_extract
 from .tools import (
     classify_category,
     classify_intent,
@@ -270,29 +270,6 @@ def _rejects_this_location(text: str) -> bool:
     return False
 
 
-# Caller lives in the property himself ("hum khud rahte hain usmein", "we stay there", "apna ghar hai").
-# That is neither sell nor rent: treated like refusing THIS property -> "any other property?".
-_SELF_OCC_LATIN = re.compile(
-    r"(khud\s+(hi\s+)?(reh|rah)\w*|(reh|rah)\w*\s*(hain|hai|hu|hoon)?\s*khud\b"
-    r"|(hum|ham|main|mai)\s+(hi\s+)?(yahin|yahan|yaha|usi\s*mein|usmein|isi\s*mein|usme|isme)?\s*(reh|rah)\w*\s*(hain|hai|hu|hoon|hun)\b"
-    r"|apna\s+(ghar|makaan|makan|flat)\b|own\s+use|self\s*[- ]?occup\w*"
-    r"|we\s+(live|stay)\s+(in|there|here)|i\s+(live|stay)\s+(in|there|here))",
-    re.I,
-)
-_SELF_OCC_DEV = re.compile(
-    r"(खुद\s*(ही\s*)?रह|(हम|मैं)\s*(ही\s*)?(यहीं|यहाँ|यहां|उसमें|इसमें)?\s*रह\w*\s*(हैं|है|हूँ|हूं)|अपना\s*(घर|मकान|फ्लैट))"
-)
-
-
-def _is_self_occupied(text: str) -> bool:
-    if not text:
-        return False
-    for c in _variants(text):
-        if _SELF_OCC_DEV.search(c) or _SELF_OCC_LATIN.search((c or "").lower()):
-            return True
-    return False
-
-
 _NEG_TOKENS = {"nahi", "nahin", "nhi", "nahii", "no", "nope", "nah", "not", "never", "nothing", "none",
                "नहीं", "नही", "नहि", "नो"}
 _STRONG_AFF = {"haan", "han", "haa", "ha", "haanji", "hanji", "yes", "yeah", "yep", "yup", "bilkul", "zaroor", "sure",
@@ -302,68 +279,28 @@ _OTHER_WORDS = {"doosri", "dusri", "doosra", "dusra", "another", "other", "द�
 _BARE_NEG_FILL = {"ji", "jee", "sir", "toh", "to", "bhi", "abhi", "bas", "theek", "thik", "ok", "okay",
                   "जी", "सर", "तो", "भी", "अभी", "बस", "ठीक", "ओके"} | _HAI
 
-_EXPLICIT_NO_OTHER = re.compile(
-    r"\b(koi\s*(aur|bhi|dusri|doosri)?\s*(nahi|nhi|nahin)|aur\s*koi\s*(nahi|nhi|nahin)|aur\s*(nahi|nhi|nahin)"
-    r"|(doosr[ia]|dusr[ia])\s*(wali\s*)?(nahi|nhi|nahin)"
-    r"|no\s+other|nothing\s+else|no\s+more|none\s+other|don'?t\s+have\s+any(\s+other)?)\b"
-    r"|\b(sirf|bas)\s*(ek|yehi|yahi|wohi|wahi)\s*(hi)?\s*(thi|tha|hai|hoga|property)?\b"
-    r"|(कोई\s*और\s*(नहीं|नही)|और\s*कोई\s*(नहीं|नही)|और\s*(नहीं|नही)|दूसरी\s*(नहीं|नही)|सिर्फ\s*एक|बस\s*यही|बस\s*एक)",
-    re.I,
-)
-
-_HAS_OTHER_PHRASE = re.compile(
-    r"\b(ek\s+aur|doosr[ia]|dusr[ia]|another|one\s+more|one\s+other|aur\s+bhi|other\s+one)\b"
-    r"|(एक\s*और|दूसर[ीा]|कोई\s*और\s*है|एक\s*और\s*है)",
-    re.I,
-)
-
-_LOCATION_OR_SPECIFIC = re.compile(
-    r"\b(sector|sec|phase|block|pocket|plot|flat|unit|floor|noida|gurgaon|delhi|faridabad|ghaziabad|societ|apart)\b"
-    r"|(सेक्टर|फेज|ब्लॉक|पॉकेट|प्लॉट|फ्लैट|यूनिट|फ्लोर|नोएडा|गुड़गांव|गुड़गांव|दिल्ली|सोसायटी)",
-    re.I,
-)
-
-
 def _other_property_answer(text: str):
-    """Answer to "do you have any other property?": True / False when it is a clean yes / no,
-    None when there is more in it (a location, a category...) -> the LLM + tool handle it."""
+    """Answer to "do you have any other property?": True / False ONLY when the whole utterance is a bare
+    yes or a bare no (plus polite filler such as "ji", "sir", "hai"). Anything else - "nahi, ek aur hai",
+    "haan Sector 62 mein", "koi aur nahi", "sirf ek thi" - is a sentence whose meaning the LLM must read."""
     if not text:
         return None
     for c in _variants(text):
         toks = _tokens(c)
-        if not toks or len(toks) > 10:
+        if not toks or len(toks) > SHORTCUT_MAX_TOKENS:
             continue
-
-        # If caller mentions a location or specific property detail, always delegate to LLM
-        if _LOCATION_OR_SPECIFIC.search(c):
-            return None
-
         has_neg = any(t in _NEG_TOKENS for t in toks)
-        strong_aff = any(t in _STRONG_AFF for t in toks)
-        has_other_phrase = bool(_HAS_OTHER_PHRASE.search(c))
-        explicit_no = bool(_EXPLICIT_NO_OTHER.search(c))
-
-        # Explicit refusal of another property (e.g. "koi aur nahi hai", "sirf ek hi thi", "doosri nahi hai")
-        if explicit_no and not strong_aff and not (has_other_phrase and re.search(r"\b(ek\s+aur|one\s+more)\b", c, re.I)):
+        has_aff = any(t in _STRONG_AFF for t in toks)
+        if has_neg and not has_aff and all(t in _NEG_TOKENS or t in _BARE_NEG_FILL for t in toks):
             return False
-
-        # Bare negative: only neg tokens and simple fillers (e.g. "nahi", "no sir", "nahi ji", "nahi hai")
-        if has_neg and not strong_aff and not has_other_phrase:
-            if all(t in _NEG_TOKENS or t in _BARE_NEG_FILL for t in toks):
-                return False
-
-        # Positive: caller explicitly mentions having another property (e.g. "ek aur hai", "nahi, ek aur hai", "doosri hai")
-        if has_other_phrase and not explicit_no:
+        if has_aff and not has_neg and all(t in _STRONG_AFF or t in _BARE_NEG_FILL for t in toks):
             return True
-
-        # Clean strong affirmation without negation (e.g. "haan", "yes", "haanji", "sure")
-        if strong_aff and not has_neg:
-            return True
-
     return None
 
 
-_REFUSAL_FILL = {"toh", "to", "ji", "jee", "sir", "abhi", "bilkul", "bas", "kuch", "kuchh", "bhi", "yar", "yaar", "bhai", "तो", "जी", "सर", "अभी", "बिल्कुल", "कुछ"}
+# NOTE: "abhi" / "kuch" are deliberately NOT filler: "abhi nahi" means "not right now" (a callback), and "kuch
+# nahi" is "nothing" - both need the LLM to read them in context before a call is ended.
+_REFUSAL_FILL = {"toh", "to", "ji", "jee", "sir", "bilkul", "bas", "bhi", "yar", "yaar", "bhai", "तो", "जी", "सर", "बिल्कुल"}
 _DIRECT_NOT_INTERESTED = re.compile(
     r"\b("
     r"not\s+interested|nahi\s+bechna|nahi\s+dena|nahi\s+chahiye|nahi\s+karna|nahi\s+karne|"
@@ -376,6 +313,15 @@ _DIRECT_NOT_INTERESTED = re.compile(
     r"abhi\s+kuch\s+nahi|abhi\s+kuchh\s+nahi|kuch\s+nahi|kuchh\s+nahi|abhi\s+nahi"
     r")\b"
     r"|(नॉट\s*इंटरेस्टेड|नहीं\s*बेचना|नहीं\s*देना|नहीं\s*चाहिए|कॉल\s*काटो|काट\s*दो|कुछ\s*नहीं|अभी\s*नहीं)",
+    re.I,
+)
+
+
+# The ONLY phrase-level refusals closed without the LLM: short, unambiguous, no "abhi"/"kuch"/"baad mein"
+# style words (those can mean "not now" / "ask me later" and need the LLM to decide).
+_CLEAR_REFUSAL_SHORT = re.compile(
+    r"^\W*(?:(?:mujhe|hum|mai|main)\s+)?(?:not\s+interested|interested\s+nahi|nahi\s+bechna|nahi\s+dena|"
+    r"nahi\s+chahiye|no\s+thanks?|no\s+thank\s+you)(?:\s+(?:hai|hain|sir|ji|thanks?))*\W*$",
     re.I,
 )
 
@@ -877,16 +823,11 @@ class RealEstateAgent(Agent):
         else:
             state.hold_until = 0.0
 
-        # Check for pricing, market rate, or valuation inquiries
-        _PRICE_QUERY_RE = re.compile(
-            r"\b(price|pricing|rate|rates|average\s*price|selling\s*price|valuation|bhav|kitna\s*milega|market\s*rate|market\s*trend|market\s*price)\b",
-            re.IGNORECASE,
-        )
-        if _PRICE_QUERY_RE.search(low_text):
-            state.valuation_requested = True
-            if not state.advisor_handoff_reason:
-                state.advisor_handoff_reason = "Customer inquired about property pricing/valuation"
-            logger.info(f"💰 Customer asked about property pricing/valuation: '{text}' -> marking valuation_requested = True")
+        # NOTE: there is deliberately NO keyword check for "price / rate / market rate" here any more.
+        # The word "price" appears in plain ANSWERS too ("price 50 lakh expect kar raha hoon"); flagging it set
+        # valuation_requested and made the call close with the "advisor will tell you the price" line.
+        # Whether the caller is ASKING for a valuation is a meaning decision -> the LLM calls
+        # book_advisor_handoff(reason="Price valuation requested"), which sets the flag itself.
 
         # ── Deterministic intake shortcuts (no LLM round trip, instant playout) ──────────
         tools_ = self._re_tools
@@ -895,24 +836,21 @@ class RealEstateAgent(Agent):
         _intro_refusal = _rejects_this_location(text) or _starts_with_negation(text)
         _intro_int = None if _intro_refusal else classify_intent(text)
 
-        # A0: caller lives in the property himself -> not a sale/rent lead for THIS property. Never re-ask
-        # sell-or-rent; acknowledge and ask the standard "any other property?" question (no LLM).
-        if state.step in (_Step.INTRODUCTION, _Step.CATEGORY_SELECT) and not _intro_int and _is_self_occupied(text):
-            logger.info(f"🏠 Owner-occupied ('we live there ourselves') -> asking about another property (no LLM): '{text}'")
-            try:
-                await tools_.not_interested_in_this_location()
-                _q = state.direct_reply or other_property_question(state.reply_lang)
-                state.direct_reply = None
-                _lead = "Understood Sir, you live there yourself. " if state.reply_lang == "en" else "Ji samajh gayi Sir, aap khud rehte hain wahan. "
-                self.speak_and_stop(_lead + _q, allow_interruptions=True)
-            except Exception as e:
-                logger.warning(f"Owner-occupied shortcut failed, falling back to LLM: {e}")
+        # Check if caller asked any question, identity query, objection, or callback
+        _has_query = bool(
+            _is_pickup_or_identity_query(text)
+            or _asks_number_source(text)
+            or _asks_if_broker(text)
+            or _asks_location_clarification(text)
+            or _asks_agent_for_price(text)
+            or "?" in text
+            or re.search(r"\b(kaun|kahan|kidhar|kya|kyun|kyon|who|what|where|why|which|how|kisne|kisko|broker|dealer)\b", low_text)
+        )
 
-        # A: caller acknowledges or interrupts opening greeting -> ask qualification question
+        # A: caller acknowledges opening greeting (e.g. "Hello", "Haan", "Yes", "Speaking")
         if state.step == _Step.INTRODUCTION and _is_greeting_ack(text) and not state.greeting_acknowledged:
             state.greeting_acknowledged = True
-            # The caller answered the greeting in Hindi ("haan boliye") but the first reply would still go out in the
-            # stale default language (language detection only runs after these shortcuts). Follow the caller now.
+            # Follow caller language if they spoke Hindi
             if (
                 state.reply_lang == "en"
                 and not state.language_switched
@@ -925,15 +863,21 @@ class RealEstateAgent(Agent):
                         self.on_language_change("hi")
                     except Exception as e:
                         logger.warning(f"Language switch callback failed: {e}")
-            loc = state.initial_property_location or state.sector_or_location
-            has_loc = bool(loc)
-            was_interrupted = getattr(state, "opening_speech_interrupted", False) or _is_pickup_or_identity_query(text)
-            reply = sell_or_rent_question(state.reply_lang, has_loc=has_loc, loc=loc, full_context=was_interrupted)
-            logger.info(f"👋 Greeting acknowledged (full_context={was_interrupted}) -> asking qualification: '{reply}'")
-            self.speak_and_stop(reply, allow_interruptions=True)
 
-        # A1: caller answered "Sell" or "Rent" directly at INTRODUCTION step -> capture intent and move to intake
-        if state.step == _Step.INTRODUCTION and _intro_int:
+            # If the caller asked a question (e.g. "Kaun bol raha hai?", "Kahan se number mila?"),
+            # do NOT speak a static canned qualification question. Hand off to LLM to answer warmly and naturally!
+            if not _has_query:
+                loc = state.initial_property_location or state.sector_or_location
+                has_loc = bool(loc)
+                was_interrupted = getattr(state, "opening_speech_interrupted", False)
+                reply = sell_or_rent_question(state.reply_lang, has_loc=has_loc, loc=loc, full_context=was_interrupted)
+                logger.info(f"👋 Pure greeting acknowledged -> asking qualification: '{reply}'")
+                self.speak_and_stop(reply, allow_interruptions=True)
+            else:
+                logger.info(f"👋 Greeting with question heard: '{text}' -> handing to LLM for conversational reply")
+
+        # A1: caller answered clean "Sell" or "Rent" directly at INTRODUCTION step (no additional questions/conditions)
+        if state.step == _Step.INTRODUCTION and _intro_int and not _has_query and len(_tokens(text)) <= 4:
             state.greeting_acknowledged = True
             state.intent = _intro_int
             state.is_interested = True
@@ -949,11 +893,11 @@ class RealEstateAgent(Agent):
                 first_q = missing[0]["question_en"] if state.reply_lang == "en" else missing[0]["question_hi"]
                 ack = "Great, Sir! " if state.reply_lang == "en" else "Ji bilkul Sir! "
                 reply = ack + first_q
-                logger.info(f"🎯 Intent '{_intro_int}' recognized from '{text}' at intro -> transitioning to {state.step.value}: '{reply}'")
+                logger.info(f"🎯 Direct intent '{_intro_int}' recognized at intro -> transitioning to {state.step.value}: '{reply}'")
                 self.speak_and_stop(reply, allow_interruptions=True)
 
         # A2: caller answered ambiguous "Haan" / "Yes" AFTER greeting was already acknowledged -> prompt to choose
-        if state.step == _Step.INTRODUCTION and state.greeting_acknowledged and _is_greeting_ack(text) and not _intro_int:
+        if state.step == _Step.INTRODUCTION and state.greeting_acknowledged and _is_greeting_ack(text) and not _intro_int and not _has_query:
             en = state.reply_lang == "en"
             clarify = (
                 "Could you please tell me if you'd like to sell it, or put it on rent?"
@@ -969,31 +913,26 @@ class RealEstateAgent(Agent):
             logger.info(f"🤔 Caller gave ambiguous 'yes' to sell-or-rent -> asking to choose: '{clarify}'")
             self.speak_and_stop(clarify, allow_interruptions=True)
 
-        # A3: caller asks "Number kahan se mila?" / "How did you get my number?"
-        if state.step == _Step.INTRODUCTION and _asks_number_source(text):
-            en = state.reply_lang == "en"
-            _rep = (
-                "Your number was listed in our verified property database, Sir. Were you looking to sell or rent out your property?"
-                if en else
-                "Actually Sir, aapka number hamare verified property database mein listed tha. Kya aap apni property sell ya rent karne ka plan kar rahe hain?"
-            )
-            logger.info(f"📱 'How did you get my number?' query -> explaining source: '{_rep}'")
-            self.speak_and_stop(_rep, allow_interruptions=True)
-
-        # B: caller refuses THIS SPECIFIC location ("us location pe nahi bechna", "wahan ka nahi") -> "any other property?"
-        if state.step == _Step.INTRODUCTION and _rejects_this_location(text):
-            logger.info(f"📍 Refused THIS location -> asking about another property (no LLM): '{text}'")
-            try:
-                await tools_.not_interested_in_this_location()
-                reply = state.direct_reply or other_property_question(state.reply_lang)
-                state.direct_reply = None
-                self.speak_and_stop(reply, allow_interruptions=True)
-            except Exception as e:
-                logger.warning(f"Location-refusal shortcut failed, falling back to LLM: {e}")
-
-        # B-alt: caller gives general refusal ("nahi", "no sir", "nahi bechna", "not interested", "kat karo") to selling/renting -> clean polite close & hangup
-        if state.step in (_Step.INTRODUCTION, _Step.CATEGORY_SELECT) and (_is_bare_refusal(text) or _DIRECT_NOT_INTERESTED.search(text) or explicit_refusal(text)):
-            logger.info(f"🛑 General refusal at {state.step.value} -> mark_not_interested & closing (no LLM): '{text}'")
+        # B-alt: a BARE refusal ("nahi", "no sir", "nahi ji") or one of a handful of unambiguous short phrases
+        # ("not interested", "nahi bechna") closes the call without an LLM round trip. Every other way of
+        # refusing ("abhi nahi", "is location pe nahi", "pehle hi bech di", "hum khud rehte hain", "mere paas
+        # koi property nahi") is a SENTENCE: the LLM reads it and picks mark_not_interested /
+        # not_interested_in_this_location / schedule_callback. Ending a call on a keyword guess is worse than
+        # spending one LLM call.
+        _is_callback_request = bool(
+            _HUMAN_CALLBACK_RE.search(text)
+            or re.search(r"\b(call\s*(me\s*)?(back|later)|later|busy|baad\s*mein|baad\s*me|shaam|kal|subah|driving|drive|meeting|hospital)\b", low_text)
+        )
+        _already_interested = (state.is_interested is True) or (state.intent in ("sell", "rent", "lease"))
+        _is_refusal_here = (
+            not _is_callback_request
+            and not _already_interested
+            and not _has_query
+            and len(_tokens(text)) <= SHORTCUT_MAX_TOKENS
+            and (_is_bare_refusal(text) or bool(_CLEAR_REFUSAL_SHORT.match(text.strip())))
+        )
+        if state.step in (_Step.INTRODUCTION, _Step.CATEGORY_SELECT) and _is_refusal_here:
+            logger.info(f"🛑 Bare refusal at {state.step.value} -> mark_not_interested & closing (no LLM): '{text}'")
             try:
                 await tools_.mark_not_interested()
                 tools_._speak_closing_and_hangup()
@@ -1042,7 +981,14 @@ class RealEstateAgent(Agent):
         # Caller says "don't know" / "nahi pata" / "yaad nahi" to the currently asked intake field:
         # Skip the field cleanly without corrupting data (e.g. unit_floor will NOT be marked standalone).
         _intake_steps = (_SS.RESIDENTIAL_SALE, _SS.RESIDENTIAL_LEASE, _SS.COMMERCIAL_SALE, _SS.COMMERCIAL_LEASE)
-        if state.step in _intake_steps and (_DONT_KNOW_RE.search(low_text) or _DONT_KNOW_DEV.search(text)):
+        # Only when the sentence is JUST "I don't know" (short, no figure in it). A longer sentence such as
+        # "area pata nahi, but 3 BHK hai" also carries a fact -> the LLM saves it AND skips the field.
+        if (
+            state.step in _intake_steps
+            and (_DONT_KNOW_RE.search(low_text) or _DONT_KNOW_DEV.search(text))
+            and len(_tokens(text)) <= SHORTCUT_MAX_TOKENS
+            and not re.search(r"[0-9\u0966-\u096F]", text)
+        ):
             missing = state.get_missing_fields()
             if missing:
                 skipped_id = missing[0]["id"]
@@ -1059,7 +1005,12 @@ class RealEstateAgent(Agent):
                     raise StopResponse()
 
         # Caller states "market rate" / "jo market rate chal raha hai" as expected price:
-        if state.step in _intake_steps and _is_market_rate_statement(text):
+        if (
+            state.step in _intake_steps
+            and len(_tokens(text)) <= SHORTCUT_MAX_TOKENS + 2
+            and not re.search(r"[0-9\u0966-\u096F]", text)
+            and _is_market_rate_statement(text)
+        ):
             missing = state.get_missing_fields()
             if missing and missing[0]["id"] in ("sale_price", "monthly_rent"):
                 field_id = missing[0]["id"]
@@ -1083,15 +1034,18 @@ class RealEstateAgent(Agent):
         # words often quote the question itself ("residential hai ya commercial hai na?").
         from .state import RealEstateStep as _S
         _intake = (_S.RESIDENTIAL_SALE, _S.RESIDENTIAL_LEASE, _S.COMMERCIAL_SALE, _S.COMMERCIAL_LEASE)
+        # "repeat" is only trusted in a SHORT utterance; "samajh nahi aa raha ki price kya rakhun" is a real
+        # sentence with a question inside -> LLM.
+        _rep = _asks_repeat(text) and len(_tokens(text)) <= SHORTCUT_MAX_TOKENS + 3
         if state.step in _intake or state.step == _S.CATEGORY_SELECT:
             _neutral = _is_neutral_utterance(text)
             _reask = None
             _kind = None
-            if state.step == _S.CATEGORY_SELECT and (_asks_repeat(text) or _neutral):
+            if state.step == _S.CATEGORY_SELECT and (_rep or _neutral):
                 # A bare "haan"/"ji" does not answer "residential or commercial? sell or rent?"
                 # (often it is just a backchannel that interrupted the question).
                 _cat, _int = classify_category(text), classify_intent(text)
-                if _asks_repeat(text) or not (_cat or _int):
+                if _rep or not (_cat or _int):
                     en = state.reply_lang == "en"
                     # Only re-ask what is STILL missing — never re-ask an already-collected field
                     if state.category and state.intent:
@@ -1111,7 +1065,7 @@ class RealEstateAgent(Agent):
                         )
                         _kind = "category"
             elif state.step in _intake:
-                if _asks_repeat(text):
+                if _rep:
                     _missing = state.get_missing_fields()
                     if _missing:
                         _reask = _missing[0]["question_en"] if state.reply_lang == "en" else _missing[0]["question_hi"]
@@ -1133,7 +1087,7 @@ class RealEstateAgent(Agent):
                 if _n >= 3:
                     logger.info(f"🔁 Same question re-asked {_n}x -> handing this turn to the LLM instead of looping")
                     _reask = None
-                elif _kind and not (_asks_repeat(text) and not _neutral):
+                elif _kind and not (_rep and not _neutral):
                     # the caller did not ask us to repeat; they gave an unusable answer -> ask it in simpler words
                     _alt = _simplified_reask(state.reply_lang == "en", _kind, _n)
                     if _alt:
@@ -1143,53 +1097,10 @@ class RealEstateAgent(Agent):
                 logger.info(f"🔁 Repeat/backchannel -> re-asking open question (no LLM): '{_reask}'")
                 self.speak_and_stop(lead + _reask, allow_interruptions=True)
 
-        # Caller asks to repeat or clarify location at INTRODUCTION step
-        if state.step == _S.INTRODUCTION and (_asks_repeat(text) or _asks_location_clarification(text)):
-            loc = state.initial_property_location or state.sector_or_location
-            en = state.reply_lang == "en"
-            if loc:
-                _rep = f"The property is at {loc}. Are you considering selling or renting it out?" if en else f"{loc} par jo aapki property hai. Kya aap use sell ya rent karne ka soch rahe hain?"
-            else:
-                # No address on record: say so honestly instead of re-reading the same question.
-                _rep = (
-                    "I don't have a specific address on my side, Sir. I'm just checking whether you own any property "
-                    "you'd like to sell or rent out. Do you?"
-                    if en else
-                    "Sir, mere paas koi specific address nahi hai. Main bas yeh pooch rahi hoon ki kya aapki koi property hai "
-                    "jise aap sell ya rent karna chahte hain?"
-                )
-            lead = "" if not loc else ("Sure, " if en else "Ji, ")
-            _n = _bump_reask(state, f"INTRO|{'loc' if loc else 'noloc'}")
-            if _n >= 3:
-                logger.info("🔁 Intro clarification asked 3x -> letting the LLM handle it")
-            else:
-                logger.info(f"🔁 Repeat / location clarification at intro -> '{_rep}'")
-                self.speak_and_stop(lead + _rep, allow_interruptions=True)
-
-        # Caller indicates they are thinking/considering at INTRODUCTION step (e.g. "Sochata rahun", "Soch raha hoon")
-        if state.step == _S.INTRODUCTION and _is_considering(text):
-            state.is_interested = True
-            _cat = classify_category(text)
-            _int = classify_intent(text)
-            if _cat:
-                state.category = _cat
-            if _int:
-                state.intent = _int
-            en = state.reply_lang == "en"
-            state.step = _S.CATEGORY_SELECT
-            if state.intent and not state.category:
-                _rep = "Got it! Is it a residential or commercial property?" if en else "Ji samajh gayi. Ye residential property hai ya commercial?"
-            elif state.category and not state.intent:
-                _rep = "Understood! Are you looking to sell or rent it out?" if en else "Ji samajh gayi. Aap ise sell karne ka soch rahe hain ya rent par dene ka?"
-            else:
-                _rep = "Understood! Are you looking to sell or rent it out?" if en else "Ji samajh gayi. Aap ise sell karne ka soch rahe hain ya rent par dene ka?"
-            logger.info(f"🤔 Considering/thinking at intro -> moving to category/intent: '{_rep}'")
-            self.speak_and_stop(_rep, allow_interruptions=True)
-
         # "Repeat" at ANY other step (other-property, new location, name): say the last question
         # we actually asked, verbatim. Repeating only happens when the caller asks for it.
         if state.step not in _intake and state.step != _S.CATEGORY_SELECT and state.step != _S.INTRODUCTION and state.step != _S.CLOSING \
-                and _asks_repeat(text):
+                and _rep:
             q_to_repeat = state.last_agent_question
             if not q_to_repeat:
                 if state.step == _S.CHECK_OTHER_PROPERTY:
@@ -1201,34 +1112,8 @@ class RealEstateAgent(Agent):
                 logger.info(f"🔁 Repeat requested -> re-asking last question (no LLM): '{q_to_repeat}'")
                 self.speak_and_stop(lead + q_to_repeat, allow_interruptions=True)
 
-        # Caller asks "Are you a broker?" / "Kya aap broker ho?"
-        if _asks_if_broker(text) and state.step != _S.CLOSING:
-            en = state.reply_lang == "en"
-            if state.step in _intake:
-                _missing = state.get_missing_fields()
-                _follow = (" " + (_missing[0]["question_en"] if en else _missing[0]["question_hi"])) if _missing else ""
-                _rep = (
-                    f"We are from My Estate Finder. We connect property owners directly with verified buyers and tenants.{_follow}"
-                    if en else
-                    f"Ji, hum My Estate Finder se hain. Hum property owners ko verified buyers aur tenants se directly connect karte hain.{_follow}"
-                )
-            else:
-                _rep = (
-                    "We are from My Estate Finder, a verified property platform connecting property owners directly with genuine buyers and tenants. Are you looking to sell or rent out your property?"
-                    if en else
-                    "Ji, hum My Estate Finder se hain. Hum property owners ko direct verified buyers aur tenants se connect karte hain. Kya aap apni property sell ya rent karne ka soch rahe hain?"
-                )
-            logger.info(f"🏢 'Are you a broker?' query -> explaining platform: '{_rep}'")
-            self.speak_and_stop(_rep, allow_interruptions=True)
-
-        impatient_phrases = (
-            "jaldi bolo", "jaldi batao", "time nahi", "time nhi", "bahut sawal", "kitna sawal",
-            "kitne sawal", "hurry up", "don't have time", "dont have time", "wrap it up",
-            "seedha point", "stop asking", "bakwas band", "short me bolo", "short mein",
-        )
-        if any(p in low_text for p in impatient_phrases):
-            logger.info(f"⚠️ Impatience pattern detected in caller utterance: '{text}'")
-            state.impatient_detected = True
+        # NOTE: no keyword list for "impatient" any more ("short mein", "time nahi" ... also appear inside
+        # ordinary sentences). The LLM judges tone and calls book_advisor_handoff(reason="...impatient...").
 
         # Proactively detect category & intent directly from caller utterance
         from .state import RealEstateStep
@@ -1243,39 +1128,14 @@ class RealEstateAgent(Agent):
             RealEstateStep.INTRODUCTION, RealEstateStep.CATEGORY_SELECT,
             RealEstateStep.CHECK_OTHER_PROPERTY, RealEstateStep.ASK_NEW_LOCATION
         ))
-        detected_cat = None if (_refusal or not _allow_cat_detect) else classify_category(text)
-        detected_int = None if _refusal else classify_intent(text)
+        _is_asking_question = bool(_asks_agent_for_price(text) or _asks_number_source(text) or _asks_if_broker(text))
+        # Keyword classification is trusted only for a SHORT reply with no question in it ("residential sell",
+        # "flat rent pe"). A long / questioning sentence ("rent kitna milega?", "ghar pe baat karni hai baad
+        # mein") is read by the LLM, which calls set_category_and_intent / customer_interested itself.
+        _kw_ok = (not _has_query) and len(_tokens(text)) <= SHORTCUT_MAX_TOKENS + 1
+        detected_cat = None if (_refusal or not _allow_cat_detect or _is_asking_question or not _kw_ok) else classify_category(text)
+        detected_int = None if (_refusal or _is_asking_question or not _kw_ok) else classify_intent(text)
         step_changed = False
-
-        # Multi-slot extraction from caller utterance:
-        # Any slots explicitly mentioned by the caller are committed to state immediately.
-        if text and not _refusal:
-            proactive_slots = _fastpath_extract_all(text)
-            if proactive_slots:
-                logger.info(f"🔍 Proactively extracted slots from caller: {proactive_slots}")
-                if proactive_slots.get("bhk_config"):
-                    state.bhk_config = proactive_slots["bhk_config"]
-                    detected_cat = "residential"
-                if proactive_slots.get("category"):
-                    detected_cat = proactive_slots["category"]
-                if proactive_slots.get("intent"):
-                    detected_int = proactive_slots["intent"]
-                if proactive_slots.get("approx_area_sqft") and not state.approx_area_sqft:
-                    state.approx_area_sqft = proactive_slots["approx_area_sqft"]
-                if proactive_slots.get("furnishing_status") and not state.furnishing_status:
-                    state.furnishing_status = proactive_slots["furnishing_status"]
-                if proactive_slots.get("unit_number") and not state.unit_number:
-                    state.unit_number = proactive_slots["unit_number"]
-                if proactive_slots.get("floor_number") and not state.floor_number:
-                    state.floor_number = proactive_slots["floor_number"]
-                if proactive_slots.get("immediate_occupancy") is not None and state.immediate_occupancy is None:
-                    state.immediate_occupancy = proactive_slots["immediate_occupancy"]
-                if proactive_slots.get("is_currently_leased") is not None and state.is_currently_leased is None:
-                    state.is_currently_leased = proactive_slots["is_currently_leased"]
-                if proactive_slots.get("expected_monthly_rent") and not state.expected_monthly_rent:
-                    state.expected_monthly_rent = proactive_slots["expected_monthly_rent"]
-                if proactive_slots.get("expected_sale_price") and not state.expected_sale_price:
-                    state.expected_sale_price = proactive_slots["expected_sale_price"]
 
         if detected_cat:
             old_cat = state.category
@@ -1370,25 +1230,6 @@ class RealEstateAgent(Agent):
                         logger.warning(f"Failed to refresh instructions: {e}")
                 asyncio.create_task(_refresh_lang_instructions())
 
-        # Caller states "market rate" / "jo market rate chal raha hai" anywhere during intake:
-        # Save it into state immediately so it is never re-asked later.
-        if (
-            state.step in (
-                RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.RESIDENTIAL_LEASE,
-                RealEstateStep.COMMERCIAL_SALE, RealEstateStep.COMMERCIAL_LEASE,
-            )
-            and not state.closing_spoken
-            and _is_market_rate_statement(text)
-        ):
-            if state.intent == "lease":
-                if not state.expected_monthly_rent:
-                    state.expected_monthly_rent = "Market Rate"
-                    logger.info(f"Recorded market rate expectation for rent: '{text}'")
-            else:
-                if not state.expected_sale_price:
-                    state.expected_sale_price = "Market Rate"
-                    logger.info(f"Recorded market rate expectation for price: '{text}'")
-
         # ── FAST PATH: a clean answer to the ONE open intake question needs no LLM call ─────────────
         # Parsed with regex (fastpath.py) -> save_property_details() -> the tool speaks the next canonical
         # question (FAST_TOOL_REPLY). Anything unclear / multi-field / objection returns None and the
@@ -1408,8 +1249,21 @@ class RealEstateAgent(Agent):
             if _fp_missing:
                 _fp_field = _fp_missing[0]["id"]
                 if _fp_field == "commercial_type":
-                    _ct = commercial_type_from_speech(text)
-                    _fp_kw = {"commercial_type": _ct} if (_ct and _ct != "Other" and len(_tokens(text)) <= 4) else None
+                    # Whole-sentence accounting, like fastpath.extract(): the sentence must be ONLY a unit type
+                    # ("office", "shop hai") or ONLY a bare denial ("nahi nahi"). "office nahi, shop hai",
+                    # "shop nahi dena" or anything longer carries more meaning -> LLM.
+                    _toks = _tokens(text)
+                    _neg_in = any(t in _NEG_TOKENS for t in _toks)
+                    _fp_kw = None
+                    if _is_bare_refusal(text):
+                        logger.info(f"🏡 Bare denial of commercial ('{text}') -> switching category to residential")
+                        _fp_kw = {"category": "residential"}
+                    elif not _neg_in and len(_toks) <= 4:
+                        _ct = commercial_type_from_speech(text)
+                        if _ct and _ct != "Other":
+                            _rest = [t for t in _toks if t not in set(re.findall(r"[a-z\u0900-\u097F]+", _ct.lower()))
+                                     and t not in {"hai", "hain", "sir", "ji", "haan", "ye", "yeh", "it", "is", "its", "a", "an", "space", "retail"}]
+                            _fp_kw = {"commercial_type": _ct} if not _rest else None
                 else:
                     _fp_kw = _fastpath_extract(_fp_field, text)
                 if _fp_kw:

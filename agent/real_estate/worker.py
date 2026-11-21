@@ -420,13 +420,25 @@ def _apply_disconnect_disposition(state: RealEstateState):
                     advisor_mentioned = True
 
         # Check if caller expressed negative refusal in any customer turn
+        is_already_interested = (state.is_interested is True) or (state.intent in ("sell", "rent", "lease"))
+
         caller_refused = False
         for turn in state.transcript:
             if turn.get("role") in ("customer", "user"):
                 t_text = (turn.get("text") or "").strip()
-                if t_text and (explicit_refusal(t_text) or _is_bare_refusal(t_text) or _DIRECT_NOT_INTERESTED.search(t_text)):
-                    caller_refused = True
-                    break
+                if not t_text:
+                    continue
+                # If caller already confirmed interest (e.g. said "sale" or "rent"),
+                # a bare "nahi" / "no" / "nahi nahi" is just an answer to a question (e.g. "is it office space? nahi nahi").
+                # Only explicit refusal to sell/rent (e.g. "nahi bechna", "not interested", "nahi chahiye") can count.
+                if is_already_interested:
+                    if _DIRECT_NOT_INTERESTED.search(t_text):
+                        caller_refused = True
+                        break
+                else:
+                    if explicit_refusal(t_text) or _is_bare_refusal(t_text) or _DIRECT_NOT_INTERESTED.search(t_text):
+                        caller_refused = True
+                        break
 
         if caller_refused and not (details_captured and len(details_captured) >= 3):
             state.is_interested = False

@@ -1,22 +1,27 @@
 """
-fastpath.py - deterministic parsing of intake answers (NO LLM round trip).
+fastpath.py - deterministic parsing of *clean slot values* (NO LLM round trip).
 
-When the caller gives a clean answer to the ONE question that is currently open (e.g. "3 BHK",
-"semi furnished", "1200 sq ft", "50 lakh", "407, 4th floor"), the answer is parsed here with regexes and
-handed to RealEstateTools.save_property_details(), which already speaks the next canonical question
-(FAST_TOOL_REPLY).  The LLM call - the largest part of a turn - is skipped.
+WHAT REGEX IS ALLOWED TO DO HERE
+    Read a VALUE (a number with a unit, "3 BHK", "semi furnished", "407 on 4th floor", "50 lakh") from a
+    sentence that contains NOTHING ELSE.  Values have a small, closed vocabulary, so regex is reliable there.
 
-SAFETY RULES (so the flow never breaks):
-  * Only the field that is currently open (missing[0]) can be filled.
-  * If the utterance ALSO contains data for any other field, we return None -> the LLM splits it, so
-    nothing the caller volunteered is lost or re-asked.
-  * Objections, repeats, "don't know", price questions, long sentences -> None (LLM / existing handlers).
-  * Anything ambiguous -> None.  Returning None always falls back to the normal LLM path.
+WHAT REGEX IS NOT ALLOWED TO DO
+    Decide what the caller MEANT: refusals, objections, questions, "don't know", negations, callbacks,
+    "that's not what I asked", several facts in one sentence...  Callers can phrase those in unlimited ways,
+    so all of that belongs to the LLM.
+
+HOW THE BOUNDARY IS ENFORCED  (whole-sentence accounting)
+    1. Only the ONE field that is currently open (missing[0]) can be filled.
+    2. After the value is found, every remaining word must be harmless filler ("sir", "ji", "approx",
+       "hai", "hoga", the unit word ...).  If even ONE unknown word is left over ("nahi", "lekin", "broker",
+       "negotiable", a second number ...) the caller said more than a value -> return None -> the LLM handles it.
+    3. Anything ambiguous returns None.  Returning None is always safe: it just costs one LLM call.
 
 Pure python, no livekit imports, so it can be unit-tested on its own.
 """
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Pattern, Set
+
 from .tools import is_standalone_from_speech
 
 try:  # Sarvam STT often returns Devanagari; we also try a romanised copy
@@ -26,12 +31,14 @@ except Exception:  # unit tests / package not on path
         return text
 
 _DEV = re.compile(r"[\u0900-\u097F]")
-_MAX_TOKENS = 14
+_MAX_TOKENS = 8  # a slot answer is short; anything longer is a conversation -> LLM
+# numbers ("1,200", "1.5") OR words (latin / devanagari)
+_TOK = re.compile(r"\d[\d,]*(?:\.\d+)?|[a-z\u0900-\u097F]+")
 
 
 def _variants(text: str) -> List[str]:
-    t = (text or "").strip()
-    out = [t.lower()]
+    t = (text or "").strip().replace("\u2019", "'")
+    out = [t.lower().replace("'", "")]   # it's -> its, don't -> dont
     if _DEV.search(t):
         try:
             r = romanize_hindi(t)
@@ -42,17 +49,24 @@ def _variants(text: str) -> List[str]:
     return out
 
 
-# Anything that is an objection / question / hand-off / "don't know" is NOT a plain slot answer.
-_BLOCK = re.compile(
-    r"(robot|\bai\b|\bbot\b|whats\s*app|call\s*mat|mat\s*karna|do\s*not\s*call|don'?t\s*call|\bdnd\b|\bdnc\b|"
-    r"number\s*kahan|kahan\s*se|broker|commission|brokerage|baad\s*mein|baad\s*me|call\s*(me\s*)?(back|later)|"
-    r"\blater\b|\bbusy\b|time\s*nahi|time\s*nhi|hurry|jaldi|wrong\s*number|repeat|dobara|dubara|phir\s*se|fir\s*se|"
-    r"kya\s*(bola|bole|puch)|pata\s*nahi|pata\s*nhi|nahi\s*pata|yaad\s*nahi|don'?t\s*know|do\s*not\s*know|"
-    r"not\s*sure|idea\s*nahi|no\s*idea|cannot\s*share|nahi\s*bata|rate\s*kya|price\s*kya|kitna\s*milega|"
-    r"valuation|market\s*(?:kya|kitn|bata|trend)|human|advisor|manager|not\s*interested|interested\s*nahi)"
-)
+# Words that carry NO meaning of their own in a slot answer. Deliberately tiny and "meaning-free":
+# negations (nahi/not/no), conjunctions that start a 2nd thought (lekin/but/par), questions, names of other
+# fields etc. are NOT in this set, so they always push the turn to the LLM.
+_FILL: Set[str] = {
+    "sir", "madam", "ji", "jee", "haan", "han", "haanji", "hanji", "yes", "yeah", "yep", "ok", "okay",
+    "hai", "hain", "hoga", "hogi", "hoon", "ho", "h", "it", "its", "is", "the", "a", "an", "will", "be",
+    "approx", "approximately", "around", "about", "roughly", "lagbhag", "kareeb", "karib", "basically",
+    "so", "toh", "to", "bhi", "ka", "ke", "ki", "ko", "me", "mein", "main", "pe", "par", "per", "wala", "wali",
+    "and", "aur", "please", "only", "bas", "just", "that", "this", "ye", "yeh", "woh", "wo", "um", "uh", "umm", "hmm",
+}
 
-_NUM = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+def _leftover(v: str, consumed: List[Pattern], vocab: Set[str]) -> List[str]:
+    """Words of `v` that are NOT part of the value (`consumed` patterns removed) and NOT harmless filler."""
+    s = v
+    for pat in consumed:
+        s = pat.sub(" ", s)
+    return [t for t in _TOK.findall(s) if t not in _FILL and t not in vocab]
 
 
 def _to_float(s: str) -> Optional[float]:
@@ -62,10 +76,10 @@ def _to_float(s: str) -> Optional[float]:
         return None
 
 
-def _bare_number(v: str, fill: set) -> Optional[str]:
+def _bare_number(v: str, vocab: Set[str]) -> Optional[str]:
     """'1200' / 'approx 1200 hoga' -> '1200'. None if anything else is in the sentence."""
     toks = [t.strip(".,") for t in re.findall(r"[a-z0-9\.,\u20b9]+", v)]
-    left = [t for t in toks if t and t != "\u20b9" and t not in fill]
+    left = [t for t in toks if t and t != "\u20b9" and t not in _FILL and t not in vocab]
     if len(left) == 1 and re.fullmatch(r"\d[\d,]*(?:\.\d+)?", left[0]):
         return left[0]
     return None
@@ -79,26 +93,30 @@ _BHK = re.compile(
     r"(?:bhk|b\.h\.k|bed\s*rooms?)"
 )
 _RK = re.compile(r"\b(\d)\s*rk\b")
+_STUDIO = re.compile(r"\bstudio\b")
+_BHK_VOCAB = {"bhk", "bed", "beds", "bedroom", "bedrooms", "room", "rooms", "flat", "apartment",
+              "plus", "with", "servant", "rk", "studio"}
+_BHK_BARE_VOCAB = {"bedroom", "bedrooms", "bed", "beds", "flat", "apartment"}
 
 
-def _x_bhk(v: str, open_field: str = "") -> Optional[Dict[str, Any]]:
-    if re.search(r"\bstudio\b", v):
-        return {"bhk_config": "Studio"}
+def _x_bhk(v: str) -> Optional[Dict[str, Any]]:
+    if _STUDIO.search(v):
+        return {"bhk_config": "Studio"} if not _leftover(v, [_STUDIO], _BHK_VOCAB) else None
     m = _BHK.search(v)
     if m:
+        if _leftover(v, [_BHK], _BHK_VOCAB):
+            return None
         out = f"{_WORD_NUM.get(m.group(1), m.group(1))} BHK"
         if "servant" in v:
             out += " + Servant"
         return {"bhk_config": out}
     m = _RK.search(v)
     if m:
-        return {"bhk_config": f"{m.group(1)} RK"}
-    # If bhk_config is currently open, bare numbers (e.g. "3", "it's 3", "3 bed") map cleanly
-    if open_field == "bhk_config":
-        _BHK_FILL = {"it", "its", "is", "hai", "hoga", "hogi", "sir", "ji", "bedroom", "bedrooms", "bed", "beds", "yeah", "yes", "haan", "ka", "ke", "ki", "so", "bhi", "basically", "to"}
-        bare = _bare_number(v, _BHK_FILL)
-        if bare and bare in ("1", "2", "3", "4", "5", "6"):
-            return {"bhk_config": f"{bare} BHK"}
+        return {"bhk_config": f"{m.group(1)} RK"} if not _leftover(v, [_RK], _BHK_VOCAB) else None
+    # bhk_config is the open question, so a bare digit ("3", "it's 3", "3 bed") is unambiguous
+    bare = _bare_number(v, _BHK_BARE_VOCAB)
+    if bare and bare in ("1", "2", "3", "4", "5", "6"):
+        return {"bhk_config": f"{bare} BHK"}
     return None
 
 
@@ -113,67 +131,59 @@ _AREA = re.compile(
 )
 _OTHER_UNIT = re.compile(r"\b(sqm|sq\s*m|meters?|metres?|marla|acre|bigha|kanal|biswa)\b", re.IGNORECASE)
 _AREA_KEYWORDS = re.compile(r"\b(area|carpet|super|built|builtup|size|square)\b", re.IGNORECASE)
-_AREA_FILL = {"approx", "approximately", "around", "about", "lagbhag", "kareeb", "karib", "total", "super",
-              "area", "carpet", "built", "builtup", "hai", "hoga", "hogi", "sir", "ji", "will", "be", "is",
-              "it", "its", "roughly", "the", "mein", "me", "ka", "ke", "ki", "of", "sqft", "sq", "ft", "feet",
-              "gaj", "yard", "yards"}
+_AREA_VOCAB = {"total", "super", "area", "carpet", "built", "builtup", "size", "sq", "ft", "sqft", "feet",
+               "foot", "square", "gaj", "yard", "yards", "yd", "of", "expected", "expect"}
 
 
-def _x_area(v: str, open_field: str) -> Optional[Dict[str, Any]]:
+def _x_area(v: str) -> Optional[Dict[str, Any]]:
     if _OTHER_UNIT.search(v):
-        return None  # unhandled units (acre, bigha, sqm, etc.) -> let the LLM deal with it
+        return None  # sqm / acre / bigha ... -> LLM converts
     mg = _GAJ.search(v)
     if mg:
+        if _leftover(v, [_GAJ], _AREA_VOCAB):
+            return None
         val = _to_float(mg.group(1))
-        if val is not None:
-            sqft = round(val * 9.0, 2)
-            if 50 <= sqft <= 1_000_000:
-                return {"approx_area_sqft": sqft}
-        return None
+        sqft = round(val * 9.0, 2) if val is not None else None
+        return {"approx_area_sqft": sqft} if sqft is not None and 50 <= sqft <= 1_000_000 else None
     m = _AREA.search(v)
     if m:
+        if _leftover(v, [_AREA], _AREA_VOCAB):
+            return None
         val = _to_float(m.group(1))
-        if val is not None and 50 <= val <= 1_000_000:
-            return {"approx_area_sqft": val}
-        return None
+        return {"approx_area_sqft": val} if val is not None and 50 <= val <= 1_000_000 else None
 
-    # Bare number without explicit unit
-    if open_field == "approx_area":
-        raw = _bare_number(v, _AREA_FILL)
-        val = _to_float(raw) if raw else None
-        # Indian real estate: residential units are virtually never < 350 sq ft.
-        # Numbers < 350 (e.g. 100, 200) are almost always gaj or flat/floor numbers.
-        # Numbers >= 350 must be plausible areas (multiple of 10 or 25, or explicit area keywords).
-        # Odd flat-like numbers without keywords (e.g. 407, 502) are left for LLM to clarify.
-        if val is not None and 350 <= val <= 100_000:
-            if val % 10 == 0 or val % 25 == 0 or _AREA_KEYWORDS.search(v):
-                return {"approx_area_sqft": val}
+    # Bare number, no unit. Residential units are virtually never < 350 sq ft; small numbers are gaj /
+    # flat numbers -> ask the LLM to clarify. Odd flat-like numbers (407, 502) without an area word likewise.
+    raw = _bare_number(v, _AREA_VOCAB)
+    val = _to_float(raw) if raw else None
+    if val is not None and 350 <= val <= 100_000:
+        if val % 10 == 0 or val % 25 == 0 or _AREA_KEYWORDS.search(v):
+            return {"approx_area_sqft": val}
     return None
 
 
 # ── Furnishing ───────────────────────────────────────────────────────────────
-# STT phonetic variants observed on phone lines (Sarvam saaras:v4 / saaras:v3):
-#   "semi-furnished"  -> "supar furnished", "simi furnished", "semi furnish"
-#   "unfurnished"     -> "un furnishd", "berfurnish", "bare shell"
-#   "fully furnished" -> "phully furnished", "fuli furnished", "fully furnishd"
-#   "semi"            -> "sami", "seme", "semee"
-#   "available"       -> "avlble", "avelable", "availeble" (in occupancy)
-_SEMI = re.compile(r"semi[\s\-]*furnish|s[ae]mi[\s\-]*furnish|\bsemi\b|\bs[ae]mi\b|half[\s\-]*furnish")
-_UNF = re.compile(r"un[\s\-]*furnish|bare[\s\-]*shell|\bbare\b|furnish\w*\s*(nahi|nhi|not)|not\s*furnish")
-_FULL = re.compile(r"fully[\s\-]*furnish|full[\s\-]*furnish|ph+ul+[yi][\s\-]*furnish|\bfully\b|\bfurnished\b")
+# Only the closed set of real spoken options. Garbled STT ("supar furnished", "simi") and bare "furnished"
+# (semi or full?) are NOT guessed here - the LLM resolves them from context.
+_SEMI = re.compile(r"semi[\s\-]*(?:furnish\w*|fitted)|s[ae]mi[\s\-]*furnish\w*|\bsemi\b|\bs[ae]mi\b|half[\s\-]*furnish\w*")
+_UNF = re.compile(r"un[\s\-]*furnish\w*|bare[\s\-]*shell|\bbare\b|furnish\w*\s*(?:nahi|nhi|not)|not\s*furnish\w*")
+_FULL = re.compile(r"fully[\s\-]*furnish\w*|full[\s\-]*furnish\w*|ph+ul+[yi][\s\-]*furnish\w*|\bfully\b")
+_FURN_VOCAB = {"furnished", "furnish", "furnishing", "fully", "full", "semi", "un", "unfurnished", "bare",
+               "shell", "fitted", "half", "furnishd", "phully", "fuli"}
 
 
 def _x_furnishing(v: str) -> Optional[Dict[str, Any]]:
     semi, unf, full = _SEMI.search(v), _UNF.search(v), _FULL.search(v)
-    if semi and unf:
-        return None
+    if [bool(semi), bool(unf), bool(full)].count(True) != 1:
+        return None  # none, or contradictory ("semi ... unfurnished")
+    extra = {"nahi", "nhi", "not"} if (unf and re.search(r"furnish\w*\s*(?:nahi|nhi|not)|not\s*furnish", v)) else set()
+    if [t for t in _TOK.findall(v) if t not in _FILL and t not in _FURN_VOCAB and t not in extra]:
+        return None  # e.g. "semi furnished nahi hai", "fully furnished hai lekin ..." -> LLM
     if semi:
         return {"furnishing_status": "semi-furnished"}
     if unf:
         return {"furnishing_status": "bare-shell" if re.search(r"bare", v) else "unfurnished"}
-    if full:
-        return {"furnishing_status": "fully furnished"}
-    return None
+    return {"furnishing_status": "fully furnished"}
 
 
 # ── Unit number + floor ──────────────────────────────────────────────────────
@@ -185,7 +195,10 @@ _FLOOR = re.compile(
     r"|\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s*floor\b"
     r"|\b(ground)\s*floor\b"
 )
+_UNIT_TOKEN = re.compile(r"\b[a-z]{0,2}[\-/]?\d{1,5}[a-z]?\b")
 _UNIT_PREFIX = {"flat", "unit", "no", "number", "house", "shop", "office", "plot", "door", "room"}
+_UF_VOCAB = {"flat", "unit", "number", "no", "num", "floor", "flr", "st", "nd", "rd", "th", "ground", "house",
+             "door", "room", "office", "shop", "plot", "on", "at", "the", "of", "wale", "wala", "wali"}
 
 
 def _ordinal(n: int) -> str:
@@ -198,102 +211,80 @@ def _ordinal(n: int) -> str:
 
 def _pick_unit_number(units: List[str]) -> Optional[str]:
     """Pick unit number from candidates, resolving natural spoken repetitions like 'D-17, 17 number'."""
-    if not units:
-        return None
     cleaned = [u.strip(".,;: -_") for u in units if u.strip(".,;: -_")]
     if not cleaned:
         return None
     if len(cleaned) == 1:
         return cleaned[0].upper()
-
-    # Check if candidates are repetitions (e.g., ['d-17', '17'] or ['17', '17'])
-    digits_map = {}
+    digits_map: Dict[str, List[str]] = {}
     for u in cleaned:
         d = re.sub(r"\D", "", u)
         if d:
             digits_map.setdefault(d, []).append(u)
-
-    if len(digits_map) == 1:
+    if len(digits_map) == 1:  # same number said twice
         cands = list(digits_map.values())[0]
-        # Prefer candidate with alphanumeric prefix (e.g. 'D-17' over '17')
         with_alpha = [c for c in cands if any(ch.isalpha() or ch in "-/" for ch in c)]
-        if with_alpha:
-            return with_alpha[0].upper()
-        return cands[0].upper()
+        return (with_alpha[0] if with_alpha else cands[0]).upper()
+    return None  # two different numbers: which is the unit? -> LLM
 
-    # Also handle doubled numbers like '1717' when the caller repeated '17'
-    if len(cleaned) == 1:
-        return cleaned[0].upper()
-    return None
+
+def _floor_label(m: "re.Match") -> str:
+    if m.group(1):
+        return _ordinal(int(m.group(1)))
+    if m.group(2):
+        return _ordinal(int(m.group(2)))
+    if m.group(3):
+        return _ordinal(_ORD[m.group(3)])
+    return "Ground"
 
 
 def _x_unit_floor(v: str) -> Optional[Dict[str, Any]]:
+    # "independent house / standalone" -> no unit, no floor (tools.is_standalone_from_speech has its own guards).
+    # Only for a SHORT sentence: a longer one may also carry an objection or question.
+    if len(_TOK.findall(v)) <= 4 and is_standalone_from_speech(v):
+        return {"unit_number": "Standalone", "floor_number": "Ground"}
+
     ms = list(_FLOOR.finditer(v))
-    if len(ms) != 1:
+    if len(ms) > 1:
         return None
-    m = ms[0]
-    if m.group(1):
-        # "flat 12 floor 3" would read as floor 12 -> refuse when the number is a unit label
-        before = re.findall(r"[a-z]+", v[:m.start()])
-        if before and before[-1] in _UNIT_PREFIX:
+    if ms:
+        m = ms[0]
+        if m.group(1):
+            # "flat 12 floor 3" would read as floor 12 -> refuse when the number is a unit label
+            before = re.findall(r"[a-z]+", v[:m.start()])
+            if before and before[-1] in _UNIT_PREFIX:
+                return None
+        rest = v[:m.start()] + " " + v[m.end():]
+        if _leftover(rest, [_UNIT_TOKEN], _UF_VOCAB):
             return None
-        floor = _ordinal(int(m.group(1)))
-    elif m.group(2):
-        floor = _ordinal(int(m.group(2)))
-    elif m.group(3):
-        floor = _ordinal(_ORD[m.group(3)])
-    else:
-        floor = "Ground"
-    rest = v[:m.start()] + " " + v[m.end():]
-    units = re.findall(r"\b[a-z]{0,2}[\-/]?\d{1,5}[a-z]?\b", rest)
-    units = [u for u in units if re.search(r"\d", u)]
-    unit = _pick_unit_number(units)
-    if not unit:
+        units = _UNIT_TOKEN.findall(rest)
+        if not units:
+            return {"floor_number": _floor_label(m)}
+        unit = _pick_unit_number(units)
+        return {"unit_number": unit, "floor_number": _floor_label(m)} if unit else None
+
+    # no floor word: a lone unit number ("407", "flat 402", "D-17")
+    if _leftover(v, [_UNIT_TOKEN], _UF_VOCAB):
         return None
-    return {"unit_number": unit, "floor_number": floor}
-
-
-def _x_floor_only(v: str) -> Optional[Dict[str, Any]]:
-    ms = list(_FLOOR.finditer(v))
-    if len(ms) != 1:
-        return None
-    m = ms[0]
-    if m.group(1):
-        floor = _ordinal(int(m.group(1)))
-    elif m.group(2):
-        floor = _ordinal(int(m.group(2)))
-    elif m.group(3):
-        floor = _ordinal(_ORD[m.group(3)])
-    else:
-        floor = "Ground"
-    return {"floor_number": floor}
-
-
-def _x_unit_only(v: str) -> Optional[Dict[str, Any]]:
-    # When floor is not present, look for unit number
-    if _FLOOR.search(v):
-        return None
-    units = re.findall(r"\b(?:flat|unit|door|room|no\.?|number)?\s*([a-z]{0,2}[\-/]?\d{1,5}[a-z]?)\b", v, re.I)
-    units = [u for u in units if re.search(r"\d", u)]
-    unit = _pick_unit_number(units)
-    if unit:
+    unit = _pick_unit_number(_UNIT_TOKEN.findall(v))
+    if unit and len(re.sub(r"\D", "", unit)) <= 4:
         return {"unit_number": unit}
     return None
 
 
 # ── Price / rent ─────────────────────────────────────────────────────────────
 _AMT = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(crores?|cr|lakhs?|lacs?|laakh|hazaar|hazar|thousand|k)\b", re.IGNORECASE)
+_NUM = re.compile(r"\d[\d,]*(?:\.\d+)?")
 _UNIT_CANON = {"crore": "crore", "crores": "crore", "cr": "crore", "lakh": "lakh", "lakhs": "lakh",
                "lac": "lakh", "lacs": "lakh", "laakh": "lakh", "hazaar": "thousand", "hazar": "thousand",
                "thousand": "thousand", "k": "thousand"}
-_RENT_FILL = {"rs", "rupees", "rupaye", "rupay", "inr", "approx", "around", "about", "per", "month", "monthly",
-              "mahina", "mahine", "ka", "ke", "lagbhag", "sir", "ji", "hai", "hoga", "expect", "expecting",
-              "rent", "kiraya", "only"}
-_SALE_FILL = {"rs", "rupees", "rupaye", "rupay", "inr", "approx", "around", "about",
-              "lagbhag", "kareeb", "karib", "sir", "ji", "hai", "hoga", "expect", "expecting",
-              "price", "only", "crore", "lakh", "me", "mein", "ka", "ke", "ki", "hogi",
-              "demand", "rate", "cost", "total"}
+_RENT_VOCAB = {"rs", "rupees", "rupaye", "rupay", "inr", "per", "month", "monthly", "mahina", "mahine",
+               "expect", "expecting", "expected", "rent", "kiraya", "crore", "lakh", "thousand", "k"}
+_SALE_VOCAB = {"rs", "rupees", "rupaye", "rupay", "inr", "expect", "expecting", "expected", "price", "crore",
+               "lakh", "demand", "rate", "cost", "total"}
 
+# "one point five" / "dedh" / "fifty": a tiny closed list of spoken numbers. Anything else spoken in words
+# ("paanch lakh", "saadhe teen crore") is not handled here -> the LLM converts it.
 _SPOKEN_SALE_NUMS = [
     (re.compile(r"\bone\s+point\s+five\b", re.IGNORECASE), "1.5"),
     (re.compile(r"\btwo\s+point\s+five\b", re.IGNORECASE), "2.5"),
@@ -307,7 +298,6 @@ _SPOKEN_SALE_NUMS = [
     (re.compile(r"\bninety\b", re.IGNORECASE), "90"),
 ]
 
-
 _MARKET_RATE_STMT = re.compile(
     r"\b(jo\s+(bhi\s+)?|as\s+per\s+|according\s+to\s+)?market\s+(rate|price|value)"
     r"(\s+(pe|par|me|mein|main|hi|hai|hoga|chal\s*raha\s*hai|de\s*denge|chahiye|bik\s*jaye|mil\s*jaye))?\b"
@@ -318,8 +308,11 @@ _Q_WORDS = re.compile(r"\b(kya|kitn[aei]|what|batao|bataiye)\b|क्या|क�
 
 
 def _x_amount(v: str, open_field: str) -> Optional[str]:
+    vocab = _SALE_VOCAB if open_field == "sale_price" else _RENT_VOCAB
+
     if open_field in ("sale_price", "monthly_rent"):
-        if _MARKET_RATE_STMT.search(v) and not _Q_WORDS.search(v):
+        mm = _MARKET_RATE_STMT.search(v)
+        if mm and not _Q_WORDS.search(v) and not _leftover(v, [_MARKET_RATE_STMT], vocab | {"jo", "bhi", "chal", "raha"}):
             return "Market Rate"
 
     v_norm = v
@@ -327,235 +320,110 @@ def _x_amount(v: str, open_field: str) -> Optional[str]:
         for pat, rep in _SPOKEN_SALE_NUMS:
             v_norm = pat.sub(rep, v_norm)
 
-    raw_nums = _NUM.findall(v_norm)
-    nums = [n.replace(',', '').rstrip('.') for n in raw_nums]
-    # Allow single number OR repeated number (e.g. "40, 40k" or "40k, 40k" said for emphasis)
-    if len(nums) > 1 and len(set(nums)) > 1:
-        return None  # genuine range / compound amount (e.g. "1 crore 20 lakh") -> LLM
+    nums = [n.replace(",", "").rstrip(".") for n in _NUM.findall(v_norm)]
+    if not nums or len(set(nums)) > 1:
+        return None  # no number, or a range / compound amount ("1 crore 20 lakh") -> LLM
 
     m = _AMT.search(v_norm)
     if m:
-        num_str = m.group(1).replace(',', '')
+        # the same figure said twice for emphasis ("40, 40k") is not "extra content"
+        if [t for t in _leftover(v_norm, [_AMT], vocab) if t.replace(",", "").rstrip(".") != nums[0]]:
+            return None
         unit = _UNIT_CANON.get(m.group(2).lower(), m.group(2).lower())
-        return f"{num_str} {unit}"
+        return f"{m.group(1).replace(',', '')} {unit}"
 
+    # number with no unit: only meaningful for the open field's usual scale
+    raw = _bare_number(v_norm, vocab)
+    val = _to_float(raw) if raw else None
+    if val is None:
+        return None
     if open_field == "sale_price":
-        raw = _bare_number(v_norm, _SALE_FILL)
-        val = _to_float(raw) if raw else None
-        if val is not None:
-            if 0.25 <= val < 15:
-                # 0.25 to 14.9 without unit in Indian sale context is Crore (e.g. 1.5, 2, 3.5, 10)
-                clean_num = int(val) if float(val).is_integer() else val
-                return f"{clean_num} crore"
-            elif 15 <= val <= 999:
-                # 15 to 999 without unit is Lakh (e.g. 50, 75, 80, 150)
-                clean_num = int(val) if float(val).is_integer() else val
-                return f"{clean_num} lakh"
-            elif val >= 100_000:
-                # Full rupees amount (e.g. 5000000)
-                return str(int(val)) if float(val).is_integer() else str(val)
-
-    if open_field in ("monthly_rent", "current_rent"):
-        raw = _bare_number(v, _RENT_FILL)
-        val = _to_float(raw) if raw else None
-        if val is not None and 1000 <= val <= 99_999_999:
+        clean = int(val) if float(val).is_integer() else val
+        if 0.25 <= val < 15:
+            return f"{clean} crore"      # 1.5 / 2 / 3.5 -> crore
+        if 15 <= val <= 999:
+            return f"{clean} lakh"       # 50 / 75 / 150 -> lakh
+        if val >= 100_000:
             return str(int(val)) if float(val).is_integer() else str(val)
+    elif 1000 <= val <= 99_999_999:      # monthly_rent / current_rent in rupees
+        return str(int(val)) if float(val).is_integer() else str(val)
     return None
 
 
-# ── Open-field only: leased / occupancy ──────────────────────────────────────
-_NEG = re.compile(r"\b(nahi|nhi|nahin|no|not|never)\b")
+# ── Open-field only: leased / occupancy (closed yes/no vocabularies) ─────────
+_LEASED_W = {"leased", "rented", "rent", "kiraye", "kirayedar", "kiraya", "tenant", "tenants", "lease", "occupied"}
+_VACANT_W = {"vacant", "khaali", "khali", "empty"}
+_NEG_W = {"nahi", "nhi", "nahin", "no", "not"}
 
 
 def _x_leased(v: str) -> Optional[Dict[str, Any]]:
-    if _NUM.search(v):   # "leased, 50000 rent" - the amount belongs to the NEXT field; let the LLM split it
+    toks = _TOK.findall(v)
+    if any(t not in _FILL and t not in _LEASED_W and t not in _VACANT_W and t not in _NEG_W for t in toks):
+        return None  # a number ("leased, 50000 rent"), another topic, anything unknown -> LLM
+    leased = any(t in _LEASED_W for t in toks)
+    vacant = any(t in _VACANT_W for t in toks)
+    neg = any(t in _NEG_W for t in toks)
+    if leased == vacant:  # neither, or both
         return None
-    neg_leased = re.search(
-        r"(not|nahi|nhi|nahin|no)\s*(leased|rented|kiraye|tenant|lease)|"
-        r"(leased|rented|kiraye\s*par|lease)\s*(nahi|nhi|nahin|not)", v)
-    vacant = re.search(r"\b(vacant|khaali|khali|empty)\b", v)
-    leased = re.search(r"\b(leased|rented|rent\s*par|kiraye|kirayedar|tenant|lease\s*par|occupied)\b", v)
-    if neg_leased:
-        return {"is_currently_leased": False}
-    if vacant and not leased:
-        return {"is_currently_leased": False}
-    if leased and not vacant:
-        return {"is_currently_leased": True}
-    return None
+    state = leased                      # True = leased, False = vacant
+    return {"is_currently_leased": (not state) if neg else state}
+
+
+_IMM_PHRASE = re.compile(r"immediate(?:ly)?|turant|\babhi\b|right\s*(?:abhi|now)|ready\s*to\s*move|available\s*now|right\s*away|any\s*time|anytime|jab\s*bhi")
+_AVAIL_TOK = {"available", "avelable", "availeble", "avlble", "avalable", "avilable"}
+_NOTICE = re.compile(r"notice(?:\s*period)?|\d+\s*(?:month|months|mahine|mahina|din|days|day|week|weeks)\b")
+_OCC_VOCAB = {"available", "avelable", "availeble", "avlble", "avalable", "avilable", "right", "now", "away",
+              "period", "notice", "move", "ready"}
 
 
 def _x_occupancy(v: str) -> Optional[Dict[str, Any]]:
-    neg = _NEG.search(v)
-    # "available" STT variants on phone lines: "avelable", "availeble", "avlble", "avalabl" etc.
-    _avail_phonetic = re.compile(r"\bav[ae]?[il]+[ae]?b?l?[ae]?\b", re.I)
-    imm = re.search(
-        r"immediate|turant|\babhi\b|right\s*(?:abhi|now)|ready\s*to\s*move"
-        r"|available\s*now|any\s*time|jab\s*bhi",
-        v,
-    ) or _avail_phonetic.search(v)
-    notice = re.search(r"notice|\d+\s*(month|months|mahine|mahina|din|days|day|week)|(one|two|three)\s*months?", v)
-    if imm and not notice:
-        return {"immediate_occupancy": not neg}
-    if notice and not imm:
-        return {"immediate_occupancy": bool(neg)}
-    return None
+    toks = _TOK.findall(v)
+    neg = any(t in _NEG_W for t in toks)
+    imm = bool(_IMM_PHRASE.search(v)) or any(t in _AVAIL_TOK for t in toks)
+    notice = bool(_NOTICE.search(v))
+    if imm == notice:  # neither, or both
+        return None
+    left = _leftover(v, [_IMM_PHRASE, _NOTICE], _OCC_VOCAB | _NEG_W | {"months", "month", "mahine", "mahina", "din", "days", "day", "week", "weeks"})
+    if left or re.search(r"\d", _NOTICE.sub(" ", _IMM_PHRASE.sub(" ", v))):
+        return None
+    return {"immediate_occupancy": (not neg)} if imm else {"immediate_occupancy": bool(neg)}
 
 
 # ── Orchestration ────────────────────────────────────────────────────────────
-_OPEN_TO_KEY = {
-    "unit_floor": "unit_floor", "bhk_config": "bhk_config", "approx_area": "approx_area",
-    "furnishing": "furnishing", "sale_price": "amount", "monthly_rent": "amount", "current_rent": "amount",
-    "leased_status": "leased_status", "immediate_occupancy": "immediate_occupancy",
+def _amount_extractor(open_field: str, param: str):
+    def _fn(v: str) -> Optional[Dict[str, Any]]:
+        a = _x_amount(v, open_field)
+        return {param: a} if a else None
+    return _fn
+
+
+_EXTRACTORS = {
+    "unit_floor": _x_unit_floor,
+    "bhk_config": _x_bhk,
+    "approx_area": _x_area,
+    "furnishing": _x_furnishing,
+    "sale_price": _amount_extractor("sale_price", "expected_sale_price"),
+    "monthly_rent": _amount_extractor("monthly_rent", "expected_monthly_rent"),
+    "current_rent": _amount_extractor("current_rent", "current_rent_received"),
+    "leased_status": _x_leased,
+    "immediate_occupancy": _x_occupancy,
 }
-_AMOUNT_PARAM = {"sale_price": "expected_sale_price", "monthly_rent": "expected_monthly_rent",
-                 "current_rent": "current_rent_received"}
-
-
-def _scan(v: str, open_field: str) -> Dict[str, Any]:
-    found: Dict[str, Any] = {}
-    if open_field == "unit_floor" and is_standalone_from_speech(v):
-        return {"unit_floor": {"unit_number": "Standalone", "floor_number": "Ground"}}
-    for key, res in (
-        ("bhk_config", _x_bhk(v, open_field)),
-        ("approx_area", _x_area(v, open_field)),
-        ("furnishing", _x_furnishing(v)),
-        ("amount", _x_amount(v, open_field)),
-    ):
-        if res:
-            found[key] = res
-    if open_field == "unit_floor":
-        uf = _x_unit_floor(v)
-        if uf:
-            found["unit_floor"] = uf
-        else:
-            fl = _x_floor_only(v)
-            if fl:
-                found["unit_floor"] = fl
-            un = _x_unit_only(v)
-            if un:
-                found["unit_floor"] = un
-    elif _x_unit_floor(v):
-        found["unit_floor"] = _x_unit_floor(v)
-    if open_field == "leased_status":
-        r = _x_leased(v)
-        if r:
-            found["leased_status"] = r
-    if open_field == "immediate_occupancy":
-        r = _x_occupancy(v)
-        if r:
-            found["immediate_occupancy"] = r
-    return found
 
 
 def extract(open_field: str, text: str) -> Optional[Dict[str, Any]]:
-    """kwargs for save_property_details() when `text` cleanly answers `open_field`, else None."""
-    key = _OPEN_TO_KEY.get(open_field)
-    if not key or not (text or "").strip():
+    """kwargs for save_property_details() when `text` is *only* a clean answer to `open_field`, else None.
+
+    None means "not provably just a value" - the LLM then handles the turn (objections, questions,
+    negations, several facts at once, STT garble, unusual phrasing, ...)."""
+    fn = _EXTRACTORS.get(open_field)
+    if not fn or not (text or "").strip():
         return None
     variants = _variants(text)
+    if any(len(_TOK.findall(v)) > _MAX_TOKENS for v in variants):
+        return None
     for v in variants:
-        if _BLOCK.search(v) or len(re.findall(r"[a-z0-9\u0900-\u097F.]+", v)) > _MAX_TOKENS:
-            return None
-    for v in variants:
-        found = _scan(v, open_field)
-        if set(found) == {key}:
-            kw = found[key]
-            return {_AMOUNT_PARAM[open_field]: kw} if key == "amount" else kw
-        if found:
-            return None   # caller said more than the open field (or something else) -> LLM splits it
+        out = fn(v)
+        if out:
+            return out
     return None
-
-
-def extract_all_slots(text: str) -> Dict[str, Any]:
-    """Proactively extract all recognizable real estate slots mentioned anywhere in `text`.
-    Used on every caller turn so multi-slot answers (e.g. 'house, 3 BHK, for rent, fully furnished')
-    are completely captured in one turn and never re-asked.
-    """
-    slots: Dict[str, Any] = {}
-    if not text or not text.strip():
-        return slots
-
-    from .tools import (
-        classify_category,
-        classify_intent,
-        commercial_type_from_speech,
-        explicit_refusal,
-        explicit_dnc_request,
-    )
-
-    t = text.strip()
-    if explicit_refusal(t) or explicit_dnc_request(t):
-        return slots
-
-    low = t.lower()
-
-    # Category & Intent
-    cat = classify_category(t)
-    if cat:
-        slots["category"] = cat
-
-    intn = classify_intent(t)
-    if intn:
-        slots["intent"] = intn
-
-    # Standalone check
-    if is_standalone_from_speech(t):
-        slots["is_standalone"] = True
-        slots["unit_number"] = "Standalone"
-        slots["floor_number"] = "Ground"
-
-    # BHK configuration
-    bhk = _x_bhk(low, open_field="bhk_config")
-    if bhk and "bhk_config" in bhk:
-        slots["bhk_config"] = bhk["bhk_config"]
-        # Explicit BHK always confirms residential
-        slots["category"] = "residential"
-
-    # Commercial unit type
-    comm_type = commercial_type_from_speech(t)
-    if comm_type and comm_type != "Other":
-        slots["commercial_type"] = comm_type
-        slots["category"] = "commercial"
-
-    # Area in sqft / gaj
-    area = _x_area(low, open_field="approx_area")
-    if area and "approx_area_sqft" in area:
-        slots["approx_area_sqft"] = area["approx_area_sqft"]
-
-    # Furnishing
-    fur = _x_furnishing(low)
-    if fur and "furnishing_status" in fur:
-        slots["furnishing_status"] = fur["furnishing_status"]
-
-    # Unit and Floor
-    if not slots.get("is_standalone"):
-        uf = _x_unit_floor(low)
-        if uf:
-            slots.update(uf)
-        else:
-            fl = _x_floor_only(low)
-            if fl:
-                slots.update(fl)
-            un = _x_unit_only(low)
-            if un:
-                slots.update(un)
-
-    # Occupancy
-    occ = _x_occupancy(low)
-    if occ and "immediate_occupancy" in occ:
-        slots["immediate_occupancy"] = occ["immediate_occupancy"]
-
-    # Leased status
-    ls = _x_leased(low)
-    if ls and "is_currently_leased" in ls:
-        slots["is_currently_leased"] = ls["is_currently_leased"]
-
-    # Price / Rent
-    rent = _x_amount(low, open_field="monthly_rent")
-    if rent:
-        slots["expected_monthly_rent"] = rent
-    price = _x_amount(low, open_field="sale_price")
-    if price:
-        slots["expected_sale_price"] = price
-
-    return slots
+    

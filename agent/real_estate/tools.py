@@ -226,6 +226,28 @@ def explicit_refusal(text: Any) -> bool:
     return False
 
 
+_QUOTE_STOP = _BARE_REFUSAL_WORDS | _REFUSAL_FILL_WORDS | {
+    "haan", "yes", "yeah", "ji", "hai", "hain", "ho", "the", "a", "is", "i", "main", "mai", "mujhe", "hum", "ok", "okay",
+}
+
+
+def _quote_grounded(quote: Any, heard: Any) -> bool:
+    """GROUNDING check (not a meaning check). Tools that END the call or SKIP a field used to be vetoed by a
+    keyword regex, which blocked the LLM whenever a caller refused / said "don't know" in words the regex
+    had never seen. Now the LLM passes `caller_words` (the caller's own words that justify the action) and
+    code only verifies they were REALLY said: >= 2 distinct words, >= 80% of them present in the caller's
+    latest utterance, and at least one content word (so a bare "nahi nahi" can never justify ending a call).
+    The LLM still decides what the words mean; this only stops it from inventing a reason."""
+    def _w(x):
+        return re.findall(r"[a-z0-9\u0900-\u097F]+", str(x or "").lower())
+    q, h = _w(quote), set(_w(heard))
+    if len(set(q)) < 2 or not h:
+        return False
+    if sum(1 for t in q if t in h) / len(q) < 0.8:
+        return False
+    return any(t not in _QUOTE_STOP for t in q)
+
+
 _DONT_KNOW_RE = re.compile(
     r"(pata\s*nahi|pata\s*nhi|nahi\s*pata|yaad\s*nahi|yad\s*nahi|idea\s*nahi|nahi\s*(bata|bol)\s*(sakta|sakti|sakte)"
     r"|maloom\s*nahi|malum\s*nahi|don'?t\s*know|do\s*not\s*know|don'?t\s*remember|not\s*sure|no\s*idea|can'?t\s*say|cannot\s*share|nahi\s*batana)"
@@ -424,10 +446,25 @@ def say_cached(session, state, text: str, allow_interruptions: bool = True):
     return session.say(text, allow_interruptions=allow_interruptions)
 
 
+_NEUTRAL_WORDS = {
+    "hello", "hi", "hey", "helo", "hallo", "ok", "okay", "yes", "no", "hmm", "haan", "han", "ji",
+    "haanji", "haan ji", "हेलो", "हैलो", "हेल्लो", "हाँ", "हां", "जी", "हम्म", "ओके",
+    "ya", "yeah", "yep", "yup", "ha", "yes yes", "yes yes yes", "haan haan", "han han", "ji ji",
+    "ok ok", "okay okay", "yes sir", "ji haan", "haan ji haan", "hmm hmm", "hello hello",
+    "theek hai", "thik hai", "theek", "thik", "theek h", "achha", "accha", "acha", "sahi hai",
+    "theek hai ji", "accha ji", "achha ji",
+}
+
+
+def _is_bare_ack(text: str) -> bool:
+    clean = re.sub(r"[\s.,?!\u0964]+", " ", (text or "").lower()).strip()
+    return clean in _NEUTRAL_WORDS or not clean
+
+
 def _grounded(category: Optional[str], intent: Optional[str], heard: Any) -> Tuple[Optional[str], Optional[str]]:
-    """Category / intent are accepted ONLY if supported by customer's speech.
-    Supports either a single utterance or multiple recent utterances (as a string, list, or tuple).
-    Prevents hallucinated category/intent when customer only gave a bare acknowledgement ('haan ji')."""
+    """Category / intent validation.
+    Prevents hallucinating category/intent when customer only gave a bare acknowledgement ('haan ji').
+    When the customer spoke substantive natural speech, trusts the LLM's contextual comprehension."""
     if isinstance(heard, (list, tuple)):
         heard_text = " ".join(str(t) for t in heard if t).strip()
     else:
@@ -435,27 +472,28 @@ def _grounded(category: Optional[str], intent: Optional[str], heard: Any) -> Tup
 
     c = classify_category(heard_text) if heard_text else None
     i = classify_intent(heard_text) if heard_text else None
+    is_bare = _is_bare_ack(heard_text)
 
     cat_out = None
     if c:
         cat_out = c
-    elif category and heard_text:
-        cand_c = classify_category(category)
-        if cand_c and classify_category(heard_text) == cand_c:
+    elif category:
+        cand_c = classify_category(category) or (category.lower().strip() if category.lower().strip() in ("residential", "commercial") else None)
+        if cand_c and not is_bare:
             cat_out = cand_c
 
     int_out = None
     if i:
         int_out = i
-    elif intent and heard_text:
-        cand_i = classify_intent(intent)
-        if cand_i and classify_intent(heard_text) == cand_i:
+    elif intent:
+        cand_i = classify_intent(intent) or (intent.lower().strip() if intent.lower().strip() in ("sale", "lease") else None)
+        if cand_i and not is_bare:
             int_out = cand_i
 
-    # If no transcript is available at all, accept LLM values as sole fallback
+    # Fallback if no transcript is available
     if not heard_text:
-        cat_out = classify_category(category)
-        int_out = classify_intent(intent)
+        cat_out = classify_category(category) or (category.lower().strip() if category and category.lower().strip() in ("residential", "commercial") else None)
+        int_out = classify_intent(intent) or (intent.lower().strip() if intent and intent.lower().strip() in ("sale", "lease") else None)
 
     return cat_out, int_out
 
@@ -1021,6 +1059,9 @@ class RealEstateTools:
                 said = commercial_type_from_speech(heard)
                 if said:
                     clean_comm = said
+                elif clean_comm.lower() in heard.lower():
+                    # Caller explicitly mentioned this commercial type in natural speech
+                    pass
                 else:
                     logger.info(f"Ignoring commercial_type='{clean_comm}' from LLM: caller did not say it ('{heard[:80]}')")
                     clean_comm = None
@@ -1035,6 +1076,10 @@ class RealEstateTools:
             RealEstateStep.CATEGORY_SELECT, RealEstateStep.INTRODUCTION,
             RealEstateStep.CHECK_OTHER_PROPERTY, RealEstateStep.ASK_NEW_LOCATION
         ))
+        cat_hint = classify_category(category) or (classify_category(clean_comm) if clean_comm else None)
+        # If customer or agent explicitly specifies category different from state, allow category switch
+        if cat_hint and cat_hint != self.state.category:
+            allow_cat_switch = True
         if clean_bhk:
             self.state.category = "residential"
             self.state.commercial_type = None
@@ -1156,11 +1201,18 @@ class RealEstateTools:
                           echo=self._echo_from_changes(before))
 
     @function_tool
-    async def customer_does_not_know(self, field_id: Optional[str] = None) -> str:
-        """Call when the customer says they do not know, do not remember, or cannot share the detail that was just asked."""
+    async def customer_does_not_know(self, field_id: Optional[str] = None, caller_words: Optional[str] = None) -> str:
+        """Call when the customer says, in ANY words, that they do not know, do not remember, or cannot/will not
+        share the detail that was just asked (e.g. 'pata nahi', 'yaad nahi aa raha', 'iska andaza nahi hai', 'wo
+        papers mein dekhna padega'). Do NOT call it when they asked you to repeat or asked a question.
+        caller_words: the caller's own words (copied from what they said) that show they don't know."""
         missing = self.state.get_missing_fields()
         heard = (self.state.last_user_text or "").strip()
-        if heard and missing and not _DONT_KNOW_RE.search(heard.lower()) and not _DONT_KNOW_DEV.search(heard):
+        if (
+            heard and missing
+            and not _DONT_KNOW_RE.search(heard.lower()) and not _DONT_KNOW_DEV.search(heard)
+            and not _quote_grounded(caller_words, heard)
+        ):
             # Caller did NOT say they don't know (e.g. asked us to repeat) -> never skip the field.
             q = missing[0]["question_en"] if self.state.reply_lang == "en" else missing[0]["question_hi"]
             return self._fast(q, f"Do not skip. Ask again: '{q}'", ack=None)
@@ -1228,10 +1280,20 @@ class RealEstateTools:
         return "All details captured! Speak the official closing statement now."
 
     @function_tool
-    async def mark_not_interested(self) -> str:
-        """Call ONLY when customer clearly and explicitly confirms they are NOT interested (e.g. 'nahi bechna', 'no', 'not interested', 'nahi chahiye'). NEVER call this if the customer says they are thinking about it, considering, or undecided (e.g. 'soch raha hoon', 'thinking about it', 'maybe')."""
+    async def mark_not_interested(self, caller_words: Optional[str] = None) -> str:
+        """Call ONLY when the customer clearly says, in ANY words, that they will not sell/rent (e.g. 'nahi bechna', 'not interested', 'isme mujhe koi interest nahi', 'property pehle hi bik chuki hai', 'mere paas koi property nahi'). NEVER call this if the customer says they are thinking about it, considering, undecided, want a callback, or are merely answering 'no' to a detail question.
+        caller_words: the caller's own words (copied from what they said) that show they refuse."""
         heard = (self.state.last_user_text or "").strip()
-        if heard and not explicit_refusal(heard):
+        grounded = _quote_grounded(caller_words, heard)
+        # If caller already confirmed interest to sell/rent, a bare "nahi" / "no" is an answer to a question, not a refusal of service
+        if self.state.is_interested or (self.state.intent in ("sell", "rent", "lease")):
+            if not ((_EXPLICIT_REFUSAL_PHRASES.search(heard.lower()) if heard else False) or grounded):
+                logger.warning(f"🛑 mark_not_interested rejected: caller already confirmed intent ({self.state.intent}), utterance '{heard}' is not an explicit refusal to sell/rent")
+                return (
+                    "REJECTED: The customer previously confirmed interest to sell/rent. A bare 'no' or 'nahi' is an answer to the current property question, not a refusal to sell. "
+                    "Do NOT end the call. Clarify property details or confirm if the property is residential."
+                )
+        if heard and not (explicit_refusal(heard) or grounded):
             logger.warning(f"🛑 mark_not_interested rejected (no explicit refusal in caller words): '{heard}'")
             return (
                 "REJECTED: the caller did NOT clearly refuse. Do NOT end the call. "
@@ -1297,10 +1359,12 @@ class RealEstateTools:
     async def suppress_contact_dnc(
         self,
         reason: Optional[str] = None,
+        caller_words: Optional[str] = None,
     ) -> str:
-        """Call ONLY when the customer's own words explicitly say 'mujhe call mat karna', 'do not call me', or ask to remove their number. NEVER call it just because the caller is confused or frustrated."""
+        """Call ONLY when the customer's own words, in ANY phrasing, ask you to stop calling or remove their number (e.g. 'mujhe call mat karna', 'do not call me', 'meri number list se hata do', 'dobara phone mat karna'). NEVER call it just because the caller is confused, busy or frustrated.
+        caller_words: the caller's own words (copied from what they said) that ask to stop the calls."""
         heard = (self.state.last_user_text or "").strip()
-        if not explicit_dnc_request(heard):
+        if not (explicit_dnc_request(heard) or _quote_grounded(caller_words, heard)):
             logger.warning(f"🛑 DNC tool call rejected (caller did not ask for it): '{heard}'")
             return (
                 "REJECTED: the caller did NOT ask to stop calls or remove their number. Do NOT end the call. "
