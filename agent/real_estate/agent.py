@@ -9,12 +9,13 @@ from src.carrier_filter import classify_carrier_message
 from .prompts import get_step_instructions
 from .state import RealEstateState, RealEstateStep, RealEstateStep as _Step
 from .config import CHAT_CTX_MAX_ITEMS, FAST_TOOL_REPLY, FASTPATH_ENABLED
-from .fastpath import extract as _fastpath_extract
+from .fastpath import extract as _fastpath_extract, extract_all_slots as _fastpath_extract_all
 from .tools import (
     classify_category,
     classify_intent,
     is_standalone_from_speech,
     commercial_type_from_speech,
+    explicit_refusal,
     _DONT_KNOW_RE,
     _DONT_KNOW_DEV,
     extract_question,
@@ -364,7 +365,16 @@ def _other_property_answer(text: str):
 
 _REFUSAL_FILL = {"toh", "to", "ji", "jee", "sir", "abhi", "bilkul", "bas", "kuch", "kuchh", "bhi", "yar", "yaar", "bhai", "तो", "जी", "सर", "अभी", "बिल्कुल", "कुछ"}
 _DIRECT_NOT_INTERESTED = re.compile(
-    r"\b(not\s+interested|nahi\s+bechna|nahi\s+dena|nahi\s+chahiye|nahi\s+karna|nahi\s+karne|kat\s+karo|kaat\s+do|kaato|kaat\s*karo|call\s+kaat[a-z]*|phone\s+kaat[a-z]*|cut\s+the\s+call|abhi\s+kuch\s+nahi|abhi\s+kuchh\s+nahi|kuch\s+nahi|kuchh\s+nahi|abhi\s+nahi)\b"
+    r"\b("
+    r"not\s+interested|nahi\s+bechna|nahi\s+dena|nahi\s+chahiye|nahi\s+karna|nahi\s+karne|"
+    r"already\s+(?:sold|rented|showed|given|let\s*out|disposed)|"
+    r"don'?t\s+have\s+(?:any\s+)?(?:other\s+)?property(?:\s+to\s+(?:sell|rent|lease))?|"
+    r"no\s+property(?:\s+to\s+(?:sell|rent|lease))?|"
+    r"(?:bech|de)\s*(?:diya|di|chuke|chuki|hain)|bik\s*gay[aei]|"
+    r"koi\s*(?:bhi\s*)?property\s*(?:nahi|nhi)|"
+    r"kat\s+karo|kaat\s+do|kaato|kaat\s*karo|call\s+kaat[a-z]*|phone\s+kaat[a-z]*|cut\s+the\s+call|"
+    r"abhi\s+kuch\s+nahi|abhi\s+kuchh\s+nahi|kuch\s+nahi|kuchh\s+nahi|abhi\s+nahi"
+    r")\b"
     r"|(नॉट\s*इंटरेस्टेड|नहीं\s*बेचना|नहीं\s*देना|नहीं\s*चाहिए|कॉल\s*काटो|काट\s*दो|कुछ\s*नहीं|अभी\s*नहीं)",
     re.I,
 )
@@ -982,7 +992,7 @@ class RealEstateAgent(Agent):
                 logger.warning(f"Location-refusal shortcut failed, falling back to LLM: {e}")
 
         # B-alt: caller gives general refusal ("nahi", "no sir", "nahi bechna", "not interested", "kat karo") to selling/renting -> clean polite close & hangup
-        if state.step in (_Step.INTRODUCTION, _Step.CATEGORY_SELECT) and (_is_bare_refusal(text) or _DIRECT_NOT_INTERESTED.search(text)):
+        if state.step in (_Step.INTRODUCTION, _Step.CATEGORY_SELECT) and (_is_bare_refusal(text) or _DIRECT_NOT_INTERESTED.search(text) or explicit_refusal(text)):
             logger.info(f"🛑 General refusal at {state.step.value} -> mark_not_interested & closing (no LLM): '{text}'")
             try:
                 await tools_.mark_not_interested()
@@ -1237,11 +1247,42 @@ class RealEstateAgent(Agent):
         detected_int = None if _refusal else classify_intent(text)
         step_changed = False
 
+        # Multi-slot extraction from caller utterance:
+        # Any slots explicitly mentioned by the caller are committed to state immediately.
+        if text and not _refusal:
+            proactive_slots = _fastpath_extract_all(text)
+            if proactive_slots:
+                logger.info(f"🔍 Proactively extracted slots from caller: {proactive_slots}")
+                if proactive_slots.get("bhk_config"):
+                    state.bhk_config = proactive_slots["bhk_config"]
+                    detected_cat = "residential"
+                if proactive_slots.get("category"):
+                    detected_cat = proactive_slots["category"]
+                if proactive_slots.get("intent"):
+                    detected_int = proactive_slots["intent"]
+                if proactive_slots.get("approx_area_sqft") and not state.approx_area_sqft:
+                    state.approx_area_sqft = proactive_slots["approx_area_sqft"]
+                if proactive_slots.get("furnishing_status") and not state.furnishing_status:
+                    state.furnishing_status = proactive_slots["furnishing_status"]
+                if proactive_slots.get("unit_number") and not state.unit_number:
+                    state.unit_number = proactive_slots["unit_number"]
+                if proactive_slots.get("floor_number") and not state.floor_number:
+                    state.floor_number = proactive_slots["floor_number"]
+                if proactive_slots.get("immediate_occupancy") is not None and state.immediate_occupancy is None:
+                    state.immediate_occupancy = proactive_slots["immediate_occupancy"]
+                if proactive_slots.get("is_currently_leased") is not None and state.is_currently_leased is None:
+                    state.is_currently_leased = proactive_slots["is_currently_leased"]
+                if proactive_slots.get("expected_monthly_rent") and not state.expected_monthly_rent:
+                    state.expected_monthly_rent = proactive_slots["expected_monthly_rent"]
+                if proactive_slots.get("expected_sale_price") and not state.expected_sale_price:
+                    state.expected_sale_price = proactive_slots["expected_sale_price"]
+
         if detected_cat:
             old_cat = state.category
             state.category = detected_cat
             if detected_cat == "commercial":
-                state.bhk_config = None
+                if not state.bhk_config:
+                    state.bhk_config = None
                 # Keep exactly what the caller said as the unit type ("office", "shop"...). Never assumed:
                 # if they only said "commercial", the type stays empty and is asked next.
                 _said = commercial_type_from_speech(text)
@@ -1265,9 +1306,21 @@ class RealEstateAgent(Agent):
             if old_cat != detected_cat:
                 logger.info(f"🏷️ Proactively recognized property category: '{detected_cat}' from utterance: '{text}'")
 
-        if detected_int and not state.intent:
-            state.intent = detected_int
-            logger.info(f"🎯 Proactively recognized intent: '{detected_int}' from utterance: '{text}'")
+        if detected_int:
+            if not state.intent or detected_int != state.intent:
+                old_intent = state.intent
+                state.intent = detected_int
+                logger.info(f"🎯 Recognized/updated intent: '{detected_int}' (was '{old_intent}') from utterance: '{text}'")
+                if state.category == "residential":
+                    target_step = RealEstateStep.RESIDENTIAL_LEASE if detected_int == "lease" else RealEstateStep.RESIDENTIAL_SALE
+                    if state.step in (RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.RESIDENTIAL_LEASE) and state.step != target_step:
+                        state.step = target_step
+                        step_changed = True
+                elif state.category == "commercial":
+                    target_step = RealEstateStep.COMMERCIAL_LEASE if detected_int == "lease" else RealEstateStep.COMMERCIAL_SALE
+                    if state.step in (RealEstateStep.COMMERCIAL_SALE, RealEstateStep.COMMERCIAL_LEASE) and state.step != target_step:
+                        state.step = target_step
+                        step_changed = True
 
         if state.step in (RealEstateStep.INTRODUCTION, RealEstateStep.CATEGORY_SELECT, RealEstateStep.ASK_NEW_LOCATION) and state.category and state.intent:
             if state.category == "commercial":
@@ -1465,10 +1518,13 @@ class RealEstateAgent(Agent):
             if name in allowed:
                 fn = getattr(self._re_tools, name, None)
                 if name == "save_property_details":
-                    # Trust ONLY the field we just asked about; the text-typed JSON often contains
-                    # invented values for every other field.
                     missing = state.get_missing_fields()
-                    keep = _FIELD_TO_PARAMS.get(missing[0]["id"], ()) if missing else ()
+                    keep = set(_FIELD_TO_PARAMS.get(missing[0]["id"], ())) if missing else set()
+                    # Also keep any fields that are genuinely backed by caller's speech
+                    heard_lower = (state.last_user_text or "").lower()
+                    for k, v in args.items():
+                        if v is not None and str(v).lower() in heard_lower:
+                            keep.add(k)
                     safe = {k: v for k, v in args.items() if k in keep}
                     if safe:
                         await fn(**safe)

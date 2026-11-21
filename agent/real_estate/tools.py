@@ -153,6 +153,11 @@ _EXPLICIT_REFUSAL_PHRASES = re.compile(
     r"|(?:un|not\s+)interested"
     r"|don'?t\s+want\s+to\s+(?:sell|rent|lease|talk|proceed)"
     r"|no\s+thanks?|no\s+thank\s+you"
+    r"|already\s+(?:sold|rented|showed|given|let\s*out|disposed)"
+    r"|don'?t\s+have\s+(?:any\s+)?(?:other\s+)?property(?:\s+to\s+(?:sell|rent|lease))?"
+    r"|no\s+property(?:\s+to\s+(?:sell|rent|lease))?"
+    r"|(?:bech|de)\s*(?:diya|di|chuke|chuki|hain)|bik\s*gay[aei]"
+    r"|koi\s*(?:bhi\s*)?property\s*(?:nahi|nhi)"
     r"|(?:nahi|nhi|nahin|na)\s+(?:bechn[aei]|den[aei]|karn[aei]|chahiye|hoga|bataunga|batana|lena)"
     r"|(?:bechn[aei]|den[aei]|sell\s*karn[aei]|rent\s*pe\s*den[aei])\s*(?:bhi\s*)?(?:nahi|nhi|nahin)"
     r"|(?:interested|intrested|interest)\s*(?:nahi|nhi|nahin)"
@@ -966,6 +971,7 @@ class RealEstateTools:
     async def save_property_details(
         self,
         category: Optional[str] = None,
+        intent: Optional[str] = None,
         project_or_society: Optional[str] = None,
         sector_or_location: Optional[str] = None,
         unit_number: Optional[str] = None,
@@ -1019,14 +1025,24 @@ class RealEstateTools:
                     logger.info(f"Ignoring commercial_type='{clean_comm}' from LLM: caller did not say it ('{heard[:80]}')")
                     clean_comm = None
 
+        clean_intent = classify_intent(intent) if intent else None
+        if clean_intent:
+            self.state.intent = clean_intent
+
         # Dynamic category switching and step realignment.
-        # Only allowed in early turns or if category was not set (e.g. not in audience DB).
-        # Once in intake branches, category is locked to avoid stray words flipping the branch.
+        # If BHK is explicitly mentioned by customer, it is ALWAYS residential
         allow_cat_switch = (not self.state.category) or (self.state.step in (
             RealEstateStep.CATEGORY_SELECT, RealEstateStep.INTRODUCTION,
             RealEstateStep.CHECK_OTHER_PROPERTY, RealEstateStep.ASK_NEW_LOCATION
         ))
-        if allow_cat_switch:
+        if clean_bhk:
+            self.state.category = "residential"
+            self.state.commercial_type = None
+            self.state.bhk_config = clean_bhk
+            if self.state.step in (RealEstateStep.COMMERCIAL_SALE, RealEstateStep.COMMERCIAL_LEASE, RealEstateStep.CATEGORY_SELECT):
+                target_step = RealEstateStep.RESIDENTIAL_LEASE if (self.state.intent == "lease") else RealEstateStep.RESIDENTIAL_SALE
+                await self._go(target_step)
+        elif allow_cat_switch:
             cat_hint = classify_category(category) or (classify_category(clean_comm) if clean_comm else None)
             if clean_comm or cat_hint == "commercial":
                 self.state.category = "commercial"
@@ -1037,10 +1053,9 @@ class RealEstateTools:
                     await self._go(target_step)
                 elif self.state.step == RealEstateStep.RESIDENTIAL_LEASE:
                     await self._go(RealEstateStep.COMMERCIAL_LEASE)
-            elif clean_bhk or cat_hint == "residential":
+            elif cat_hint == "residential":
                 self.state.category = "residential"
                 self.state.commercial_type = None  # Residential properties never have commercial type
-                self.state.bhk_config = clean_bhk
                 if self.state.step in (RealEstateStep.COMMERCIAL_SALE, RealEstateStep.CATEGORY_SELECT):
                     target_step = RealEstateStep.RESIDENTIAL_LEASE if (self.state.intent == "lease") else RealEstateStep.RESIDENTIAL_SALE
                     await self._go(target_step)
@@ -1049,13 +1064,24 @@ class RealEstateTools:
         else:
             # Category is locked during intake branches! Strictly enforce matching slot types.
             if self.state.category == "commercial":
-                self.state.bhk_config = None  # Commercial properties never have BHK
+                if not self.state.bhk_config:
+                    self.state.bhk_config = None  # Commercial properties never have BHK
                 if clean_comm:
                     self.state.commercial_type = clean_comm
             elif self.state.category == "residential":
                 self.state.commercial_type = None  # Residential properties never have commercial type
                 if clean_bhk:
                     self.state.bhk_config = clean_bhk
+
+        if clean_intent:
+            if self.state.category == "residential":
+                target_step = RealEstateStep.RESIDENTIAL_LEASE if clean_intent == "lease" else RealEstateStep.RESIDENTIAL_SALE
+                if self.state.step in (RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.RESIDENTIAL_LEASE) and self.state.step != target_step:
+                    await self._go(target_step)
+            elif self.state.category == "commercial":
+                target_step = RealEstateStep.COMMERCIAL_LEASE if clean_intent == "lease" else RealEstateStep.COMMERCIAL_SALE
+                if self.state.step in (RealEstateStep.COMMERCIAL_SALE, RealEstateStep.COMMERCIAL_LEASE) and self.state.step != target_step:
+                    await self._go(target_step)
 
         if approx_area_sqft is not None:
             try:

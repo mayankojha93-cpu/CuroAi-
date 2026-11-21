@@ -419,6 +419,21 @@ def _apply_disconnect_disposition(state: RealEstateState):
                 if role in ("assistant", "agent") and any(k in t_text for k in ["advisor will share", "advisor will connect", "senior advisor", "advisor aapse"]):
                     advisor_mentioned = True
 
+        # Check if caller expressed negative refusal in any customer turn
+        caller_refused = False
+        for turn in state.transcript:
+            if turn.get("role") in ("customer", "user"):
+                t_text = (turn.get("text") or "").strip()
+                if t_text and (explicit_refusal(t_text) or _is_bare_refusal(t_text) or _DIRECT_NOT_INTERESTED.search(t_text)):
+                    caller_refused = True
+                    break
+
+        if caller_refused and not (details_captured and len(details_captured) >= 3):
+            state.is_interested = False
+            state.final_disposition = "Not Interested"
+            state.agent_summary = "Customer not interested in selling or renting property"
+            return
+
         is_interested = state.is_interested or (state.intent in ("sell", "rent", "lease"))
 
         # Interested callers who shared property details, inquired about pricing/valuation, or were promised an advisor follow-up
@@ -444,24 +459,11 @@ def _apply_disconnect_disposition(state: RealEstateState):
             state.final_disposition = "Advisor Callback Booked"
             state.agent_summary = f"Property details captured ({summary_desc}); senior advisor follow-up scheduled"
         else:
-            # Check if caller expressed negative refusal in any customer turn
-            caller_refused = False
-            for turn in state.transcript:
-                if turn.get("role") in ("customer", "user"):
-                    t_text = (turn.get("text") or "").strip()
-                    if t_text and (explicit_refusal(t_text) or _is_bare_refusal(t_text) or _DIRECT_NOT_INTERESTED.search(t_text)):
-                        caller_refused = True
-                        break
-
-            if caller_refused:
-                state.final_disposition = "Not Interested"
-                state.agent_summary = "Customer not interested in selling or renting property"
+            state.final_disposition = "Abruptly Disconnected Call"
+            if not has_customer_speech:
+                state.agent_summary = state.agent_summary or "Customer answered the call but hung up during introduction"
             else:
-                state.final_disposition = "Abruptly Disconnected Call"
-                if not has_customer_speech:
-                    state.agent_summary = state.agent_summary or "Customer answered the call but hung up during introduction"
-                else:
-                    state.agent_summary = state.agent_summary or "Customer hung up abruptly during the call"
+                state.agent_summary = state.agent_summary or "Customer hung up abruptly during the call"
 
 
 def post_re_outcome_sync(state: RealEstateState) -> bool:

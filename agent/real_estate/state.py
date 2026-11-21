@@ -230,6 +230,41 @@ class RealEstateState:
             return True
         return False
 
+    def get_captured_summary(self) -> str:
+        """Returns a string listing all property details captured so far."""
+        captured = []
+        if self.category:
+            captured.append(f"category='{self.category}'")
+        if self.intent:
+            captured.append(f"intent='{self.intent}'")
+        if self.sector_or_location:
+            captured.append(f"location='{self.sector_or_location}'")
+        if self.project_or_society and self.project_or_society != self.sector_or_location:
+            captured.append(f"society='{self.project_or_society}'")
+        if self.unit_number:
+            captured.append(f"unit_number='{self.unit_number}'")
+        if self.floor_number:
+            captured.append(f"floor_number='{self.floor_number}'")
+        if self.bhk_config:
+            captured.append(f"bhk_config='{self.bhk_config}'")
+        if self.commercial_type:
+            captured.append(f"commercial_type='{self.commercial_type}'")
+        if self.approx_area_sqft:
+            captured.append(f"area='{self.approx_area_sqft} sqft'")
+        if self.furnishing_status:
+            captured.append(f"furnishing='{self.furnishing_status}'")
+        if self.expected_sale_price:
+            captured.append(f"sale_price='{self.expected_sale_price}'")
+        if self.expected_monthly_rent:
+            captured.append(f"monthly_rent='{self.expected_monthly_rent}'")
+        if self.immediate_occupancy is not None:
+            captured.append(f"immediate_occupancy={'Yes' if self.immediate_occupancy else 'No'}")
+        if self.is_currently_leased is not None:
+            captured.append(f"is_currently_leased={'Yes' if self.is_currently_leased else 'No'}")
+        if self.is_standalone:
+            captured.append("is_standalone=True")
+        return ", ".join(captured)
+
     def _unit_floor_slot(self) -> Dict[str, str]:
         """Dynamic question for unit and floor depending on whether one, both, or neither is known."""
         if not self.unit_number and not self.floor_number:
