@@ -992,7 +992,13 @@ class RealEstateAgent(Agent):
                 logger.warning(f"Location-refusal shortcut failed, falling back to LLM: {e}")
 
         # B-alt: caller gives general refusal ("nahi", "no sir", "nahi bechna", "not interested", "kat karo") to selling/renting -> clean polite close & hangup
-        if state.step in (_Step.INTRODUCTION, _Step.CATEGORY_SELECT) and (_is_bare_refusal(text) or _DIRECT_NOT_INTERESTED.search(text) or explicit_refusal(text)):
+        _already_interested = (state.is_interested is True) or (state.intent in ("sell", "rent", "lease"))
+        _is_refusal_here = (
+            _DIRECT_NOT_INTERESTED.search(text)
+            if _already_interested
+            else (_is_bare_refusal(text) or _DIRECT_NOT_INTERESTED.search(text) or explicit_refusal(text))
+        )
+        if state.step in (_Step.INTRODUCTION, _Step.CATEGORY_SELECT) and _is_refusal_here:
             logger.info(f"🛑 General refusal at {state.step.value} -> mark_not_interested & closing (no LLM): '{text}'")
             try:
                 await tools_.mark_not_interested()
@@ -1408,8 +1414,17 @@ class RealEstateAgent(Agent):
             if _fp_missing:
                 _fp_field = _fp_missing[0]["id"]
                 if _fp_field == "commercial_type":
-                    _ct = commercial_type_from_speech(text)
-                    _fp_kw = {"commercial_type": _ct} if (_ct and _ct != "Other" and len(_tokens(text)) <= 4) else None
+                    # If caller denies commercial / office space ("nahi nahi", "no", "commercial nahi", "office nahi"):
+                    _comm_negation = (
+                        _is_bare_refusal(text)
+                        or any(neg in text.lower() for neg in ("not commercial", "not office", "commercial nahi", "office nahi", "office space nahi", "nahi hai"))
+                    )
+                    if _comm_negation:
+                        logger.info(f"🏡 Caller denied commercial/office ('{text}') -> switching category to residential")
+                        _fp_kw = {"category": "residential"}
+                    else:
+                        _ct = commercial_type_from_speech(text)
+                        _fp_kw = {"commercial_type": _ct} if (_ct and _ct != "Other" and len(_tokens(text)) <= 4) else None
                 else:
                     _fp_kw = _fastpath_extract(_fp_field, text)
                 if _fp_kw:

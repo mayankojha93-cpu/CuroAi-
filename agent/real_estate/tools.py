@@ -1035,6 +1035,10 @@ class RealEstateTools:
             RealEstateStep.CATEGORY_SELECT, RealEstateStep.INTRODUCTION,
             RealEstateStep.CHECK_OTHER_PROPERTY, RealEstateStep.ASK_NEW_LOCATION
         ))
+        cat_hint = classify_category(category) or (classify_category(clean_comm) if clean_comm else None)
+        # If customer or agent explicitly specifies category different from state, allow category switch
+        if cat_hint and cat_hint != self.state.category:
+            allow_cat_switch = True
         if clean_bhk:
             self.state.category = "residential"
             self.state.commercial_type = None
@@ -1231,6 +1235,14 @@ class RealEstateTools:
     async def mark_not_interested(self) -> str:
         """Call ONLY when customer clearly and explicitly confirms they are NOT interested (e.g. 'nahi bechna', 'no', 'not interested', 'nahi chahiye'). NEVER call this if the customer says they are thinking about it, considering, or undecided (e.g. 'soch raha hoon', 'thinking about it', 'maybe')."""
         heard = (self.state.last_user_text or "").strip()
+        # If caller already confirmed interest to sell/rent, a bare "nahi" / "no" is an answer to a question, not a refusal of service
+        if self.state.is_interested or (self.state.intent in ("sell", "rent", "lease")):
+            if not (_EXPLICIT_REFUSAL_PHRASES.search(heard.lower()) if heard else False):
+                logger.warning(f"🛑 mark_not_interested rejected: caller already confirmed intent ({self.state.intent}), utterance '{heard}' is not an explicit refusal to sell/rent")
+                return (
+                    "REJECTED: The customer previously confirmed interest to sell/rent. A bare 'no' or 'nahi' is an answer to the current property question, not a refusal to sell. "
+                    "Do NOT end the call. Clarify property details or confirm if the property is residential."
+                )
         if heard and not explicit_refusal(heard):
             logger.warning(f"🛑 mark_not_interested rejected (no explicit refusal in caller words): '{heard}'")
             return (
