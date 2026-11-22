@@ -1,10 +1,4 @@
 import { randomUUID } from 'crypto';
-import {
-  SipClient,
-  AgentDispatchClient,
-  RoomServiceClient,
-  SipCallError,
-} from 'livekit-server-sdk';
 import { pool, query } from '../db/index.js';
 import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
@@ -88,15 +82,7 @@ function realLocationOrNull(v?: string | null): string | null {
 }
 
 export class RealEstateCallService {
-  private sipClient: SipClient;
-  private dispatchClient: AgentDispatchClient;
-  private roomService: RoomServiceClient;
-
-  constructor() {
-    this.sipClient = new SipClient(env.LIVEKIT_URL, env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET);
-    this.dispatchClient = new AgentDispatchClient(env.LIVEKIT_URL, env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET);
-    this.roomService = new RoomServiceClient(env.LIVEKIT_URL, env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET);
-  }
+  constructor() {}
 
   /**
    * Places a test call for the My Estate Finder agent
@@ -328,103 +314,38 @@ export class RealEstateCallService {
       const effectiveLocation = realLocationOrNull(propertyLocation) || realLocationOrNull(lead?.property_location);
       const effectiveCategory = (lead?.category || 'residential').toLowerCase();
 
-      const metaPayload = JSON.stringify({
-        callId,
-        leadId: lead.id,
-        ownerName: safeLeadName,
-        customerName: safeLeadName,
-        phone: lead.phone,
-        preferredLanguage: lead.preferred_language || 'en',
-        direction: 'outbound',
-        propertyLocation: effectiveLocation,
-        address: effectiveLocation,
-        location: effectiveLocation,
-        customerAddress: effectiveLocation,
-        category: effectiveCategory,
-        propertyCategory: effectiveCategory,
-      });
-
-      await this.roomService.createRoom({
-        name: roomName,
-        emptyTimeout: 300,
-        metadata: metaPayload,
-      });
-
-      const agentName = env.REAL_ESTATE_AGENT_NAME || 'my-estate-finder-agent';
-      logger.info(
-        { callId, roomName, agentName, phone: lead.phone, owner: safeLeadName, location: effectiveLocation },
-        `📞 [CALL DISPATCH] Room: ${roomName} | Agent: ${agentName} | Lead: ${safeLeadName || 'Owner'} (${lead.phone})`
-      );
-
-      await this.dispatchClient.createDispatch(roomName, agentName, {
-        metadata: metaPayload,
-      });
-
       const dialablePhone = normalizePhone(lead.phone);
-      let callerId = env.SIP_CALLER_ID || undefined;
+      let callerId = env.SIP_CALLER_ID || env.EXOTEL_CALLER_ID || undefined;
       if (callerId && callerId.startsWith('+91') && callerId.length === 13) {
         callerId = `0${callerId.slice(3)}`;
       }
 
       await query("UPDATE calls SET status = 'dialing', call_status = 'dialing' WHERE id = $1", [callId]);
 
-      // Check whether to use Exotel WSS (AgentStream) or standard SIP trunk
-      const useWss = env.EXOTEL_USE_WSS !== 'false';
-      if (useWss) {
-        logger.info({ callId, phone: dialablePhone, callerId }, `📞 [DIALING CARRIER] Dials: ${dialablePhone} via Exotel WSS Audio Stream`);
-        const exotelCall = await initiateExotelWssCall({
-          callId,
-          phone: dialablePhone,
-          callerId,
-        });
+      logger.info(
+        { callId, roomName, phone: dialablePhone, callerId, lead: safeLeadName, location: effectiveLocation, category: effectiveCategory },
+        `📞 [DIALING CARRIER] Dials: ${dialablePhone} via Exotel WSS Audio Stream to Pipecat Agent`
+      );
 
-        await query('UPDATE calls SET exotel_call_sid = $1, sip_call_id = $2 WHERE id = $3', [
-          exotelCall.sid,
-          exotelCall.sid,
-          callId,
-        ]);
-        logger.info(
-          { callId, exotelCallSid: exotelCall.sid, phone: dialablePhone },
-          `📞 [RINGING] Exotel WSS carrier accepted call leg | Call SID: ${exotelCall.sid}`
-        );
-      } else {
-        if (!env.SIP_OUTBOUND_TRUNK_ID) {
-          throw new Error('Missing SIP_OUTBOUND_TRUNK_ID in environment. Check Exotel SIP trunk in .env');
-        }
+      const exotelCall = await initiateExotelWssCall({
+        callId,
+        phone: dialablePhone,
+        callerId,
+      });
 
-        logger.info({ callId, phone: dialablePhone, trunk: env.SIP_OUTBOUND_TRUNK_ID }, `📞 [DIALING CARRIER] Dials: ${dialablePhone} via Exotel SIP trunk`);
-        const participant = await this.sipClient.createSipParticipant(
-          env.SIP_OUTBOUND_TRUNK_ID,
-          dialablePhone,
-          roomName,
-          {
-            participantIdentity: `phone-${dialablePhone.replace(/[^0-9]/g, '')}`,
-            participantName: safeLeadName || undefined,
-            fromNumber: callerId,
-            ringingTimeout: 65,      // Server-side SIP 65s ringing timeout enforced by LiveKit gateway
-            maxCallDuration: env.CALL_MAX_DURATION_SECONDS || 200,    // Server-side SIP 2-minute max call duration
-            waitUntilAnswered: false,
-          } as any
-        );
+      await query('UPDATE calls SET exotel_call_sid = $1, sip_call_id = $2 WHERE id = $3', [
+        exotelCall.sid,
+        exotelCall.sid,
+        callId,
+      ]);
 
-        await query('UPDATE calls SET sip_call_id = $1 WHERE id = $2', [participant.sipCallId || null, callId]);
-        logger.info({ callId, sipCallId: participant.sipCallId, phone: dialablePhone }, `📞 [RINGING] Carrier accepted call leg | SIP ID: ${participant.sipCallId || 'N/A'}`);
-      }
+      logger.info(
+        { callId, exotelCallSid: exotelCall.sid, phone: dialablePhone },
+        `📞 [RINGING] Exotel WSS carrier accepted call leg | Call SID: ${exotelCall.sid}`
+      );
     } catch (err: any) {
-      let mappedStatus = 'failed';
-      let failureReason = err.message || 'Call placement failed';
-
-      if (err instanceof SipCallError) {
-        failureReason = `SIP ${err.sipStatusCode} (${err.sipStatus}): ${err.message}`;
-        if (err.sipStatusCode === 486 || err.sipStatusCode === 600) {
-          mappedStatus = 'busy';
-        } else if (err.sipStatusCode === 408 || err.sipStatusCode === 480) {
-          mappedStatus = 'no_answer';
-        } else if (err.sipStatusCode === 403) {
-          failureReason = `SIP 403 Forbidden: Exotel rejected call. Your Exotel account requires KYC compliance or number verification before making outbound calls.`;
-          mappedStatus = 'failed';
-        }
-      }
+      const mappedStatus = 'failed';
+      const failureReason = err.message || 'Call placement failed';
 
       logger.warn({ callId, mappedStatus, failureReason }, 'Real estate dial failed');
       await query(
