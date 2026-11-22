@@ -636,9 +636,9 @@ export function generateRealEstateCampaignReportCsv(reportData: any[]): string {
     'Customer Name',
     'Mobile',
     'Address',
+    'Society / Project',
     'Category',
     'Intent',
-    'Society / Project',
     'Unit Number',
     'Floor Number',
     'BHK Configuration',
@@ -667,18 +667,23 @@ export function generateRealEstateCampaignReportCsv(reportData: any[]): string {
 
   const escapeCsv = (val: any): string => {
     const s = String(val ?? '');
-    if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+    if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
       return `"${s.replace(/"/g, '""')}"`;
     }
     return s;
   };
 
-  const trailingCommas = ','.repeat(headers.length - 1);
+  const connectionRate = totalAttempts > 0
+    ? `${((connectedCalls / totalAttempts) * 100).toFixed(1)}%`
+    : '0.0%';
 
   const lines: string[] = [
-    `Estate Finder Final Audited Calling Report${trailingCommas}`,
-    `${uniqueContacts} unique contacts · ${totalAttempts} total attempts · ${connectedCalls} connected calls${trailingCommas}`,
-    trailingCommas,
+    'Estate Finder Final Audited Calling Report',
+    'Campaign Performance & Call Audit Summary',
+    '',
+    'Unique Contacts,Total Attempts,Connected Calls,Connection Rate',
+    `${uniqueContacts},${totalAttempts},${connectedCalls},${connectionRate}`,
+    '',
     headers.join(','),
   ];
 
@@ -689,9 +694,9 @@ export function generateRealEstateCampaignReportCsv(reportData: any[]): string {
       escapeCsv(row.customer_name),
       escapeCsv(row.mobile),
       escapeCsv(row.address),
+      escapeCsv(row.society || '-'),
       escapeCsv(row.category || '-'),
       escapeCsv(row.intent || '-'),
-      escapeCsv(row.society || '-'),
       escapeCsv(row.unit_number || '-'),
       escapeCsv(row.floor_number || '-'),
       escapeCsv(row.bhk_config || '-'),
@@ -773,18 +778,23 @@ export function generateCampaignAuditedReportCsv(reportData: any[], pipeline?: s
 
   const escapeCsv = (val: any): string => {
     const s = String(val ?? '');
-    if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+    if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
       return `"${s.replace(/"/g, '""')}"`;
     }
     return s;
   };
 
-  const trailingCommas = ','.repeat(headers.length - 1);
+  const connectionRate = totalAttempts > 0
+    ? `${((connectedCalls / totalAttempts) * 100).toFixed(1)}%`
+    : '0.0%';
 
   const lines: string[] = [
-    `Airtel IP TV Final Audited Calling Report${trailingCommas}`,
-    `${uniqueContacts} unique contacts · ${totalAttempts} total attempts · ${connectedCalls} connected calls${trailingCommas}`,
-    trailingCommas,
+    'Airtel IP TV Final Audited Calling Report',
+    'Campaign Performance & Call Audit Summary',
+    '',
+    'Unique Contacts,Total Attempts,Connected Calls,Connection Rate',
+    `${uniqueContacts},${totalAttempts},${connectedCalls},${connectionRate}`,
+    '',
     headers.join(','),
   ];
 

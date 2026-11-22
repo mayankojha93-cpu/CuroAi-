@@ -931,7 +931,7 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
     try {
       const reportData: CampaignReportRow[] = await fetchCampaignReport(currentCampaign.id);
       const csvContent = generateCampaignAuditedReportCsv(reportData, currentCampaign.pipeline);
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.setAttribute('href', url);
