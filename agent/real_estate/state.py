@@ -133,6 +133,13 @@ class RealEstateState:
         self.direct_reply: Optional[str] = None
         # Caller asked "what price/rate will I get?" -> closing = valuation line + short thank-you
         self.valuation_requested: bool = False
+        # LLM sentence that answered a caller QUESTION in the same generation as a tool call; it is spoken in
+        # front of the tool's canonical next question instead of being dropped (see agent.llm_node).
+        self.pending_preface: Optional[str] = None
+        # A bare "nahi" at the intro is confirmed once (either/or question) before the call is closed.
+        self.refusal_confirm_asked: bool = False
+        # Set by worker.py when the agent stops speaking (used to ignore overlapping backchannels).
+        self.last_agent_speech_end: float = 0.0
         # Raw text of the customer's latest turn (used by tools to reject hallucinated args)
         self.last_user_text: str = ""
         # Rolling recent customer turns (window of last 5 turns) to avoid losing intent/slots
