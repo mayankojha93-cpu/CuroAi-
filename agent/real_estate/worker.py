@@ -1,350 +1,161 @@
-import os
-import re
-import json
-import time
 import asyncio
+import re
 import statistics
-import requests
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from pathlib import Path
-from typing import Optional
-from livekit import agents, api
-from livekit.agents import AgentSession, AgentServer, TurnHandlingOptions, JobExecutorType
-from livekit.plugins import sarvam, soniox, silero, openai
+from typing import Any, Dict, List, Optional
 
+import aiohttp
+import requests
+
+from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.frames.frames import EndFrame
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.runner import PipelineRunner
+from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from pipecat.processors.audio.vad_processor import VADProcessor
+from pipecat.services.groq.llm import GroqLLMService
+from pipecat.services.openrouter.llm import OpenRouterLLMService
+from pipecat.services.sarvam.tts import SarvamHttpTTSService
+from pipecat.services.soniox.stt import SonioxSTTService
+from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregatorParams
+from pipecat.transcriptions.language import Language
+from pipecat.transports.base_transport import BaseTransport
+from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
+
+from .audio_recorder import CallRecorder
+from .agent import (  # noqa: F401  (re-exported helpers used by the disposition logic below)
+    _DIRECT_NOT_INTERESTED,
+    _HUMAN_CALLBACK_RE,
+    _STRONG_VM_RE,
+    _clean_leaks,
+    _is_bare_refusal,
+    RealEstateTurnHandler,
+)
 from .config import (
-    ROOT_DIR,
-    logger,
-    AGENT_NAME,
     AGENT_PERSONA_NAME,
-    LLM_MODEL,
-    SONIOX_API_KEY,
-    SONIOX_MODEL,
-    SARVAM_API_KEY,
-    OPENROUTER_API_KEY,
-    OPENROUTER_PROVIDER_SORT,
-    PREEMPTIVE_GENERATION,
-    ENDPOINT_MIN_DELAY,
-    ENDPOINT_MAX_DELAY,
-    STT_LANGUAGE,
-    TTS_LANGUAGE_HI,
-    TTS_LANGUAGE_EN,
-    TTS_MODEL,
-    TTS_SPEAKER,
-    TTS_SPEAKER_HI,
-    TTS_SPEAKER_EN,
-    DEFAULT_LANGUAGE,
-    TTS_PACE,
-    TTS_TEMPERATURE,
-    FAST_TOOL_REPLY,
-    LATENCY_LOG,
-    VAD_MIN_SILENCE,
-    VAD_DEACTIVATION,
-    LLM_MAX_TOKENS,
-    OPENROUTER_PROVIDER_ORDER,
     BACKEND_URL,
-    INTERNAL_SECRET,
-    LLM_PROVIDER,
+    DEFAULT_LANGUAGE,
     GROQ_API_KEY,
     GROQ_MODEL,
+    INTERNAL_SECRET,
     LLM_FALLBACK,
-    LLM_ATTEMPT_TIMEOUT,
-    PRERENDER_GREETING,
-    PRERENDER_COMMON,
+    LLM_MAX_TOKENS,
+    LLM_MODEL,
+    LLM_PROVIDER,
+    MAX_CALL_SECONDS,
+    MAX_SILENCE_PROMPTS,
+    OPENROUTER_API_KEY,
+    OPENROUTER_PROVIDER_ORDER,
+    OPENROUTER_PROVIDER_SORT,
+    PIPELINE_IN_SAMPLE_RATE,
+    PIPELINE_OUT_SAMPLE_RATE,
+    RECORD_CALLS,
+    SARVAM_API_KEY,
+    SILENCE_PROMPT_SECONDS,
+    SONIOX_API_KEY,
+    SONIOX_MODEL,
+    STT_LANGUAGE,
+    TTS_MODEL,
+    TTS_PACE,
+    TTS_SAMPLE_RATE,
+    TTS_SPEAKER_EN,
+    TTS_SPEAKER_HI,
+    TTS_TEMPERATURE,
+    USER_SPEECH_TIMEOUT,
+    VAD_MIN_SILENCE,
+    logger,
 )
+from .pipecat_adapter import (
+    LLMOutputGuard,
+    PipecatSession,
+    PlayoutTracker,
+    SpeechInjector,
+    TurnGate,
+    schema_for_tool,
+)
+from .prompts import _owner_call_name, get_step_instructions
 from .state import RealEstateState, RealEstateStep
-from .agent import RealEstateAgent, _HUMAN_CALLBACK_RE, _is_bare_refusal, _DIRECT_NOT_INTERESTED, _clean_leaks
 from .tools import RealEstateTools, explicit_refusal
-from .prompts import _owner_call_name
-from .audio_recorder import RoomAudioRecorder
-from src.transliteration import romanize_hindi
-from src.carrier_filter import classify_carrier_message
 
-server = AgentServer(job_executor_type=JobExecutorType.THREAD)
+_UUID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
 
-_UUID_RE = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I)
-
-# ── Conversation File Logger ───────────────────────────────────────────────────
-_CONV_LOG_DIR = ROOT_DIR / "recordings" / "conversations"
-
-
-class ConversationFileLogger:
-    """Real-time conversation logger: writes each turn to a .txt file as it happens."""
-
-    def __init__(self, call_id: str, owner_name: str, phone: str, direction: str):
-        _CONV_LOG_DIR.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_id = (call_id or "unknown")[:36]
-        self._path = _CONV_LOG_DIR / f"{ts}_{safe_id}.txt"
-        self._call_id = call_id
-        self._fh = open(self._path, "w", encoding="utf-8", buffering=1)
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self._fh.write(
-            f"{'='*70}\n"
-            f"  ESTATE FINDER CONVERSATION LOG\n"
-            f"  Call ID  : {call_id}\n"
-            f"  Owner    : {owner_name}  |  Phone: {phone}\n"
-            f"  Direction: {direction}\n"
-            f"  Started  : {now_str}\n"
-            f"{'='*70}\n\n"
-        )
-        logger.info(f"📝 Conversation log started: {self._path}")
-
-    def _ts(self) -> str:
-        return datetime.now().strftime("%H:%M:%S")
-
-    def log_agent(self, text: str):
-        self._fh.write(f"[{self._ts()}] 🤖  {AGENT_PERSONA_NAME:<7}: {text}\n")
-
-    def log_customer(self, text: str):
-        self._fh.write(f"[{self._ts()}] 🗣️  Customer: {text}\n")
-
-    def log_event(self, text: str):
-        self._fh.write(f"[{self._ts()}] ──  {text}\n")
-
-    def finalize(self, state: "RealEstateState"):
-        try:
-            duration_s = int(time.time() - state.start_time)
-            mins, secs = divmod(duration_s, 60)
-            self._fh.write(
-                f"\n{'='*70}\n"
-                f"  CALL OUTCOME\n"
-                f"  Disposition  : {state.final_disposition}\n"
-                f"  Interested   : {state.is_interested}\n"
-                f"  Category     : {state.category or 'N/A'}  |  Intent: {state.intent or 'N/A'}\n"
-                f"  Property     : {state.project_or_society or 'N/A'}"
-                f"{', ' + state.sector_or_location if state.sector_or_location else ''}\n"
-                f"  Unit / Floor : {state.unit_number or 'N/A'} / {state.floor_number or 'N/A'}\n"
-                f"  Config/Type  : {state.bhk_config or state.commercial_type or 'N/A'}\n"
-                f"  Area         : {f'{state.approx_area_sqft} sqft' if state.approx_area_sqft else 'N/A'}\n"
-                f"  Furnishing   : {state.furnishing_status or 'N/A'}\n"
-                f"  Price / Rent : {state.expected_sale_price or state.expected_monthly_rent or 'N/A'}\n"
-                f"  Duration     : {mins}m {secs}s\n"
-                f"  Summary      : {state.agent_summary or 'N/A'}\n"
-                f"{'='*70}\n"
-            )
-        except Exception as e:
-            self._fh.write(f"\n[ERROR writing outcome: {e}]\n")
-        finally:
-            try:
-                self._fh.close()
-            except Exception:
-                pass
-        logger.info(f"📝 Conversation log saved: {self._path}")
-
-
-def _load_vad():
-    kwargs = dict(
-        sample_rate=16000,
-        min_speech_duration=0.05,
-        min_silence_duration=VAD_MIN_SILENCE,
-        activation_threshold=0.45,
-    )
-    if VAD_DEACTIVATION is not None:
-        try:
-            return silero.VAD.load(**kwargs, deactivation_threshold=VAD_DEACTIVATION)
-        except TypeError:
-            logger.warning("silero plugin has no deactivation_threshold; ignoring VAD_DEACTIVATION")
-    return silero.VAD.load(**kwargs)
-
-
-def prewarm(proc: agents.JobProcess):
-    try:
-        proc.userdata["vad"] = _load_vad()
-    except Exception as e:
-        logger.warning(f"VAD prewarm failed: {e}")
-
-
-server.setup_fnc = prewarm
-
-
-# ── Latency helpers ────────────────────────────────────────────────────────────
-def _build_llm():
-    """Primary = Groq direct (fast), fallback = OpenRouter. Falls back to OpenRouter-only if Groq is not set up."""
-    common = dict(temperature=0.05, parallel_tool_calls=False, max_completion_tokens=LLM_MAX_TOKENS)
-
-    def _openrouter():
-        extra = {}
-        if OPENROUTER_PROVIDER_ORDER:
-            extra["extra_body"] = {"provider": {"order": OPENROUTER_PROVIDER_ORDER, "allow_fallbacks": True}}
-        elif OPENROUTER_PROVIDER_SORT:
-            extra["extra_body"] = {"provider": {"sort": OPENROUTER_PROVIDER_SORT}}
-        return openai.LLM(model=LLM_MODEL, base_url="https://openrouter.ai/api/v1",
-                          api_key=OPENROUTER_API_KEY, **common, **extra)
-
-    def _groq():
-        return openai.LLM(model=GROQ_MODEL, base_url="https://api.groq.com/openai/v1",
-                          api_key=GROQ_API_KEY, **common)
-
-    provider = LLM_PROVIDER
-    if provider == "auto":
-        provider = "groq" if GROQ_API_KEY else "openrouter"
-    if provider == "groq" and not GROQ_API_KEY:
-        logger.warning("LLM_PROVIDER=groq but GROQ_API_KEY is empty -> using OpenRouter")
-        provider = "openrouter"
-
-    if provider != "groq":
-        logger.info(f"🧠 LLM: OpenRouter {LLM_MODEL}")
-        return _openrouter()
-
-    primary = _groq()
-    if LLM_FALLBACK and OPENROUTER_API_KEY:
-        try:
-            from livekit.agents import llm as lk_llm
-            secondary = _openrouter()
-            try:
-                adapter = lk_llm.FallbackAdapter([primary, secondary], attempt_timeout=LLM_ATTEMPT_TIMEOUT, max_retry_per_llm=0)
-            except TypeError:
-                adapter = lk_llm.FallbackAdapter([primary, secondary])
-            logger.info(f"🧠 LLM: Groq {GROQ_MODEL} (fallback -> OpenRouter {LLM_MODEL})")
-            return adapter
-        except Exception as e:
-            logger.warning(f"FallbackAdapter unavailable ({e}); using Groq only")
-    logger.info(f"🧠 LLM: Groq {GROQ_MODEL} (no fallback)")
-    return primary
-
-
-async def _prerender_tts(tts_obj, text: str, timeout: float = 10.0):
-    """Synthesise `text` ahead of time and return the audio frames (used for the opening greeting)."""
-    frames = []
-
-    async def _run():
-        stream = tts_obj.synthesize(text)
-        try:
-            async for ev in stream:
-                fr = getattr(ev, "frame", None)
-                if fr is not None:
-                    frames.append(fr)
-        finally:
-            try:
-                await stream.aclose()
-            except Exception:
-                pass
-
-    await asyncio.wait_for(_run(), timeout=timeout)
-    return frames
-
-
-async def _replay_frames(frames):
-    for f in frames:
-        yield f
+# Backend reporting must NEVER block the audio event loop (the old code did a blocking requests.post(timeout=2)
+# on every turn, which froze the whole pipeline for up to 2 s each time). One worker keeps turns in order.
+_backend_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="re-backend")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
-def _resolve_call_id(ctx, metadata: dict) -> str:
-    """callId from job/room metadata, else the UUID inside the room name (re-call-<uuid>)."""
+def _resolve_call_id(ctx=None, metadata: Optional[dict] = None) -> str:
+    """callId from metadata or fallback room name."""
+    metadata = metadata or {}
     cid = str(metadata.get("callId") or metadata.get("call_id") or "").strip()
     if cid:
         return cid
-    names = []
-    for getter in (
-        lambda: ctx.room.name,
-        lambda: ctx.job.room.name,
-    ):
-        try:
-            n = getter()
-            if n:
-                names.append(n)
-        except Exception:
-            pass
-    for n in names:
-        m = _UUID_RE.search(n)
-        if m:
-            return m.group(0)
-        if n.startswith("re-call-"):
-            return n[8:]
-        if n.startswith("call-"):
-            return n[5:]
+    if ctx:
+        names = []
+        for getter in (
+            lambda: getattr(getattr(ctx, "room", None), "name", None),
+            lambda: getattr(getattr(getattr(ctx, "job", None), "room", None), "name", None),
+        ):
+            try:
+                n = getter()
+                if n:
+                    names.append(n)
+            except Exception:
+                pass
+        for n in names:
+            m = _UUID_RE.search(n)
+            if m:
+                return m.group(0)
+            if n.startswith("re-call-"):
+                return n[8:]
+            if n.startswith("call-"):
+                return n[5:]
     return ""
 
 
-def _callee_status(p) -> Optional[str]:
-    try:
-        attrs = getattr(p, "attributes", None) or {}
-        if attrs.get("carrier") == "exotel-wss":
-            return "active"
-        if getattr(p, "identity", "").startswith("phone-"):
-            return "active"
-        return attrs.get("sip.callStatus")
-    except Exception:
-        return None
-
-
-async def _wait_for_answer(ctx, state: RealEstateState, timeout: float) -> bool:
-    """Outbound SIP participants join the room when DIALING starts, not when the phone is answered.
-    Waits for the callee to answer (sip.callStatus == 'active').
-    Never returns True while the call is still ringing or dialing."""
-    is_outbound = getattr(state, "direction", "outbound") == "outbound"
-    if not is_outbound:
-        return True
-
-    answer_event = asyncio.Event()
-
-    def _check_participants() -> Optional[bool]:
-        # True = active/answered
-        # False = hung up / failed
-        # None = still waiting / ringing
-        participants = list(ctx.room.remote_participants.values())
-        for p in participants:
-            st = _callee_status(p)
-            if st == "active":
-                return True
-            if st == "hangup":
-                return False
-        return None
-
-    init_status = _check_participants()
-    if init_status is True:
-        return True
-    if init_status is False:
-        return False
-
-    def on_attrs(changed_attrs, participant):
-        attrs = changed_attrs or {}
-        st = attrs.get("sip.callStatus") or _callee_status(participant)
-        if st == "active":
-            logger.info("📞 [EVENT] Participant sip.callStatus transitioned to 'active'")
-            answer_event.set()
-
-    ctx.room.on("participant_attributes_changed", on_attrs)
-
-    end_time = time.time() + timeout
-    try:
-        while time.time() < end_time:
-            if state.hangup_started or not ctx.room.isconnected():
-                return False
-
-            st_val = _check_participants()
-            if st_val is True:
-                return True
-            if st_val is False:
-                return False
-
-            remaining = end_time - time.time()
-            if remaining <= 0:
-                break
-
-            try:
-                await asyncio.wait_for(answer_event.wait(), timeout=min(0.5, remaining))
-                if answer_event.is_set():
-                    return True
-            except asyncio.TimeoutError:
-                pass
-    finally:
-        try:
-            ctx.room.off("participant_attributes_changed", on_attrs)
-        except Exception:
-            pass
-
-    return _check_participants() is True
+def _build_greeting(state: RealEstateState) -> str:
+    """Builds the opening greeting line according to customer name, property records, and language."""
+    loc = state.initial_property_location
+    name_call = _owner_call_name(state)
+    salutation_en = f"Hello {name_call}" if name_call != "Sir" else "Hello Sir"
+    salutation_hi = f"Hello {name_call} ji" if name_call != "Sir" else "Hello Sir"
+    if loc:
+        clean_loc = loc.split(";")[0].strip()
+        raw_parts = [p.strip() for p in clean_loc.split(",") if p.strip()]
+        parts = list(dict.fromkeys(raw_parts))
+        if len(parts) >= 2:
+            has_sub = any(kw in parts[1].lower() for kw in ("sector", "sec", "phase", "block", "pocket", "plot", "flat", "unit"))
+            spoken_loc = f"{parts[1]}, {parts[0]}" if has_sub else f"{parts[0]}, {parts[1]}"
+        else:
+            spoken_loc = parts[0] if parts else clean_loc
+        return (
+            f"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. I'm calling about your property in {spoken_loc}."
+            if state.reply_lang == "en"
+            else f"{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se. Aapki {spoken_loc} wali property ke baare mein call kiya tha."
+        )
+    return (
+        f"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder."
+        if state.reply_lang == "en"
+        else f"{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se."
+    )
 
 
 def _apply_ivr_disposition(state: RealEstateState):
-    """IVR / voicemail was detected and no human took over: record it as such (never as a plain no-answer or abruptly disconnected)."""
+    """IVR / voicemail was detected and no human took over."""
     if (
         getattr(state, "ivr_detected", False)
         or state.final_disposition == "Voicemail or IVR Detected"
-        or (state.agent_summary and ("waiting for human" in state.agent_summary.lower() or "carrier announcement" in state.agent_summary.lower() or "ivr" in state.agent_summary.lower() or "voicemail" in state.agent_summary.lower()))
+        or (state.agent_summary and ("carrier announcement" in state.agent_summary.lower() or "ivr" in state.agent_summary.lower() or "voicemail" in state.agent_summary.lower()))
     ):
         state.final_disposition = "Voicemail or IVR Detected"
         state.agent_summary = state.agent_summary or "Carrier announcement / voicemail / IVR detected; no human answered"
@@ -354,7 +165,6 @@ def _apply_disconnect_disposition(state: RealEstateState):
     if (
         getattr(state, "ivr_detected", False)
         or state.final_disposition == "Voicemail or IVR Detected"
-        or (state.agent_summary and ("timed out after 5s waiting for human" in state.agent_summary.lower() or "carrier announcement" in state.agent_summary.lower()))
     ):
         _apply_ivr_disposition(state)
         return
@@ -362,16 +172,12 @@ def _apply_disconnect_disposition(state: RealEstateState):
     is_answered = getattr(state, "answered_at", None) is not None or getattr(state, "callee_connected", False)
     has_customer_speech = any(t.get("role") == "customer" for t in state.transcript)
 
-    # Only mark "No Answer" if the callee never answered the phone (ringing timeout / rejected while ringing)
     if not is_answered and not has_customer_speech:
         state.final_disposition = "Not Connected (No Answer)"
         state.agent_summary = state.agent_summary or "Call unanswered by recipient within timeout period"
         return
 
-    # Callee answered the phone (connected, duration > 0)
     state.callee_connected = True
-
-    # Check what property details were captured before disconnection
     details_captured = []
     if state.unit_number and state.unit_number != "Standalone":
         details_captured.append(f"unit {state.unit_number}")
@@ -396,31 +202,9 @@ def _apply_disconnect_disposition(state: RealEstateState):
         "Interested (Disconnected)",
         "Partial Details Captured (Disconnected)",
     ):
-        # 0. Check if any customer turn in transcript was an IVR / Voicemail announcement
-        if not state.ivr_detected:
-            for turn in state.transcript:
-                if turn.get("role") in ("customer", "user"):
-                    t_text = (turn.get("text") or "").strip()
-                    if t_text and not _HUMAN_CALLBACK_RE.search(t_text):
-                        if classify_carrier_message(t_text):
-                            state.ivr_detected = True
-                            state.final_disposition = "Voicemail or IVR Detected"
-                            state.agent_summary = f"Voicemail or IVR Detected: {t_text[:100]}"
-                            return
-
         callee_asked_valuation = getattr(state, "valuation_requested", False)
         advisor_mentioned = False
-        if not callee_asked_valuation:
-            for turn in state.transcript:
-                t_text = (turn.get("text") or "").lower()
-                role = turn.get("role")
-                if role == "customer" and any(k in t_text for k in ["price", "rate", "valuation", "market", "bhav", "kitna milega", "average price", "selling price", "rent kitna"]):
-                    callee_asked_valuation = True
-                if role in ("assistant", "agent") and any(k in t_text for k in ["advisor will share", "advisor will connect", "senior advisor", "advisor aapse"]):
-                    advisor_mentioned = True
-
-        # Check if caller expressed negative refusal in any customer turn
-        is_already_interested = (state.is_interested is True) or (state.intent in ("sell", "rent", "lease"))
+        is_already_interested = (state.is_interested is True) or (state.intent in ("sale", "sell", "rent", "lease"))
 
         caller_refused = False
         for turn in state.transcript:
@@ -428,9 +212,6 @@ def _apply_disconnect_disposition(state: RealEstateState):
                 t_text = (turn.get("text") or "").strip()
                 if not t_text:
                     continue
-                # If caller already confirmed interest (e.g. said "sale" or "rent"),
-                # a bare "nahi" / "no" / "nahi nahi" is just an answer to a question (e.g. "is it office space? nahi nahi").
-                # Only explicit refusal to sell/rent (e.g. "nahi bechna", "not interested", "nahi chahiye") can count.
                 if is_already_interested:
                     if _DIRECT_NOT_INTERESTED.search(t_text):
                         caller_refused = True
@@ -446,10 +227,8 @@ def _apply_disconnect_disposition(state: RealEstateState):
             state.agent_summary = "Customer not interested in selling or renting property"
             return
 
-        is_interested = state.is_interested or (state.intent in ("sell", "rent", "lease"))
+        is_interested = state.is_interested or (state.intent in ("sale", "sell", "rent", "lease"))
 
-        # Interested callers who shared property details, inquired about pricing/valuation, or were promised an advisor follow-up
-        # are actionable Advisor Callback Booked leads, NOT abruptly disconnected calls!
         if (is_interested and (details_captured or callee_asked_valuation or advisor_mentioned)) or callee_asked_valuation:
             state.final_disposition = "Advisor Callback Booked"
             state.valuation_requested = True
@@ -458,8 +237,6 @@ def _apply_disconnect_disposition(state: RealEstateState):
                 desc_parts.append(f"to {state.intent}")
             if details_captured:
                 desc_parts.append(", ".join(details_captured[:4]))
-            if callee_asked_valuation:
-                desc_parts.append("pricing/market valuation requested")
             summary_desc = " | ".join(desc_parts) if desc_parts else "property details captured"
             state.agent_summary = f"Caller expressed interest ({summary_desc}); advisor follow-up booked"
         elif is_interested:
@@ -490,7 +267,6 @@ def post_re_outcome_sync(state: RealEstateState) -> bool:
     }
     has_customer = any(t.get("role") == "customer" for t in state.transcript)
 
-    # Duration counts from the moment the phone was answered, never from ringing time.
     if getattr(state, "answered_at", None):
         duration = max(1, int(time.time() - state.answered_at))
     elif has_customer:
@@ -498,30 +274,13 @@ def post_re_outcome_sync(state: RealEstateState) -> bool:
     else:
         duration = 0
 
-    is_comm = (
-        state.category == "commercial"
-        or bool(state.commercial_type)
-        or bool(state.project_or_society and any(w in state.project_or_society.lower() for w in ["commercial", "office", "shop", "retail", "showroom", "warehouse"]))
-        or bool(state.sector_or_location and any(w in state.sector_or_location.lower() for w in ["commercial", "office", "shop", "retail", "showroom", "warehouse"]))
-    )
-    if is_comm:
-        category_val = "commercial"
-        bhk_val = None
-        comm_val = state.commercial_type or "Commercial Unit"
-    elif state.category == "residential" or state.bhk_config:
-        category_val = "residential"
-        bhk_val = state.bhk_config
-        comm_val = None
-    else:
-        category_val = state.category
-        bhk_val = state.bhk_config
-        comm_val = state.commercial_type
+    category_val = state.category or "residential"
+    bhk_val = state.bhk_config
+    comm_val = state.commercial_type
 
     median_ms = int(statistics.median(state.latency_samples) * 1000) if state.latency_samples else None
 
-    # Last line of defence: whatever path ended the call (silence watchdog, hangup, disconnect), an IVR call
-    # is saved as IVR only if IVR was actually detected.
-    if getattr(state, "ivr_detected", False) or (state.agent_summary and ("waiting for human" in state.agent_summary.lower() or "carrier announcement" in state.agent_summary.lower())):
+    if getattr(state, "ivr_detected", False):
         _apply_ivr_disposition(state)
 
     payload = {
@@ -552,82 +311,109 @@ def post_re_outcome_sync(state: RealEstateState) -> bool:
         "initial_language": state.initial_language,
         "language_switched": state.language_switched,
         "failure_reason": (state.agent_summary or "Dialing timeout: callee did not answer within timeout period") if duration == 0 else None,
-        # Only send a recording URL when a real file was produced; the backend marks it 'done' otherwise.
         "recording_url": getattr(state, "recording_url", None),
     }
 
-    logger.info(f"📤 Posting RE outcome to {url} (call={state.call_id}, duration={duration}s, turns={len(state.transcript)}, disp={state.final_disposition})")
-    for attempt in range(1, 7):
+    logger.info(f"📤 Posting RE outcome to {url} (call={state.call_id}, duration={duration}s, disp={state.final_disposition})")
+    for attempt in range(1, 6):
         try:
             res = requests.post(url, json=payload, headers=headers, timeout=8.0)
             if res.status_code in (200, 201):
                 logger.info(f"✅ Real estate outcome saved for call {state.call_id} (Disp: {state.final_disposition})")
                 return True
-            logger.error(f"❌ Failed to save RE outcome ({res.status_code}) attempt {attempt}: {res.text}")
             if res.status_code in (400, 401, 403, 404):
-                break  # retrying will not help
+                break
         except Exception as e:
             logger.error(f"❌ Exception posting RE outcome (attempt {attempt}): {e}")
-        time.sleep(min(5.0, 1.5 * attempt))
+        time.sleep(min(4.0, 1.0 * attempt))
     return False
 
 
-@server.rtc_session(agent_name=AGENT_NAME)
-async def entrypoint(ctx: agents.JobContext):
-    logger.info(f"🏠 Real Estate Agent connecting to room: {ctx.room.name} (Job ID: {ctx.job.id})")
-    await ctx.connect()
-
-    metadata = {}
-    if ctx.job.metadata:
+# ── Service factories ─────────────────────────────────────────────────────────
+def _stt_languages() -> List[Language]:
+    langs: List[Language] = []
+    for code in (STT_LANGUAGE or "hi,en").replace(" ", "").split(","):
         try:
-            metadata = json.loads(ctx.job.metadata)
-            logger.info(f"Loaded RE job metadata: {metadata}")
-        except Exception as e:
-            logger.warning(f"Could not parse job metadata: {e}")
+            langs.append(Language(code.split("-")[0].lower()))
+        except ValueError:
+            logger.warning(f"Unknown STT language hint '{code}' ignored")
+    return langs or [Language.HI, Language.EN]
 
-    if not metadata and getattr(ctx.room, "metadata", None):
-        try:
-            metadata = json.loads(ctx.room.metadata)
-            logger.info(f"Loaded RE room metadata: {metadata}")
-        except Exception as e:
-            logger.warning(f"Could not parse room metadata: {e}")
 
-    call_id = _resolve_call_id(ctx, metadata)
-    if call_id:
-        logger.info(f"📌 Resolved call_id={call_id}")
-    else:
-        logger.error(f"❌ Could not resolve call_id (room={ctx.room.name}, metadata keys={list(metadata.keys())}). "
-                     "Outcome, answered-callback and recording will NOT work for this call.")
+def _build_llm_services() -> list:
+    """Groq (fast LPU endpoint) first when keyed, OpenRouter as fallback / sole provider."""
+    services = []
+    provider = LLM_PROVIDER
+    use_groq = bool(GROQ_API_KEY) and provider in ("auto", "groq")
+    use_or = bool(OPENROUTER_API_KEY) and (provider in ("auto", "openrouter") or (use_groq and LLM_FALLBACK))
 
-    phone = metadata.get("phone", "")
+    if use_groq:
+        services.append(
+            GroqLLMService(
+                api_key=GROQ_API_KEY,
+                settings=GroqLLMService.Settings(model=GROQ_MODEL, temperature=0.05, max_tokens=LLM_MAX_TOKENS),
+            )
+        )
+    if use_or:
+        if OPENROUTER_PROVIDER_ORDER:
+            prov: Any = {"order": OPENROUTER_PROVIDER_ORDER, "allow_fallbacks": True}
+        elif OPENROUTER_PROVIDER_SORT and OPENROUTER_PROVIDER_SORT.lower() != "none":
+            prov = {"sort": OPENROUTER_PROVIDER_SORT}
+        else:
+            prov = None
+        or_kwargs: Dict[str, Any] = dict(model=LLM_MODEL, temperature=0.05, max_tokens=LLM_MAX_TOKENS)
+        if prov:
+            or_kwargs["provider"] = prov
+        services.append(
+            OpenRouterLLMService(api_key=OPENROUTER_API_KEY, settings=OpenRouterLLMService.Settings(**or_kwargs))
+        )
+    if not services:
+        raise RuntimeError("No LLM configured: set GROQ_API_KEY and/or OPENROUTER_API_KEY")
+    if not LLM_FALLBACK:
+        services = services[:1]
+    return services
+
+
+def _wrap_llm(services: list):
+    """One service -> use it directly. Several -> ServiceSwitcher with automatic failover."""
+    if len(services) == 1:
+        return services[0]
+    from pipecat.pipeline.service_switcher import ServiceSwitcher, ServiceSwitcherStrategyFailover
+
+    return ServiceSwitcher(services=services, strategy_type=ServiceSwitcherStrategyFailover)
+
+
+def _build_tts(session: aiohttp.ClientSession, lang: str) -> SarvamHttpTTSService:
+    settings_kwargs: Dict[str, Any] = dict(
+        voice=TTS_SPEAKER_EN if lang == "en" else TTS_SPEAKER_HI,
+        model=TTS_MODEL,
+        language=Language.EN_IN if lang == "en" else Language.HI_IN,
+        pace=TTS_PACE,
+    )
+    # bulbul:v4-flash ignores `temperature` (Pipecat logs a warning) -> only send it to models that honour it.
+    if "v3" in TTS_MODEL:
+        settings_kwargs["temperature"] = TTS_TEMPERATURE
+    return SarvamHttpTTSService(
+        api_key=SARVAM_API_KEY,
+        aiohttp_session=session,
+        sample_rate=TTS_SAMPLE_RATE,
+        settings=SarvamHttpTTSService.Settings(**settings_kwargs),
+    )
+
+
+# ── Pipecat Real Estate Pipeline ─────────────────────────────────────────────
+async def run_real_estate_pipeline(
+    transport: BaseTransport,
+    call_id: Optional[str] = None,
+    phone: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+):
+    metadata = metadata or {}
+    resolved_call_id = call_id or _resolve_call_id(metadata=metadata)
+    resolved_phone = phone or metadata.get("phone", "")
     owner_name = metadata.get("customerName") or metadata.get("ownerName", "")
     raw_loc = (metadata.get("propertyLocation") or metadata.get("address") or metadata.get("location") or metadata.get("customerAddress") or "").strip()
     raw_category = (metadata.get("category") or metadata.get("propertyCategory") or "").strip()
-
-    if call_id and (not phone or not owner_name or not raw_loc or not raw_category):
-        def _fetch_call_info():
-            try:
-                res = requests.get(
-                    f"{BACKEND_URL}/internal/calls/{call_id}",
-                    headers={"X-Internal-Secret": INTERNAL_SECRET},
-                    timeout=2.0,
-                )
-                if res.status_code == 200:
-                    return res.json().get("call") or {}
-            except Exception as e:
-                logger.debug(f"Backend call info lookup note: {e}")
-            return {}
-
-        c_data = await asyncio.to_thread(_fetch_call_info)
-        if c_data:
-            phone = phone or c_data.get("phone", "") or c_data.get("customer_phone", "")
-            owner_name = owner_name or c_data.get("customerName") or c_data.get("customer_name") or ""
-            backend_loc = (c_data.get("property_location") or c_data.get("propertyLocation") or c_data.get("customer_address") or c_data.get("address") or "").strip()
-            if backend_loc and not raw_loc:
-                raw_loc = backend_loc
-            backend_cat = (c_data.get("re_category") or c_data.get("category") or "").strip()
-            if backend_cat and not raw_category:
-                raw_category = backend_cat
 
     if not raw_category or raw_category.lower() in ("none", "null", "undefined", ""):
         raw_category = "residential"
@@ -642,833 +428,226 @@ async def entrypoint(ctx: agents.JobContext):
     preferred_language = "hi" if raw_pref in ("hi", "hindi", "hi-in", "hinglish") else "en"
     lead_id = metadata.get("leadId")
     direction = metadata.get("direction", "outbound")
-    if not raw_loc or raw_loc.lower() in ("location not specified", "not specified", "address on record", "location on record", "delhi, 110011, burari, sant nagar", "none", "null", "undefined", "n/a", "na"):
-        property_location = None
-    else:
-        property_location = raw_loc
-
-    # Audio & speech pipeline
-    # ── Soniox STT Context Terms: biases the ASR engine toward real estate vocabulary ─────────────
-    # Biases Soniox ASR towards domain-specific real estate vocabulary, Hindi/Hinglish terms, and society names
-    _STT_KEYTERMS = [
-        # Property category & Transaction
-        "residential", "commercial", "industrial", "agricultural",
-        "sell", "rent", "lease", "resale", "purchase", "invest",
-        # Configuration & Types
-        "BHK", "1 BHK", "2 BHK", "3 BHK", "4 BHK", "5 BHK", "RK", "1 RK",
-        "studio apartment", "penthouse", "duplex", "villa", "independent house",
-        "builder floor", "plot", "kothi", "farmhouse", "flat", "apartment",
-        # Furnishing status
-        "semi-furnished", "unfurnished", "fully furnished",
-        # Availability & Status
-        "available", "immediate", "notice period", "ready to move", "under construction", "possession",
-        # Area units, Measurement & Floors
-        "square feet", "sqft", "sq yards", "gaj", "unit", "floor", "ground floor", "top floor", "floor number",
-        "carpet area", "super area", "built up area",
-        # Features & Amenities
-        "balcony", "parking", "car parking", "lift", "gated society", "gated community",
-        "park facing", "corner plot", "road facing", "main road",
-        # Hindi / Hinglish real estate terms
-        "kiraya", "kiraye", "rent pe", "bechna", "kharidna", "makaan", "dukaan", "plot", "zameen",
-        "aavasiya", "vyavasayik",
-        # Common society/project names from active campaigns (extend via env if needed)
-        "Mapsko Casabella",
-    ]
-    # Allow adding extra keyterms per deployment via env (comma-separated)
-    _extra_kw = [k.strip() for k in (
-        __import__("os").getenv("RE_STT_EXTRA_KEYTERMS", "")).split(",") if k.strip()]
-    if _extra_kw:
-        _STT_KEYTERMS = list(dict.fromkeys(_STT_KEYTERMS + _extra_kw))  # dedup, preserve order
-
-    # Inject the property location from call metadata as an additional keyterm (dynamic per-call).
-    # e.g. "Mapsko Casabella sec 82" — prevents the society name from being garbled by STT.
-    if property_location:
-        _loc_terms = [t.strip() for t in property_location.split(",") if len(t.strip()) > 3]
-        if _loc_terms:
-            _STT_KEYTERMS = list(dict.fromkeys(_STT_KEYTERMS + _loc_terms))
-            logger.info(f"🎯 Injected property location into Soniox context terms: {_loc_terms}")
-
-    # Support Hindi, English, and Hinglish code-switching with Language Identification
-    stt_hints = ["hi", "en"]
-
-    stt = soniox.STT(
-        api_key=SONIOX_API_KEY,
-        params=soniox.STTOptions(
-            model=SONIOX_MODEL,
-            language_hints=stt_hints,
-            language_hints_strict=False,
-            context=soniox.ContextObject(terms=_STT_KEYTERMS),
-            enable_language_identification=True,
-            enable_speaker_diarization=False,
-        ),
-    )
-    logger.info(f"🎯 Soniox STT initialized (model={SONIOX_MODEL}, hints={stt_hints}, terms={len(_STT_KEYTERMS)}, lang_id=True)")
-
-    vad = ctx.proc.userdata.get("vad") if getattr(ctx, "proc", None) else None
-    if vad is None:
-        vad = await asyncio.to_thread(_load_vad)
-
-    logger.info(
-        f"⚙️ Latency config: FAST_TOOL_REPLY={FAST_TOOL_REPLY} VAD_MIN_SILENCE={VAD_MIN_SILENCE} "
-        f"endpoint=({ENDPOINT_MIN_DELAY},{ENDPOINT_MAX_DELAY}) preemptive={PREEMPTIVE_GENERATION} "
-        f"prerender_greeting={PRERENDER_GREETING}"
-    )
-
-    llm = _build_llm()
-
-    initial_code = TTS_LANGUAGE_EN if preferred_language == "en" else TTS_LANGUAGE_HI
-    initial_speaker = TTS_SPEAKER_EN if preferred_language == "en" else TTS_SPEAKER_HI
-
-    tts = sarvam.TTS(
-        target_language_code=initial_code,
-        model=TTS_MODEL,
-        speaker=initial_speaker,
-        pace=TTS_PACE,
-        temperature=TTS_TEMPERATURE,
-        api_key=SARVAM_API_KEY,
-    )
-
-    def _set_tts_language(lang: str):
-        code = TTS_LANGUAGE_EN if lang == "en" else TTS_LANGUAGE_HI
-        speaker = TTS_SPEAKER_EN if lang == "en" else TTS_SPEAKER_HI
-        try:
-            tts.update_options(
-                model=TTS_MODEL,
-                speaker=speaker,
-                target_language_code=code,
-                pace=TTS_PACE,
-                temperature=TTS_TEMPERATURE,
-            )
-            logger.info(f"TTS language updated -> {code} (speaker={speaker})")
-        except Exception as e:
-            logger.warning(f"TTS update failed: {e}")
+    property_location = None if not raw_loc or raw_loc.lower() in ("none", "null", "undefined", "n/a") else raw_loc
 
     state = RealEstateState(
-        call_id=call_id,
+        call_id=resolved_call_id,
         lead_id=lead_id,
         owner_name=owner_name,
-        phone=phone,
+        phone=resolved_phone,
         preferred_language=preferred_language,
         direction=direction,
         property_location=property_location,
         category=raw_category,
     )
 
-    recorder = RoomAudioRecorder(call_id=call_id) if call_id else None
-
-    conv_logger = ConversationFileLogger(
-        call_id=call_id,
-        owner_name=owner_name,
-        phone=phone,
-        direction=direction,
-    )
-
-    tools_instance = RealEstateTools(state, post_re_outcome_sync, None)
-    agent = RealEstateAgent(state, tools_instance)
-    tools_instance.agent = agent
-    agent.on_language_change = _set_tts_language
-
-    # ── Console & Transcript Logger ────────────────────────────────
-    _last_logged = {}
-
-    def _mark_answered():
-        if getattr(state, "answered_at", None) is None:
-            state.answered_at = time.time()
-        state.callee_connected = True
-        state.last_activity_time = time.time()
+    # Real-time transcript reporting. Fire-and-forget on a worker thread: never blocks the audio loop.
+    def _post_turn(role: str, text: str, ts: str):
+        try:
+            requests.post(
+                f"{BACKEND_URL}/internal/real-estate/calls/{resolved_call_id}/turn",
+                headers={"X-Internal-Secret": INTERNAL_SECRET},
+                json={"role": role, "text": text, "timestamp": ts},
+                timeout=3.0,
+            )
+        except Exception as ex:
+            logger.debug(f"Incremental turn save note: {ex}")
 
     def log_dialogue(role: str, text: str):
         clean = (text or "").strip()
         if not clean:
             return
         is_agent = role in ("assistant", "agent")
-        if is_agent:
-            clean = _clean_leaks(clean).strip()
-            if not clean:
-                return
-
-        norm_role = "assistant" if is_agent else "customer"
-        _now = time.time()
-        new_text_low = clean.lower()
-
-        # 1. Transcript-level deduplication: check the last turn of the same role
-        if state.transcript and state.transcript[-1].get("role") == norm_role:
-            last_entry = state.transcript[-1]
-            last_text = (last_entry.get("text") or "").strip()
-            last_text_low = last_text.lower()
-            last_time = last_entry.get("time", 0.0)
-            if _now - last_time < 15.0:
-                # Exact duplicate or truncated prefix (e.g. caller hung up mid-greeting)
-                if last_text_low == new_text_low or last_text_low.startswith(new_text_low):
-                    return
-                # If new text is the full version of an earlier partial snippet, upgrade it in-place
-                if new_text_low.startswith(last_text_low):
-                    last_entry["text"] = clean
-                    return
-
-        # 2. Window-level deduplication: drop repeats within 12 seconds across identical or substring phrases
-        for (r, t_logged), logged_time in list(_last_logged.items()):
-            if r == norm_role and (_now - logged_time < 12.0):
-                if t_logged == new_text_low or t_logged.startswith(new_text_low) or new_text_low.startswith(t_logged):
-                    return
-
-        _last_logged[(norm_role, new_text_low)] = _now
-        if len(_last_logged) > 200:
-            for _k in [k for k, v in _last_logged.items() if _now - v > 30.0]:
-                _last_logged.pop(_k, None)
-
+        clean = _clean_leaks(clean).strip() if is_agent else clean
+        if not clean:
+            return
         now_str = datetime.now().strftime("%H:%M:%S")
-        if is_agent:
-            banner = f"[{now_str}] 🤖 [Agent ({AGENT_PERSONA_NAME})]: {clean}"
-            print(f"\n\033[1;36m{banner}\033[0m\n", flush=True)
-            logger.info(banner)
-            state.add_transcript("assistant", clean)
-            try:
-                conv_logger.log_agent(clean)
-            except Exception:
-                pass
-        else:
-            banner = f"[{now_str}] 🗣️ [Customer]: {clean}"
-            print(f"\n\033[1;32m{banner}\033[0m\n", flush=True)
-            logger.info(banner)
-            _mark_answered()
-            state.add_transcript("customer", clean)
-            try:
-                conv_logger.log_customer(clean)
-            except Exception:
-                pass
+        prefix = f"[{now_str}] 🤖 [Agent ({AGENT_PERSONA_NAME})]:" if is_agent else f"[{now_str}] 🗣️ [Customer]:"
+        logger.info(f"{prefix} {clean}")
+        state.add_transcript("assistant" if is_agent else "customer", clean)
+        if resolved_call_id:
+            _backend_pool.submit(_post_turn, "assistant" if is_agent else "customer", clean, datetime.now().isoformat())
 
-        # Real-time incremental persistence to PostgreSQL
-        if call_id:
-            def _push_incremental():
-                try:
-                    requests.post(
-                        f"{BACKEND_URL}/internal/real-estate/calls/{call_id}/turn",
-                        headers={"X-Internal-Secret": INTERNAL_SECRET},
-                        json={
-                            "role": norm_role,
-                            "text": clean,
-                            "timestamp": datetime.now().isoformat(),
-                        },
-                        timeout=2.0,
-                    )
-                except Exception as ex:
-                    logger.debug(f"Incremental turn save note: {ex}")
-            asyncio.create_task(asyncio.to_thread(_push_incremental))
+    tools = RealEstateTools(state, None, None)
+    tools.log_dialogue_func = log_dialogue
 
-    tools_instance.log_dialogue_func = log_dialogue
+    recorder: Optional[CallRecorder] = None
+    if RECORD_CALLS and resolved_call_id:
+        recorder = CallRecorder(resolved_call_id, sample_rate=PIPELINE_IN_SAMPLE_RATE)
 
-    def print_console_summary(s: RealEstateState):
-        duration_s = int(time.time() - s.start_time)
-        mins, secs = divmod(duration_s, 60)
-        summary_lines = [
-            "",
-            "=" * 70,
-            f"  📞 REAL ESTATE CONVERSATION SUMMARY (Call ID: {s.call_id})",
-            f"  Owner: {s.owner_name_confirmed or s.owner_name} | Phone: {s.phone}",
-            "-" * 70,
-        ]
-        for t in s.transcript:
-            role_label = f"\033[1;36m🤖 {AGENT_PERSONA_NAME:<7}\033[0m" if t.get("role") in ("assistant", "agent") else "\033[1;32m🗣️ Customer\033[0m"
-            summary_lines.append(f"  {role_label}: {t.get('text')}")
-        summary_lines.extend([
-            "-" * 70,
-            f"  Disposition: \033[1;33m{s.final_disposition}\033[0m | Duration: {mins}m {secs}s",
-            f"  Summary    : {s.agent_summary or 'N/A'}",
-            "=" * 70,
-            "",
-        ])
-        summary_text = "\n".join(summary_lines)
-        print(summary_text, flush=True)
-        for line in summary_lines:
-            if line:
-                logger.info(line)
+    async with aiohttp.ClientSession() as aiohttp_session:
+        vad = VADProcessor(
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=VAD_MIN_SILENCE))
+        )
+        stt = SonioxSTTService(
+            api_key=SONIOX_API_KEY,
+            settings=SonioxSTTService.Settings(
+                model=SONIOX_MODEL,
+                language_hints=_stt_languages(),
+                enable_language_identification=True,
+            ),
+        )
+        llm_services = _build_llm_services()
+        llm = _wrap_llm(llm_services)
+        tts = _build_tts(aiohttp_session, state.reply_lang)
 
-    turn_opts = {
-        "preemptive_generation": {"enabled": PREEMPTIVE_GENERATION},
-        "interruption": {
-            "mode": "adaptive",
-            "min_words": 2,
-            "min_duration": 0.5,
-            "resume_false_interruption": True,
-        },
-    }
-    endpointing_opts = {}
-    if ENDPOINT_MIN_DELAY is not None:
-        endpointing_opts["min_delay"] = ENDPOINT_MIN_DELAY
-    if ENDPOINT_MAX_DELAY is not None:
-        endpointing_opts["max_delay"] = ENDPOINT_MAX_DELAY
-    if endpointing_opts:
-        turn_opts["endpointing"] = endpointing_opts
-
-    session = AgentSession(
-        stt=stt,
-        vad=vad,
-        llm=llm,
-        tts=tts,
-        allow_interruptions=True,
-        max_tool_steps=1,
-        turn_handling=TurnHandlingOptions(**turn_opts),
-    )
-
-    # ── Per-turn latency (also feeds state.latency_samples -> median_latency_ms) ──
-    _lat = {"eou": None, "llm": [], "tts_done": False}
-
-    @session.on("metrics_collected")
-    def _on_metrics(ev):
-        try:
-            m = ev.metrics
-            kind = type(m).__name__
-            if kind == "EOUMetrics":
-                _lat["eou"] = getattr(m, "end_of_utterance_delay", None)
-                _lat["llm"] = []
-                _lat["tts_done"] = False
-                if LATENCY_LOG:
-                    logger.info(f"⏱ EOU delay={(_lat['eou'] or 0):.2f}s")
-            elif kind == "LLMMetrics":
-                ttft = getattr(m, "ttft", None)
-                if ttft is not None and ttft >= 0:
-                    _lat["llm"].append(ttft)
-                    if LATENCY_LOG:
-                        logger.info(f"⏱ LLM call #{len(_lat['llm'])} ttft={ttft:.2f}s step={state.step.value}")
-            elif kind == "TTSMetrics":
-                ttfb = getattr(m, "ttfb", None)
-                if ttfb is None or ttfb < 0:
-                    return
-                if _lat["eou"] is not None and not _lat["tts_done"]:
-                    _lat["tts_done"] = True
-                    total = (_lat["eou"] or 0) + sum(_lat["llm"]) + ttfb
-                    state.latency_samples.append(total)
-                    if LATENCY_LOG:
-                        logger.info(
-                            f"⏱ TTS ttfb={ttfb:.2f}s | 🔔 TURN ≈ {total:.2f}s "
-                            f"(eou {(_lat['eou'] or 0):.2f} + llm {sum(_lat['llm']):.2f} "
-                            f"[{len(_lat['llm'])} call(s)] + tts {ttfb:.2f})"
-                        )
-                elif LATENCY_LOG:
-                    logger.info(f"⏱ TTS ttfb={ttfb:.2f}s (scripted line)")
-        except Exception as e:
-            logger.debug(f"metrics log error: {e}")
-
-    # ── Teardown ───────────────────────────────────────────────────────────────
-    _room_deleted = False
-    _shutdown_task: Optional[asyncio.Task] = None
-
-    async def _end_room():
-        """Drop the phone leg: remove every remote participant (sends SIP BYE), delete room, disconnect."""
-        nonlocal _room_deleted
-        if _room_deleted:
-            return
-        _room_deleted = True
-
-        try:
-            for p in list(ctx.room.remote_participants.values()):
-                try:
-                    await ctx.api.room.remove_participant(
-                        api.RoomParticipantIdentity(room=ctx.room.name, identity=p.identity)
-                    )
-                    logger.info(f"Forcibly removed participant {p.identity} from room {ctx.room.name}")
-                except Exception as ex:
-                    logger.debug(f"remove_participant error ({p.identity}): {ex}")
-        except Exception as e:
-            logger.debug(f"Error enumerating remote participants: {e}")
-
-        try:
-            if hasattr(ctx, "delete_room"):
-                await ctx.delete_room()
-        except Exception:
-            pass
-
-        try:
-            await ctx.api.room.delete_room(api.DeleteRoomRequest(room=ctx.room.name))
-            logger.info(f"Room {ctx.room.name} deleted: call terminated cleanly.")
-        except Exception as e:
-            if "not_found" in str(e).lower() or "404" in str(e):
-                logger.debug(f"Room {ctx.room.name} was already deleted.")
-            else:
-                logger.warning(f"delete_room failed: {e}")
-
-        try:
-            await ctx.room.disconnect()
-        except Exception:
-            pass
-
-    async def _do_shutdown():
-        try:
-            print_console_summary(state)
-        except Exception as e:
-            logger.debug(f"Error printing console summary: {e}")
-
-        # 1. First drop the caller phone line immediately by removing remote participants.
-        # This sends SIP BYE or closes the Exotel WSS bridge leg instantly so caller hears NO dead air.
-        # Note: We do NOT delete the room or disconnect the agent yet!
-        try:
-            for p in list(ctx.room.remote_participants.values()):
-                try:
-                    await ctx.api.room.remove_participant(
-                        api.RoomParticipantIdentity(room=ctx.room.name, identity=p.identity)
-                    )
-                    logger.info(f"📞 Dropped caller telephony leg ({p.identity})")
-                except Exception as ex:
-                    logger.debug(f"remove_participant note ({p.identity}): {ex}")
-        except Exception as e:
-            logger.debug(f"Error enumerating remote participants: {e}")
-
-        # 2. Stop audio capture and finalise recording (ffmpeg WAV -> MP3 + S3 upload)
-        if recorder:
-            try:
-                await recorder.stop_capture()
-                rec_url = await recorder.finalize()
-                if rec_url:
-                    state.recording_url = rec_url
-            except Exception as e:
-                logger.warning(f"Error finalizing audio recording: {e}")
-
-        # 3. Save outcome (with full transcript, property dossier, and recording URL) to backend
-        # We save BEFORE deleting the room so the backend reconciler never sees an empty room without an outcome!
-        if not state.outcome_posted and state.call_id:
-            ok = await asyncio.to_thread(post_re_outcome_sync, state)
-            state.outcome_posted = bool(ok)
-
-        try:
-            conv_logger.finalize(state)
-        except Exception as e:
-            logger.warning(f"Error finalizing conversation log: {e}")
-
-        # 4. Now that outcome is safely in DB and disk, delete room and tear down session
-        await _end_room()
-
-        try:
-            await session.aclose()
-        except Exception:
-            pass
-        ctx.shutdown(reason="session closed")
-
-    async def _save_and_shutdown():
-        """Idempotent. Every caller (hangup, close event, participant_disconnected, framework shutdown
-        callback) awaits the SAME task, so the job is never torn down while the recording/outcome is
-        still being saved by the first caller."""
-        nonlocal _shutdown_task
-        if _shutdown_task is None:
-            _shutdown_task = asyncio.ensure_future(_do_shutdown())
-        elif asyncio.current_task() is _shutdown_task:
-            return
-        try:
-            await asyncio.shield(_shutdown_task)
-        except Exception as e:
-            logger.warning(f"Shutdown task error: {e}")
-
-    async def hangup_session():
-        if not state.hangup_started:
-            state.hangup_started = True
-        await _save_and_shutdown()
-
-    tools_instance.hangup_func = hangup_session
-
-    @session.on("agent_state_changed")
-    def on_agent_state_changed(ev):
-        state.last_activity_time = time.time()
-
-    @session.on("user_state_changed")
-    def on_user_state_changed(ev):
-        new_state = getattr(ev, "new_state", None)
-        if new_state == "speaking":
-            state.consecutive_silence = 0
-            state.last_activity_time = time.time()
-
-    @session.on("user_input_transcribed")
-    def on_user_transcribed(ev):
-        state.consecutive_silence = 0
-        state.last_activity_time = time.time()
-        is_final = getattr(ev, "is_final", True)
-        if not is_final:
-            return  # Never evaluate carrier drops on interim / unfinished speech streams
-
-        raw_text = getattr(ev, "transcript", None) or getattr(ev, "text", "")
-        if raw_text and raw_text.strip():
-            # Safety override: carrier detection runs before property qualification or human engagement
-            if not _HUMAN_CALLBACK_RE.search(raw_text) and not state.is_interested:
-                carrier_kind = classify_carrier_message(raw_text)
-                if carrier_kind:
-                    logger.warning(f"📵 Carrier announcement ({carrier_kind}) on audio stream: '{raw_text.strip()[:100]}'. Dropping call immediately.")
-                    state.add_transcript("system", f"[carrier announcement: {carrier_kind}] {raw_text.strip()}")
-                    state.ivr_detected = True
-                    state.final_disposition = "Voicemail or IVR Detected"
-                    state.agent_summary = f"Voicemail or IVR Detected: {raw_text.strip()[:100]}"
-                    try:
-                        session.interrupt(force=True)
-                    except Exception:
-                        pass
-                    if tools_instance.hangup_func:
-                        asyncio.create_task(tools_instance.hangup_func())
-                    return
-            romanized_text = romanize_hindi(raw_text.strip())
-            log_dialogue("customer", romanized_text)
-
-    @session.on("conversation_item_added")
-    def on_conversation_item(ev):
-        state.last_activity_time = time.time()
-        item = getattr(ev, "item", None)
-        if item:
-            role = getattr(item, "role", "unknown")
-            if role in ("user", "customer"):
-                state.consecutive_silence = 0
-            raw_content = getattr(item, "content", "")
-            content_str = ""
-            if isinstance(raw_content, list):
-                text_parts = []
-                for part in raw_content:
-                    if isinstance(part, str):
-                        part_s = part.strip()
-                        if not part_s.startswith("{"):
-                            text_parts.append(part_s)
-                    elif hasattr(part, "text") and isinstance(part.text, str) and not part.text.strip().startswith("{"):
-                        text_parts.append(part.text.strip())
-                content_str = " ".join(text_parts).strip()
-            elif isinstance(raw_content, str):
-                part_s = raw_content.strip()
-                if not part_s.startswith("{"):
-                    content_str = part_s
-
-            if role in ("user", "customer") and content_str:
-                carrier_kind = classify_carrier_message(content_str)
-                if carrier_kind:
-                    return
-                log_dialogue("customer", romanize_hindi(content_str.strip()))
-
-            elif role == "assistant" and content_str:
-                clean_agent_text = _clean_leaks(content_str).strip()
-                if clean_agent_text:
-                    log_dialogue("assistant", clean_agent_text)
-
-                if state.step == RealEstateStep.CLOSING or "close_call" in content_str:
-                    logger.info("Closing message spoken; initiating delayed hangup (no-op if already scheduled)...")
-                    asyncio.create_task(tools_instance._delayed_hangup(clean_agent_text))
-
-    @session.on("close")
-    def on_session_close(ev):
-        if not state.hangup_started:
-            state.hangup_started = True
-            logger.info("Session closed.")
-            _apply_disconnect_disposition(state)
-        asyncio.create_task(_save_and_shutdown())
-
-    @ctx.room.on("participant_disconnected")
-    def on_participant_disconnected(participant):
-        logger.info(f"Participant disconnected / hung up: {getattr(participant, 'identity', 'unknown')}")
-        if not state.hangup_started:
-            state.hangup_started = True
-            _apply_disconnect_disposition(state)
-        # ALWAYS save (previously an early return could skip this when hangup_started was already set)
-        asyncio.create_task(_save_and_shutdown())
-
-    @ctx.room.on("disconnected")
-    def on_room_disconnected(*_args):
-        logger.info("Room disconnected")
-        if not state.hangup_started:
-            state.hangup_started = True
-            _apply_disconnect_disposition(state)
-        asyncio.create_task(_save_and_shutdown())
-
-    ctx.add_shutdown_callback(_save_and_shutdown)
-
-    # ── Use the ringing time: warm every connection and pre-render the opening line ────────────────
-    # The backend dispatches this agent BEFORE it dials Exotel, so we have several idle seconds here.
-    def _build_greeting() -> str:
-        loc = state.initial_property_location
-        name_call = _owner_call_name(state)
-        # Strict name rule: never append 'sir' if customer name is known
-        salutation_en = f"Hello {name_call}" if name_call != "Sir" else "Hello Sir"
-        salutation_hi = f"Hello {name_call} ji" if name_call != "Sir" else "Hello Sir"
-        if loc:
-            clean_loc = loc.split(";")[0].strip()
-            raw_parts = [p.strip() for p in clean_loc.split(",") if p.strip()]
-            parts = list(dict.fromkeys(raw_parts))
-            if len(parts) >= 2:
-                has_sub = any(kw in parts[1].lower() for kw in ('sector', 'sec', 'phase', 'block', 'pocket', 'plot', 'flat', 'unit'))
-                spoken_loc = f"{parts[1]}, {parts[0]}" if has_sub else f"{parts[0]}, {parts[1]}"
-            else:
-                spoken_loc = parts[0] if parts else clean_loc
-            return (
-                f"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder. I'm calling about your property in {spoken_loc}."
-                if state.reply_lang == "en"
-                else f"{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se. Aapki {spoken_loc} wali property ke baare mein call kiya tha."
-            )
-        return (
-            f"{salutation_en}, {AGENT_PERSONA_NAME} this side from My Estate Finder."
-            if state.reply_lang == "en"
-            else f"{salutation_hi}, main {AGENT_PERSONA_NAME} baat kar rahi hoon My Estate Finder se."
+        # System prompt + tools for the FIRST step. Both are refreshed by PipecatSession on every step change.
+        context = LLMContext(messages=[{"role": "system", "content": get_step_instructions(state)}])
+        # Explicit end-of-turn: Pipecat's DEFAULT is the Smart-Turn v3 ONNX model, which the Dockerfile never
+        # pre-downloaded and which adds its own latency. A plain "VAD silence + short timeout" rule is predictable
+        # and tuned by USER_SPEECH_TIMEOUT (VAD_MIN_SILENCE + this = time from caller's last word to our reply start).
+        user_agg, assistant_agg = LLMContextAggregatorPair(
+            context,
+            user_params=LLMUserAggregatorParams(
+                user_turn_strategies=UserTurnStrategies(
+                    stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=USER_SPEECH_TIMEOUT)]
+                ),
+            ),
         )
 
-    greeting = _build_greeting()
+        injector = SpeechInjector()
+        tracker = PlayoutTracker(state)
+        session = PipecatSession(state, tools, context, injector, tracker, log_dialogue)
+        tools.agent = session                       # tools.py: update_instructions / update_tools / .session.say
+        handler = RealEstateTurnHandler(state, tools, session)
+        handler.on_language_change = session.set_reply_language
+        gate = TurnGate(state, handler, context, log_dialogue)
+        guard = LLMOutputGuard(state, handler, log_dialogue)
+        session.guard = guard
 
-    for _name, _comp in (("stt", stt), ("tts", tts), ("llm", llm)):
-        _fn = getattr(_comp, "prewarm", None)
-        if callable(_fn):
-            try:
-                _fn()
-                logger.info(f"🔥 {_name} prewarm requested (during ring)")
-            except Exception as e:
-                logger.debug(f"{_name} prewarm failed: {e}")
+        # Register EVERY tool on every LLM service (the per-step subset is what the LLM is shown; _dispatch also
+        # rejects a tool that is not allowed at the current step).
+        all_tools = [
+            tools.customer_interested, tools.not_interested_in_this_location, tools.has_other_property,
+            tools.set_new_property_location, tools.confirm_owner_name, tools.set_category_and_intent,
+            tools.save_property_details, tools.customer_does_not_know, tools.finish_property_intake,
+            tools.mark_not_interested, tools.schedule_callback, tools.book_advisor_handoff,
+            tools.request_whatsapp_info, tools.suppress_contact_dnc, tools.mark_wrong_number,
+        ]
+        for svc in llm_services:
+            session.register_tools_on(svc, all_tools)
+        await session.update_tools(tools.tools_for_step(state.step))
 
-    prerender_task: Optional[asyncio.Task] = None
-    if PRERENDER_GREETING:
-        prerender_task = asyncio.create_task(_prerender_tts(tts, greeting))
+        processors = [
+            transport.input(),
+            vad,
+            stt,
+            user_agg,
+            gate,
+            llm,
+            guard,
+            injector,
+            tts,
+            transport.output(),
+        ]
+        if recorder:
+            processors.append(recorder.processor)
+        processors += [tracker, assistant_agg]
 
-    common_task: Optional[asyncio.Task] = None
-    if PRERENDER_GREETING and PRERENDER_COMMON:
-        async def _prerender_common():
-            # sequential and after the greeting, so the TTS service is never hit with parallel streams
-            from types import SimpleNamespace
-            from .prompts import get_closing_text
-            from .tools import other_property_question, ask_new_location_question, sell_or_rent_question
-            try:
-                if prerender_task is not None:
-                    await asyncio.wait_for(asyncio.shield(prerender_task), timeout=12.0)
-            except Exception:
-                pass
-            lang = state.reply_lang
-            loc = state.initial_property_location or state.sector_or_location
-            lines = [
-                sell_or_rent_question(lang, True),
-                sell_or_rent_question(lang, False),
-                sell_or_rent_question(lang, has_loc=bool(loc), loc=loc, full_context=True),
-                other_property_question(lang),
-                ask_new_location_question(lang),
-            ]
-            for disp in ('Not Interested', 'Qualified Lead', 'Advisor Callback Booked'):
-                lines.append(get_closing_text(SimpleNamespace(
-                    final_disposition=disp, reply_lang=lang, valuation_requested=False, intent=None)))
-            for t in lines:
-                try:
-                    state.audio_cache[t] = await _prerender_tts(tts, t)
-                except Exception as e:
-                    logger.debug(f'common prerender skipped: {e}')
-            logger.info(f'🔥 pre-rendered {len(state.audio_cache)} fixed lines during ring')
-        common_task = asyncio.create_task(_prerender_common())
+        task = PipelineTask(
+            Pipeline(processors),
+            params=PipelineParams(
+                audio_in_sample_rate=PIPELINE_IN_SAMPLE_RATE,
+                audio_out_sample_rate=PIPELINE_OUT_SAMPLE_RATE,
+            ),
+        )
+        session.task = task
 
-    def _cancel_prerender():
-        if prerender_task is not None and not prerender_task.done():
-            prerender_task.cancel()
-        if common_task is not None and not common_task.done():
-            common_task.cancel()
-
-    # 1. Wait for the callee to actually ANSWER (not just for the SIP leg to appear while ringing)
-    ring_timeout = 65.0 if direction == "outbound" else 20.0
-    deadline = time.time() + ring_timeout
-    logger.info(f"⏳ Waiting for callee to answer (timeout {ring_timeout}s)...")
-    if not ctx.room.remote_participants:
-        try:
-            await asyncio.wait_for(ctx.wait_for_participant(), timeout=ring_timeout)
-        except asyncio.TimeoutError:
-            logger.warning(f"❌ No participant joined within {ring_timeout}s.")
-        except Exception as e:
-            logger.warning(f"Wait for participant error: {e}")
-
-    answered = await _wait_for_answer(ctx, state, max(1.0, deadline - time.time()))
-    if not answered:
-        if not state.hangup_started:
+        async def _hangup():
+            if state.hangup_started:
+                return
             state.hangup_started = True
-            state.final_disposition = "Not Connected (No Answer)"
-            state.agent_summary = "Call unanswered by recipient within timeout period"
-            logger.warning("❌ Callee did not answer (timeout / rejected / hung up while ringing).")
-        _cancel_prerender()
-        await _save_and_shutdown()
-        return
+            logger.info("📞 Hanging up (EndFrame queued).")
+            await task.queue_frame(EndFrame())
 
-    logger.info("🎉 Callee answered (sip.callStatus=active)")
-    _mark_answered()
-    state.start_time = time.time()
-    state.answered_at = state.start_time
+        tools.hangup_func = _hangup
 
-    # Tell backend the call is answered right away so no sweeper marks it NO_ANSWER
-    def _notify_answered():
-        if not state.call_id:
-            logger.error("Cannot notify answered: call_id is empty")
-            return
-        try:
-            r = requests.post(
-                f"{BACKEND_URL}/internal/real-estate/calls/{state.call_id}/answered",
-                headers={"X-Internal-Secret": INTERNAL_SECRET},
-                timeout=3.0,
-            )
-            logger.info(f"Marked call {state.call_id} as answered in backend (HTTP {r.status_code})")
-        except Exception as ex:
-            logger.warning(f"Failed to notify answered: {ex}")
-    asyncio.create_task(asyncio.to_thread(_notify_answered))
+        @transport.event_handler("on_client_disconnected")
+        async def _on_disconnect(_transport, _ws):
+            logger.info("🔌 Caller side closed the stream -> cancelling pipeline")
+            state.hangup_started = True
+            await task.cancel()
 
-    # 2. Start session, then recorder (so the greeting is recorded too)
-    await session.start(room=ctx.room, agent=agent)
-    logger.info("Real Estate agent session started in room.")
-    if recorder:
-        await recorder.start(ctx.room)
+        greeting = _build_greeting(state)
 
-    # 3. Opening greeting: play the pre-rendered audio if it is ready, else synthesise as before
-    state.last_activity_time = time.time()
-    opening_speech = None
-    pre_frames = None
-    if prerender_task is not None:
-        if prerender_task.done() and not prerender_task.cancelled() and prerender_task.exception() is None:
-            pre_frames = prerender_task.result()
-        else:
-            _cancel_prerender()
-    if pre_frames:
-        try:
-            opening_speech = session.say(greeting, audio=_replay_frames(pre_frames), allow_interruptions=True)
-            logger.info("⚡ Greeting played from pre-rendered audio (TTS wait skipped)")
-        except Exception as e:
-            logger.warning(f"Pre-rendered greeting failed ({e}); synthesising normally")
-            opening_speech = None
-    if opening_speech is None:
-        opening_speech = session.say(greeting, allow_interruptions=True)
-    log_dialogue("assistant", greeting)
-    state.last_agent_question = greeting
+        @task.event_handler("on_pipeline_started")
+        async def _on_started(_task, _frame):
+            session.start()
+            state.callee_connected = True
+            state.answered_at = time.time()
+            state.last_activity_time = time.time()
+            log_dialogue("assistant", greeting)
+            # Non-interruptible so pickup noise / "hello?" cannot cancel the opening line.
+            session.say(greeting, allow_interruptions=False)
 
-    # Monitor if opening greeting gets cut off / interrupted by caller
-    if opening_speech is not None and hasattr(opening_speech, "wait_for_playout"):
-        async def _watch_greeting_interruption(sp):
+        # ── watchdogs ──
+        async def _max_duration_watchdog():
             try:
-                await sp.wait_for_playout()
-                if getattr(sp, "interrupted", False):
-                    state.opening_speech_interrupted = True
-                    logger.info("⚡ Opening greeting was cut off / interrupted by caller")
-            except Exception:
+                await asyncio.sleep(MAX_CALL_SECONDS)
+                if state.closing_spoken or state.hangup_started:
+                    return
+                logger.info(f"⏰ [Watchdog] Call {state.call_id} reached {MAX_CALL_SECONDS}s limit -> closing.")
+                tools._speak_closing_and_hangup()
+            except asyncio.CancelledError:
                 pass
-        asyncio.create_task(_watch_greeting_interruption(opening_speech))
 
-    # 4. Silence watchdog
-    async def silence_watchdog():
-        _user_speaking_since = None
-        while not state.hangup_started:
-            await asyncio.sleep(0.5)
-            if state.hangup_started:
-                break
-
-            now = time.time()
-
-            # Caller speaking check: do not treat caller speaking as silence
-            user_speaking = getattr(session, "user_state", "listening") == "speaking"
-            if user_speaking:
-                state.consecutive_silence = 0
-                if _user_speaking_since is None:
-                    _user_speaking_since = now
-                # Guard: cap at 30s so constant line static doesn't keep call alive forever
-                if (now - _user_speaking_since) < 30.0:
-                    state.last_activity_time = now
-                    continue
-            else:
-                _user_speaking_since = None
-
-            # Agent busy check: speaking or generating
-            if getattr(session, "agent_state", "idle") in ("speaking", "thinking"):
-                state.last_activity_time = now
-                continue
-
-            # Hold grace period (e.g. caller said "ek minute ruko", "hold on")
-            if now < getattr(state, "hold_until", 0.0):
-                state.last_activity_time = now
-                continue
-
-            idle = now - state.last_activity_time
-            has_customer = any(t.get("role") == "customer" for t in state.transcript)
-
-            # Flow requirement:
-            # - After intro: wait 4sec. If silent -> nudge ("Kya aap line par hain? / Are you still with me?")
-            # - After nudge finishes: wait 3sec. If still silent -> drop call.
-            # - Mid-call / Active intake: wait 8sec for natural breathing room to think or check documents, and 8sec drop window.
-            silence_limit = 4.0 if not has_customer else 8.0
-            drop_limit = 3.0 if not has_customer else 8.0
-
-            if state.consecutive_silence == 0:
-                if idle > silence_limit:
-                    state.consecutive_silence = 1
-                    reprompt = (
-                        "Are you still with me? Could you hear me?"
-                        if state.reply_lang == "en"
-                        else "Kya aap line par hain? Kya aap mujhe sun pa rahe hain?"
-                    )
-                    try:
-                        speech = session.say(reprompt, allow_interruptions=True)
-                        log_dialogue("assistant", reprompt)
-                        if hasattr(speech, "wait_for_playout"):
-                            try:
-                                await asyncio.wait_for(speech.wait_for_playout(), timeout=5.0)
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-                    # Timer for next silence window starts AFTER prompt playout completes
-                    state.last_activity_time = time.time()
-
-            elif state.consecutive_silence >= 1:
-                if idle > drop_limit:
-                    # Final check: did user start speaking right as timer expired?
-                    if getattr(session, "user_state", "listening") == "speaking":
-                        state.consecutive_silence = 0
-                        state.last_activity_time = time.time()
+        async def _silence_watchdog():
+            """Dead-air handling (the old pipeline just sat silent forever)."""
+            prompts = 0
+            try:
+                while True:
+                    await asyncio.sleep(1.0)
+                    if state.closing_spoken or state.hangup_started or tracker.speaking:
                         continue
+                    now = time.time()
+                    if now < state.hold_until:          # caller asked us to wait ("ek minute")
+                        continue
+                    ref = max(state.last_activity_time, state.last_agent_speech_end, state.answered_at or 0.0)
+                    if now - ref < SILENCE_PROMPT_SECONDS:
+                        continue
+                    prompts += 1
+                    state.silence_count = prompts
+                    if prompts > MAX_SILENCE_PROMPTS:
+                        logger.info("🔇 No response after repeated prompts -> ending call")
+                        await _hangup()
+                        return
+                    en = state.reply_lang == "en"
+                    line = "Hello Sir, are you still there?" if en else "Hello Sir, kya aap line par hain?"
+                    log_dialogue("assistant", line)
+                    session.say(line)
+                    state.last_activity_time = now
+            except asyncio.CancelledError:
+                pass
 
-                    goodbye = (
-                        "I cannot hear you at the moment. We will call you back later. Have a great day!"
-                        if state.reply_lang == "en"
-                        else "Mujhe aapki aawaz nahi aa rahi hai. Hum aapse baad mein connect karenge. Have a great day!"
-                    )
-                    try:
-                        speech = session.say(goodbye, allow_interruptions=False)
-                        log_dialogue("assistant", goodbye)
-                        if hasattr(speech, "wait_for_playout"):
-                            try:
-                                await asyncio.wait_for(speech.wait_for_playout(), timeout=6.0)
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
+        watchdogs = [asyncio.create_task(_max_duration_watchdog()), asyncio.create_task(_silence_watchdog())]
 
-                    _apply_disconnect_disposition(state)
-                    state.hangup_started = True
-                    await _save_and_shutdown()
-                    break
+        runner = PipelineRunner(handle_sigint=False)
+        try:
+            logger.info(f"▶️ Running Pipecat Real Estate Pipeline for call {state.call_id}...")
+            await runner.run(task)
+        finally:
+            for w in watchdogs:
+                w.cancel()
+            await session.close()
+            # Everything below must finish even if this coroutine is being cancelled.
+            await asyncio.shield(_finish_call(state, recorder))
 
-    asyncio.create_task(silence_watchdog())
+    logger.info(f"🏁 Finished call {state.call_id}. Disposition: {state.final_disposition}")
 
-    # 5. Safety ceiling
-    async def call_duration_watchdog():
-        max_safety_seconds = float(os.getenv("CALL_MAX_DURATION_SECONDS", "200"))
-        while not state.hangup_started:
-            await asyncio.sleep(5.0)
-            if state.hangup_started:
-                break
-            elapsed = time.time() - state.start_time
-            if elapsed >= max_safety_seconds and state.step != RealEstateStep.CLOSING:
-                logger.info(f"⏳ Call reached maximum safety ceiling ({int(elapsed)}s). Wrapping up cleanly.")
-                state.step = RealEstateStep.CLOSING
-                state.closing_spoken = True
-                tools_instance._hangup_scheduled = True   # we own the hangup; stop _delayed_hangup cutting the line early
-                disp_lower = state.final_disposition.lower()
-                if not ("qualified" in disp_lower or "dnc" in disp_lower or "whatsapp" in disp_lower):
-                    state.final_disposition = "Advisor Callback Booked"
-                    if not state.agent_summary:
-                        state.agent_summary = "Call completed maximum duration ceiling; advisor follow-up scheduled"
-                wrapup_line = (
-                    "Thank you for your time! I’ve noted your details, and our senior property advisor will follow up with you. Have a wonderful day!"
-                    if state.reply_lang == "en"
-                    else "Apna time dene ke liye thank you! Maine saari details note kar li hain, aur hamare senior property advisor aapse follow-up karenge. Have a great day!"
-                )
-                try:
-                    speech = session.say(wrapup_line, allow_interruptions=False)
-                    log_dialogue("assistant", wrapup_line)
-                    await asyncio.wait_for(speech.wait_for_playout(), timeout=7.0)
-                except Exception as e:
-                    logger.warning(f"Safety ceiling wrapup playout error: {e}")
-                state.hangup_started = True
-                await _save_and_shutdown()
-                break
 
-    asyncio.create_task(call_duration_watchdog())
+async def _finish_call(state: RealEstateState, recorder: Optional[CallRecorder]):
+    """Recording first (so the URL goes into the outcome), then disposition + outcome POST (off the event loop)."""
+    if recorder:
+        try:
+            state.recording_url = await recorder.finalize()
+        except Exception as e:
+            logger.warning(f"Recording finalize failed: {e}")
+    _apply_disconnect_disposition(state)
+    if state.outcome_posted:
+        return
+    state.outcome_posted = True
+    await asyncio.to_thread(post_re_outcome_sync, state)
 
-    try:
-        await asyncio.wait_for(opening_speech.wait_for_playout(), timeout=8.0)
-    except Exception as e:
-        logger.warning(f"Initial greeting playout completed or timed out: {e}")
-    state.last_activity_time = time.time()
-    
+
+# Compatibility alias
+entrypoint = run_real_estate_pipeline

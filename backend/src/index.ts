@@ -163,6 +163,10 @@ if (process.env.NODE_ENV !== 'test') {
 
   // Proxy Exotel WebSocket media stream upgrades from port 3000 to Python Audio Bridge on port 8088
   server.on('upgrade', (req, socket, head) => {
+    socket.on('error', (err) => {
+      logger.debug({ err: err.message }, 'Incoming upgrade socket error');
+    });
+
     if (req.url && req.url.startsWith('/api/exotel/media-stream')) {
       const proxyReq = http.request({
         port: Number(env.EXOTEL_BRIDGE_PORT || 8088),
@@ -177,6 +181,16 @@ if (process.env.NODE_ENV !== 'test') {
         // otherwise TCP can hold them back and add jitter/latency to the call audio.
         (socket as Socket).setNoDelay?.(true);
         proxySocket.setNoDelay(true);
+
+        socket.on('error', (err) => {
+          logger.debug({ err: err.message }, 'Client socket error in Exotel proxy');
+          if (!proxySocket.destroyed) proxySocket.destroy();
+        });
+        proxySocket.on('error', (err) => {
+          logger.debug({ err: err.message }, 'Proxy socket error in Exotel proxy');
+          if (!socket.destroyed) socket.destroy();
+        });
+
         let rawHeaders = `HTTP/1.1 101 Switching Protocols\r\n`;
         for (const [k, v] of Object.entries(proxyRes.headers)) {
           if (Array.isArray(v)) {
@@ -201,11 +215,16 @@ if (process.env.NODE_ENV !== 'test') {
       });
 
       proxyReq.on('error', (err) => {
-        logger.error({ err: err.message }, 'Exotel WebSocket upgrade proxy error');
+        logger.error({ err: err.message }, 'Exotel WebSocket upgrade proxy error (is the Python bridge running?)');
+        socket.write('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
         socket.destroy();
       });
 
       proxyReq.end();
+    } else {
+      // Unknown upgrade path: close it instead of leaking a half-open socket
+      socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+      socket.destroy();
     }
   });
 
@@ -214,6 +233,11 @@ if (process.env.NODE_ENV !== 'test') {
     if (sweeperInterval) clearInterval(sweeperInterval);
     if (recordingInterval) clearInterval(recordingInterval);
     if (campaignInterval) clearInterval(campaignInterval);
+    // Live Exotel call sockets keep server.close() waiting forever: force-exit after a grace period.
+    setTimeout(() => {
+      logger.warn('Graceful shutdown timed out; forcing exit.');
+      process.exit(1);
+    }, 15000).unref();
     server.close(async () => {
       logger.info('HTTP server closed.');
       try {

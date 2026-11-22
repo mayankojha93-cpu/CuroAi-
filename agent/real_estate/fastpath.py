@@ -36,6 +36,35 @@ _MAX_TOKENS = 8  # a slot answer is short; anything longer is a conversation -> 
 _TOK = re.compile(r"\d[\d,]*(?:\.\d+)?|[a-z\u0900-\u097F]+")
 
 
+# Romanised Hindi number words. Only converted when followed by an amount unit (so "do" / "saath" in an ordinary
+# sentence is never touched). Anything not in this closed list stays as is -> LLM.
+_HI_NUM = {
+    "ek": 1, "do": 2, "teen": 3, "char": 4, "chaar": 4, "paanch": 5, "panch": 5, "chhe": 6, "chhah": 6, "saat": 7,
+    "aath": 8, "nau": 9, "das": 10, "gyarah": 11, "barah": 12, "terah": 13, "chaudah": 14, "pandrah": 15,
+    "solah": 16, "satrah": 17, "atharah": 18, "unnis": 19, "bees": 20, "pachees": 25, "tees": 30, "paintees": 35,
+    "paintis": 35, "chalis": 40, "paintalis": 45, "pachaas": 50, "pachas": 50, "pachpan": 55, "saath": 60,
+    "painsath": 65, "sattar": 70, "pachattar": 75, "assi": 80, "pachasi": 85, "nabbe": 90, "pachanve": 95,
+}
+_HI_WORDS = "|".join(sorted(_HI_NUM, key=len, reverse=True))
+_HI_AMT_UNIT = r"(lakhs?|lacs?|laakh|crores?|cr|hazaar|hazar|thousand)"
+_HI_HALF = re.compile(r"\b(?:saadhe|sadhe|sade)\s+(" + _HI_WORDS + r")\s+" + _HI_AMT_UNIT + r"\b")
+_HI_PLAIN = re.compile(r"\b(" + _HI_WORDS + r")\s+" + _HI_AMT_UNIT + r"\b")
+_HI_SAU = re.compile(r"\b(" + _HI_WORDS + r")\s+sau\b")
+
+
+def _fmt(n: float) -> str:
+    return str(int(n)) if float(n).is_integer() else str(n)
+
+
+def _hindi_numbers(v: str) -> str:
+    """'paanch lakh' -> '5 lakh', 'saadhe paanch crore' -> '5.5 crore', 'pachaas hazaar' -> '50 hazaar',
+    'pandrah sau' -> '1500'."""
+    v = _HI_HALF.sub(lambda m: f"{_fmt(_HI_NUM[m.group(1)] + 0.5)} {m.group(2)}", v)
+    v = _HI_PLAIN.sub(lambda m: f"{_HI_NUM[m.group(1)]} {m.group(2)}", v)
+    v = _HI_SAU.sub(lambda m: str(_HI_NUM[m.group(1)] * 100), v)
+    return v
+
+
 def _variants(text: str) -> List[str]:
     t = (text or "").strip().replace("\u2019", "'")
     base = t.lower().replace("'", "")   # it's -> its, don't -> dont
@@ -56,6 +85,7 @@ def _variants(text: str) -> List[str]:
         (r"\bdedh\b", "1.5"),
     ]:
         norm = re.sub(pat, rep, norm)
+    norm = _hindi_numbers(norm)
     if norm != base:
         out.append(norm)
 
@@ -163,7 +193,11 @@ _AREA_VOCAB = {"total", "super", "area", "carpet", "built", "builtup", "size", "
                "foot", "square", "gaj", "yard", "yards", "yd", "of", "expected", "expect"}
 
 
+_THOUSAND_AREA = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(?:hazaar|hazar|thousand)\s*(?=(?:sq|square|feet|foot|ft|sqft)\b)")
+
+
 def _x_area(v: str) -> Optional[Dict[str, Any]]:
+    v = _THOUSAND_AREA.sub(lambda m: _fmt((_to_float(m.group(1)) or 0) * 1000) + " ", v)
     if _OTHER_UNIT.search(v):
         return None  # sqm / acre / bigha ... -> LLM converts
     mg = _GAJ.search(v)
@@ -300,6 +334,41 @@ def _x_unit_floor(v: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _x_floor_only(v: str) -> Optional[Dict[str, Any]]:
+    """The open question is ONLY the floor (unit already known): '4', '4th', 'fourth', 'ground'."""
+    all_toks = _TOK.findall(v)
+    if "ground" in all_toks or "gf" in all_toks:
+        rest = [t for t in all_toks if t not in _FILL and t not in _UF_VOCAB and t != "gf"]
+        return {"floor_number": "Ground"} if not rest else None
+    toks = [t for t in all_toks if t not in _FILL and t not in _UF_VOCAB]
+    if len(toks) != 1:
+        return None
+    t = toks[0]
+    if t in _ORD:
+        return {"floor_number": _ordinal(_ORD[t])}
+    if re.fullmatch(r"\d{1,2}", t):
+        n = int(t)
+        if 0 <= n <= 60:
+            return {"floor_number": "Ground" if n == 0 else _ordinal(n)}
+    return None
+
+
+def _x_unit_floor_slot(v: str, state: Any) -> Optional[Dict[str, Any]]:
+    """Like _x_unit_floor, but aware of WHICH half is still open. A bare '4' answering 'which floor?' used to be
+    saved as unit_number='4' (overwriting the real unit) and the floor was asked again."""
+    has_u = bool(getattr(state, "unit_number", None)) if state is not None else False
+    has_f = bool(getattr(state, "floor_number", None)) if state is not None else False
+    if has_u and not has_f:      # only the floor is open
+        r = _x_unit_floor(v)
+        if r and r.get("floor_number"):
+            return {"floor_number": r["floor_number"]}
+        return _x_floor_only(v)
+    if has_f and not has_u:      # only the unit is open
+        r = _x_unit_floor(v)
+        return r if r and r.get("unit_number") else None
+    return _x_unit_floor(v)
+
+
 # ── Price / rent ─────────────────────────────────────────────────────────────
 _AMT = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(crores?|cr|lakhs?|lacs?|laakh|hazaar|hazar|thousand|k)\b", re.IGNORECASE)
 _NUM = re.compile(r"\d[\d,]*(?:\.\d+)?")
@@ -379,7 +448,7 @@ def _x_amount(v: str, open_field: str) -> Optional[str]:
 
 
 # ── Open-field only: leased / occupancy (closed yes/no vocabularies) ─────────
-_LEASED_W = {"leased", "rented", "rent", "kiraye", "kirayedar", "kiraya", "tenant", "tenants", "lease", "occupied"}
+_LEASED_W = {"leased", "rented", "rent", "kiraye", "kirayedar", "kiraya", "tenant", "tenants", "lease"}
 _VACANT_W = {"vacant", "khaali", "khali", "empty"}
 _NEG_W = {"nahi", "nhi", "nahin", "no", "not"}
 
@@ -438,11 +507,24 @@ _EXTRACTORS = {
 }
 
 
-def extract(open_field: str, text: str) -> Optional[Dict[str, Any]]:
+def _is_bare_numeric(v: str) -> bool:
+    """The whole sentence is just one number ('407', 'approx 1200 hoga'), nothing that says what it is."""
+    toks = [t.strip(".,") for t in re.findall(r"[a-z0-9\.,\u20b9]+", v)]
+    left = [t for t in toks if t and t != "\u20b9" and t not in _FILL]
+    return len(left) == 1 and re.fullmatch(r"\d[\d,]*(?:\.\d+)?", left[0]) is not None
+
+
+def extract(open_field: str, text: str, state: Any = None, allow_bare: bool = True) -> Optional[Dict[str, Any]]:
     """kwargs for save_property_details() when `text` is *only* a clean answer to `open_field`, else None.
 
     None means "not provably just a value" - the LLM then handles the turn (objections, questions,
-    negations, several facts at once, STT garble, unusual phrasing, ...)."""
+    negations, several facts at once, STT garble, unusual phrasing, ...).
+
+    state      : optional RealEstateState; lets unit_floor know whether only the floor (or only the unit) is open.
+    allow_bare : a BARE number ('3', '407', '1200') is only meaningful as the answer to the question that is open
+                 RIGHT NOW. Pass allow_bare=False whenever the field is NOT the open one (looking at other fields,
+                 or at earlier turns): otherwise a unit '407' turns into sale_price '407 lakh', a BHK '3' into
+                 '3 crore', an area '1200' into a monthly rent of 1200."""
     fn = _EXTRACTORS.get(open_field)
     if not fn or not (text or "").strip():
         return None
@@ -450,7 +532,9 @@ def extract(open_field: str, text: str) -> Optional[Dict[str, Any]]:
     if any(len(_TOK.findall(v)) > _MAX_TOKENS for v in variants):
         return None
     for v in variants:
-        out = fn(v)
+        if not allow_bare and _is_bare_numeric(v):
+            continue
+        out = _x_unit_floor_slot(v, state) if open_field == "unit_floor" else fn(v)
         if out:
             return out
     return None

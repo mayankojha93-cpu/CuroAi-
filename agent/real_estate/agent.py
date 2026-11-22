@@ -4,11 +4,28 @@ import json
 import asyncio
 import logging
 from typing import Optional
-from livekit.agents import Agent, StopResponse
-from src.carrier_filter import classify_carrier_message
+
+
+class StopResponse(Exception):
+    """Raised when a fast-reply or carrier drop ends the turn without calling the LLM."""
+    pass
+
+
+from . import config as _config  # noqa: F401  (side effect: puts the project root on sys.path so `src.` imports resolve)
+
+try:
+    from src.carrier_filter import classify_carrier_message
+except Exception:  # pragma: no cover - module is not part of this repo snapshot
+    logging.getLogger("real-estate-agent").warning(
+        "src.carrier_filter not importable -> only the built-in IVR/voicemail regexes are active"
+    )
+
+    def classify_carrier_message(text: str):
+        return None
+
 from .prompts import get_step_instructions
 from .state import RealEstateState, RealEstateStep, RealEstateStep as _Step
-from .config import CHAT_CTX_MAX_ITEMS, FAST_TOOL_REPLY, FASTPATH_ENABLED, SHORTCUT_MAX_TOKENS
+from .config import CHAT_CTX_MAX_ITEMS, FAST_TOOL_REPLY, FASTPATH_ENABLED, SHORTCUT_MAX_TOKENS, BACKCHANNEL_IGNORE_WINDOW, TTS_SPEAKABLE
 from .fastpath import extract as _fastpath_extract
 from .tools import (
     classify_category,
@@ -41,6 +58,15 @@ _IVR_EXTRA = re.compile(
     re.I,
 )
 
+# Markers that ONLY a machine says. They win even when the same sentence also has human-sounding words
+# ("Hi, I'm not available right now, please leave a message after the beep" contains "I'm" and "my").
+_STRONG_VM_RE = re.compile(
+    r"(after\s+the\s+(tone|beep)|at\s+the\s+tone|leave\s+(a\s+|your\s+)*(message|voicemail)|record\s+your\s+message|"
+    r"voice\s*mail|mail\s*box|press\s+(star|hash|pound|\d)|please\s+(stay|hold)\s+on\s+the\s+line|"
+    r"(not\s+reachable|switched\s+off|out\s+of\s+coverage)|(beep|tone)\s+ke\s+baad)",
+    re.I,
+)
+
 # Human callback / third-party answering indicators (never an IVR/voicemail machine)
 _HUMAN_CALLBACK_RE = re.compile(
     r"\b("
@@ -58,6 +84,17 @@ _HUMAN_CALLBACK_RE = re.compile(
 _IVR_LONG_WORDS = 30
 # While the IVR drop timer is running, only a SHORT reply counts as a human (long text is more IVR).
 _IVR_HUMAN_MAX_WORDS = 15
+
+
+def _ivr_long_turn_counts(text: str) -> bool:
+    """A long turn counts toward the 'looping IVR menu' rule only if it is long AND has no question in it.
+    A person who rambles about the property usually asks something ('?', kya, kaise, what, how ...); a menu never does."""
+    t = text or ""
+    if len(t.split()) < _IVR_LONG_WORDS:
+        return False
+    if "?" in t or re.search(r"\b(kya|kyun|kyon|kaise|kaun|kahan|what|why|how|who|where|can\s+you|could\s+you)\b", t, re.I):
+        return False
+    return True
 
 
 # All known real estate tool names for precise pattern matching and recovery
@@ -118,14 +155,25 @@ def _soften_tts_phrase(s: str) -> str:
     # 1. Opening affirmations with trailing period -> comma pause
     s = re.sub(r'^(Achha|Theek hai|Haanji|Haan ji|Samajh gayi|Got it|Sure|Perfect|Noted|Understood|Alright|Right)\.\s*', r'\1, ', s, flags=re.I)
     # 2. Never allow '[Name] Sir' (e.g. 'Raja Sir' -> 'Raja')
-    s = re.sub(r'\b(?!Hello\b|Yes\b|No\b|Thank\b|Thanks\b|Right\b|Sure\b|Sorry\b|Please\b|Okay\b|Alright\b)([A-Z][a-z]+)\s+[Ss]ir\b', r'\1', s)
+    s = re.sub(r'\b(?!Hello\b|Yes\b|No\b|Thank\b|Thanks\b|Right\b|Sure\b|Sorry\b|Please\b|Okay\b|Alright\b|Perfect\b|Noted\b|Understood\b|Great\b|Bilkul\b|Achha\b|Haanji\b|Haan\b|Ji\b|Theek\b|Samajh\b|Certainly\b|Absolutely\b|Good\b|Hi\b|Fine\b|Waise\b|Chaliye\b|Toh\b)([A-Z][a-z]+)\s+[Ss]ir\b', r'\1', s)
     # 3. Mid-sentence honorific stops ("got it, Sir. And..." -> "got it, Sir... And...")
     s = re.sub(r'(,\s*Sir|\bSir|\bji)\.\s+([A-Z])', r'\1... \2', s)
     # 4. Exclamations to natural breathing pauses
     s = s.replace("!", "... ")
     # 5. Collapse accidental multiple spaces
     s = re.sub(r'[ \t]{2,}', ' ', s)
+    if TTS_SPEAKABLE:
+        s = _speakable(s)
     return s.strip()
+
+
+def _speakable(s: str) -> str:
+    """TTS reads "407" as "four hundred seven" and may mangle "BHK". Flat numbers are spoken digit by digit."""
+    s = re.sub(r"\bBHK\b", "B H K", s)
+    s = re.sub(r"\b(unit|flat|house|shop|office|plot|number)(\s+)(\d{3,5})\b",
+               lambda m: f"{m.group(1)}{m.group(2)}{' '.join(m.group(3))}", s, flags=re.I)
+    s = re.sub(r"(?<![\d.])(\d{3,5})(?=\s+on\s+\d)", lambda m: " ".join(m.group(1)), s)   # "407 on 4th floor"
+    return s
 
 
 logger = logging.getLogger("real-estate-agent")
@@ -309,26 +357,41 @@ _DIRECT_NOT_INTERESTED = re.compile(
     r"no\s+property(?:\s+to\s+(?:sell|rent|lease))?|"
     r"(?:bech|de)\s*(?:diya|di|chuke|chuki|hain)|bik\s*gay[aei]|"
     r"koi\s*(?:bhi\s*)?property\s*(?:nahi|nhi)|"
-    r"kat\s+karo|kaat\s+do|kaato|kaat\s*karo|call\s+kaat[a-z]*|phone\s+kaat[a-z]*|cut\s+the\s+call|"
+    r"kat\s+karo|kaat\s+do|kaato|kaat\s*karo|call\s+kaat[a-z]*|phone\s+kaat[a-z]*|cut\s+the\s+call"
+    r")\b"
+    r"|(नॉट\s*इंटरेस्टेड|नहीं\s*बेचना|नहीं\s*देना|नहीं\s*चाहिए|कॉल\s*काटो|काट\s*दो)",
+    re.I,
+)
+
+# SOFT refusals are NOT refusals: "nothing", "no plans right now", "not right now", "kuch nahi", "abhi nahi" ...
+# The caller may still be reachable later, so the prompt's objection guide says: offer ONE callback, and only close
+# if they decline that too. That is a decision about meaning -> LLM. These phrases are therefore kept OUT of every
+# regex that closes the call (_DIRECT_NOT_INTERESTED, _CLEAR_REFUSAL_SHORT, tools.explicit_refusal) and are only
+# DETECTED here so the shortcuts can step aside explicitly.
+_SOFT_REFUSAL = re.compile(
+    r"\b("
     r"nothing(?:\s+(?:at\s+the\s+moment|right\s+now|as\s+of\s+now|currently))?|"
     r"no\s+plans?(?:\s+(?:right\s+now|at\s+the\s+moment|as\s+of\s+now|currently))?|"
     r"not\s+(?:right\s+now|at\s+the\s+moment|at\s+present|currently)|"
-    r"abhi\s+kuch\s+nahi|abhi\s+kuchh\s+nahi|kuch\s+nahi|kuchh\s+nahi|abhi\s+nahi|abhi\s+koi\s+plan\s+nahi"
+    r"abhi\s+(?:kuch|kuchh)\s+nahi|kuch\s+nahi|kuchh\s+nahi|abhi\s+nahi|abhi\s+koi\s+plan\s+nahi"
     r")\b"
-    r"|(नॉट\s*इंटरेस्टेड|नहीं\s*बेचना|नहीं\s*देना|नहीं\s*चाहिए|कॉल\s*काटो|काट\s*दो|कुछ\s*नहीं|अभी\s*नहीं)",
+    r"|(कुछ\s*नहीं|अभी\s*नहीं)",
     re.I,
 )
+
+
+def _is_soft_refusal(text: str) -> bool:
+    """'Not now / nothing at the moment' style answers: the LLM reads them (callback offer), no regex closes the call."""
+    if not text:
+        return False
+    return bool(_SOFT_REFUSAL.search(text)) and not _DIRECT_NOT_INTERESTED.search(text)
 
 
 # Clear short refusals closed without an LLM round trip
 _CLEAR_REFUSAL_SHORT = re.compile(
     r"^\W*(?:(?:mujhe|hum|mai|main|uh|um|umm)[\s,]+)?(?:"
     r"not\s+interested|interested\s+nahi|nahi\s+bechna|nahi\s+dena|"
-    r"nahi\s+chahiye|no\s+thanks?|no\s+thank\s+you|"
-    r"nothing(?:\s+(?:at\s+the\s+moment|right\s+now|as\s+of\s+now|currently))?|"
-    r"no\s+plans?(?:\s+(?:right\s+now|at\s+the\s+moment|as\s+of\s+now|currently))?|"
-    r"not\s+(?:right\s+now|at\s+the\s+moment|at\s+present|currently|planning)|"
-    r"kuch\s+nahi|kuchh\s+nahi|abhi\s+nahi|abhi\s+koi\s+plan\s+nahi|abhi\s+kuch\s+nahi"
+    r"nahi\s+chahiye|no\s+thanks?|no\s+thank\s+you|not\s+planning"
     r")(?:[\s,]+(?:hai|hain|sir|ji|thanks?))*\W*$",
     re.I,
 )
@@ -336,7 +399,10 @@ _CLEAR_REFUSAL_SHORT = re.compile(
 
 def _is_bare_refusal(text: str) -> bool:
     """A plain "nahi" / "nahi ji" / "toh nahi" / "no sir" with nothing else: general refusal to selling/renting,
-    so mark_not_interested() is executed deterministically without an LLM round trip (~1.3s saved)."""
+    so mark_not_interested() is executed deterministically without an LLM round trip (~1.3s saved).
+    Soft answers ("nothing", "not right now", "kuch nahi") are NOT bare refusals: the LLM offers a callback first."""
+    if _is_soft_refusal(text):
+        return False
     for c in _variants(text):
         toks = _tokens(c)
         if not toks or len(toks) > 4:
@@ -591,8 +657,31 @@ _AI_AUTOMATED_Q_LATIN = re.compile(
     re.I,
 )
 _AI_AUTOMATED_Q_DEV = re.compile(
-    r"(क्या\s*(आप|ये|यह)\s*(एआई|रोबोट|कंप्यूटर|ऑटोमेटेड)|(रोबोट|एआई)\s*(हो|बोल\s*रहा|है))"
+    r"(क्या\s*(आप|ये|यह)\s*(एआई|रोबोट|कंप्यूटर|ऑटोमेटेड|ऑटोमोटिव|ऑटोमैटिक)|(रोबोट|एआई)\s*(हो|बोल\s*रहा|है)"
+    r"|(ऑटोमोटिव|ऑटोमेटेड|ऑटोमैटिक)\s*कॉल)"
 )
+_AUTOMOTIVE_WORD = re.compile(r"\bautomotive\b|ऑटोमोटिव", re.I)
+_AUTOMATED_CALL_WORD = re.compile(r"\b(automated|automatic|auto|recorded|computer)\b|ऑटोमेटेड|ऑटोमैटिक", re.I)
+
+
+def ai_disclosure_reply(text: str, lang: str) -> str:
+    """Honest answer to 'Is this an automotive call?' / 'Are you an AI agent?'. Deterministic wording that MIRRORS the
+    caller's own word, so the caller hears exactly what they asked about:
+      "automotive call"      -> Yes, it is an automotive call and I'm an AI agent calling on behalf of My Estate Finder.
+      "automated/auto call"  -> Yes, it is an automated call and I'm an AI agent calling on behalf of My Estate Finder.
+      "AI agent / robot/bot" -> Yes, I'm an AI agent calling on behalf of My Estate Finder."""
+    t = text or ""
+    if lang == "en":
+        if _AUTOMOTIVE_WORD.search(t):
+            return "Yes, it is an automotive call and I'm an AI agent calling on behalf of My Estate Finder."
+        if _AUTOMATED_CALL_WORD.search(t) and re.search(r"\bcall\b|कॉल", t, re.I):
+            return "Yes, it is an automated call and I'm an AI agent calling on behalf of My Estate Finder."
+        return "Yes, I'm an AI agent calling on behalf of My Estate Finder."
+    if _AUTOMOTIVE_WORD.search(t):
+        return "Haanji, ye ek automotive call hai aur main My Estate Finder ki taraf se AI agent baat kar rahi hoon."
+    if _AUTOMATED_CALL_WORD.search(t) and re.search(r"\bcall\b|कॉल", t, re.I):
+        return "Haanji, ye ek automated call hai aur main My Estate Finder ki taraf se AI agent baat kar rahi hoon."
+    return "Haanji, main My Estate Finder ki taraf se AI agent baat kar rahi hoon."
 
 
 def _asks_if_ai_or_automated(text: str) -> bool:
@@ -737,20 +826,22 @@ def _parse_text_tool_call(raw: str):
     return name, args
 
 
-class RealEstateAgent(Agent):
-    """Voice agent for My Estate Finder property intake."""
+class RealEstateTurnHandler:
+    """Deterministic per-turn logic for My Estate Finder property intake (Pipecat edition).
 
-    def __init__(self, state: RealEstateState, tools_instance):
+    Runs on the COMPLETE user turn, after the user aggregator and before the LLM. Any shortcut raises
+    StopResponse (via speak_and_stop) which makes the TurnGate drop the LLM run for that turn.
+    `session` is a PipecatSession (update_instructions / update_tools / say / interrupt).
+    """
+
+    def __init__(self, state: RealEstateState, tools_instance, session):
         self._re_state = state
         self._re_tools = tools_instance
+        self.session = session
         self.on_language_change = None
         self._ivr_task: Optional[asyncio.Task] = None
         self._ivr_kind: Optional[str] = None
         self._ivr_long_turns = 0
-        super().__init__(
-            instructions=get_step_instructions(state),
-            tools=tools_instance.tools_for_step(state.step),
-        )
 
     async def _drop_ivr_immediately(self, kind: str, text: str):
         try:
@@ -761,7 +852,7 @@ class RealEstateAgent(Agent):
             self._re_state.final_disposition = "Voicemail or IVR Detected"
             self._re_state.agent_summary = f"Voicemail or IVR Detected: {text[:100]}"
             try:
-                self.session.interrupt(force=True)
+                await self.session.interrupt()
             except Exception:
                 pass
             if self._re_tools.hangup_func:
@@ -773,8 +864,8 @@ class RealEstateAgent(Agent):
 
     async def sync_step(self):
         """Sync instructions and available tools when step changes."""
-        await self.update_instructions(get_step_instructions(self._re_state))
-        await self.update_tools(self._re_tools.tools_for_step(self._re_state.step))
+        await self.session.update_instructions(get_step_instructions(self._re_state))
+        await self.session.update_tools(self._re_tools.tools_for_step(self._re_state.step))
 
     def speak_and_stop(self, text: str, allow_interruptions: bool = True, use_cached: bool = True):
         """Speaks the agent line (via say_cached or session.say), logs it to the
@@ -791,11 +882,7 @@ class RealEstateAgent(Agent):
                 self._re_state.add_transcript("assistant", clean)
                 logger.info(f"🤖 [Agent]: \"{clean}\"")
 
-            try:
-                sess = self.session
-            except Exception:
-                sess = None
-
+            sess = self.session
             if sess:
                 if use_cached:
                     say_cached(sess, self._re_state, clean, allow_interruptions=allow_interruptions)
@@ -804,30 +891,34 @@ class RealEstateAgent(Agent):
 
         raise StopResponse()
 
-    async def on_user_turn_completed(self, turn_ctx, new_message):
+    async def on_user_turn_completed(self, text: str):
         # LATENCY: a new customer turn invalidates any unspoken fast reply left over from an
         # interrupted previous turn.
         self._re_state.direct_reply = None
+        self._re_state.pending_preface = None
 
         # Closing line is already being spoken: ignore anything the customer says now
         # (e.g. 'haan haan theek hai') so it cannot trigger a second reply.
         if self._re_state.closing_spoken:
             raise StopResponse()
-        text = (getattr(new_message, "text_content", None) or "").strip()
+        text = (text or "").strip()
         kind = None
+        # Strong machine-only markers win even if the greeting also has human-sounding words.
+        if text and not self._re_state.is_interested and _STRONG_VM_RE.search(text):
+            kind = "voicemail"
         # Safety override: carrier detection runs before property qualification or human engagement
-        if not _HUMAN_CALLBACK_RE.search(text) and not self._re_state.is_interested:
+        if kind is None and not _HUMAN_CALLBACK_RE.search(text) and not self._re_state.is_interested:
             kind = classify_carrier_message(text)
             if not kind and self._re_state.step == _Step.INTRODUCTION:
                 if _IVR_EXTRA.search(text):
                     kind = "voicemail"
-                elif len(text.split()) >= _IVR_LONG_WORDS:
+                elif _ivr_long_turn_counts(text):
                     self._ivr_long_turns += 1
                     if self._ivr_long_turns >= 2:
                         kind = "voicemail"
                 else:
                     self._ivr_long_turns = 0
-        elif _HUMAN_CALLBACK_RE.search(text):
+        elif kind is None and _HUMAN_CALLBACK_RE.search(text):
             logger.info(f"🗣️ Human callback / personal busy pattern in customer utterance: '{text}' -> bypassing IVR filter")
         if kind:
             logger.warning(f"📵 Carrier announcement ({kind}) detected: '{text[:100]}'. Dropping call.")
@@ -887,22 +978,16 @@ class RealEstateAgent(Agent):
             or re.search(r"\b(kaun|kahan|kidhar|kya|kyun|kyon|who|what|where|why|which|how|kisne|kisko|broker|dealer)\b", low_text)
         )
 
+        # FIX: a bare "Hello" / "Hi" is the caller ANSWERING our greeting, not an identity question. The identity regex
+        # matches it, which made the "pure greeting -> ask sell-or-rent" shortcut (A) and the bare-hello clarification
+        # (A2) unreachable, so the LLM had to improvise on the single most common pickup word.
+        if re.fullmatch(r"\W*(hello|helo|hallo|halo|hi|hey|haan\s+hello|yes\s+hello|\u0939\u0947\u0932\u094b|\u0939\u0948\u0932\u094b|\u0939\u093e\u092f)\W*", text.strip().lower()):
+            _has_query = False
+
         # Caller specifically asks "Is this an automotive call?" or "Are you an AI Agent?"
         if _asks_if_ai_or_automated(text) and len(_tokens(text)) <= SHORTCUT_MAX_TOKENS + 4:
             en = state.reply_lang == "en"
-            t_low = text.lower()
-            if en:
-                if "automotive" in t_low:
-                    confirm = "Yes, it is an automotive call and I'm an AI agent calling on behalf of My Estate Finder."
-                elif "ai" in t_low:
-                    confirm = "Yes, I'm an AI agent calling on behalf of My Estate Finder."
-                else:
-                    confirm = "Yes, it is an automated call and I'm an AI agent calling on behalf of My Estate Finder."
-            else:
-                if "automotive" in t_low:
-                    confirm = "Haanji, ye ek automotive call hai aur main My Estate Finder ki taraf se AI agent baat kar rahi hoon."
-                else:
-                    confirm = "Haanji, ye ek automated call hai aur main My Estate Finder ki taraf se AI agent baat kar rahi hoon."
+            confirm = ai_disclosure_reply(text, state.reply_lang)
 
             followup = ""
             if state.step == RealEstateStep.INTRODUCTION:
@@ -923,11 +1008,17 @@ class RealEstateAgent(Agent):
                     if en else
                     " Aap ise sell karna chahte hain, ya rent par dena?"
                 )
+            elif state.step == RealEstateStep.CHECK_OTHER_PROPERTY:
+                followup = " " + other_property_question(state.reply_lang)
+            elif state.step == RealEstateStep.ASK_NEW_LOCATION:
+                followup = " " + ask_new_location_question(state.reply_lang)
             else:
                 missing = state.get_missing_fields()
                 if missing:
                     q = missing[0]["question_en"] if en else missing[0]["question_hi"]
                     followup = f" {q}"
+                elif state.step not in (RealEstateStep.CLOSING, RealEstateStep.TERMINATED) and state.last_agent_question:
+                    followup = f" {state.last_agent_question}"   # e.g. the name question: never leave the caller without one
 
             reply = f"{confirm}{followup}".strip()
             logger.info(f"🤖 Caller asked if AI/automated ('{text}') -> confirmed: '{reply}'")
@@ -967,8 +1058,17 @@ class RealEstateAgent(Agent):
             state.greeting_acknowledged = True
             state.intent = _intro_int
             state.is_interested = True
-            cat = state.category or "residential"
-            state.category = cat
+            cat = state.category
+            if not cat:
+                # Category is not in the lead record: ask once instead of assuming residential
+                # (a commercial owner would otherwise be asked for BHK).
+                state.step = _Step.CATEGORY_SELECT
+                await self.sync_step()
+                self.speak_and_stop(
+                    "Great, Sir! Is it a residential or a commercial property?" if state.reply_lang == "en"
+                    else "Ji bilkul Sir! Ye residential property hai ya commercial?",
+                    allow_interruptions=True,
+                )
             if cat == "commercial":
                 state.step = _Step.COMMERCIAL_LEASE if _intro_int == "lease" else _Step.COMMERCIAL_SALE
             else:
@@ -985,7 +1085,7 @@ class RealEstateAgent(Agent):
         # A2: caller answered ambiguous "Haan" / "Yes" AFTER greeting was already acknowledged -> prompt to choose
         _prior_texts = [t.lower() for t in state.recent_user_texts[:-1]]
         _prior_refusal = any(bool(_DIRECT_NOT_INTERESTED.search(pt) or _CLEAR_REFUSAL_SHORT.match(pt)) for pt in _prior_texts[-2:])
-        if state.step == _Step.INTRODUCTION and state.greeting_acknowledged and _is_greeting_ack(text) and not _intro_int and not _has_query:
+        if state.step == _Step.INTRODUCTION and state.greeting_acknowledged and _is_greeting_ack(text) and not _intro_int and not _has_query and not state.refusal_confirm_asked:
             if _prior_refusal or state.is_interested is False:
                 logger.info(f"🛑 Follow-up affirmation '{text}' confirms prior refusal -> mark_not_interested & closing")
                 try:
@@ -1015,14 +1115,31 @@ class RealEstateAgent(Agent):
             _HUMAN_CALLBACK_RE.search(text)
             or re.search(r"\b(call\s*(me\s*)?(back|later)|later|busy|baad\s*mein|baad\s*me|shaam|kal|subah|driving|drive|meeting|hospital)\b", low_text)
         )
-        _already_interested = (state.is_interested is True) or (state.intent in ("sell", "rent", "lease"))
+        _already_interested = (state.is_interested is True) or (state.intent in ("sale", "sell", "rent", "lease"))
         _is_refusal_here = (
             not _is_callback_request
+            and not _is_soft_refusal(text)
             and not _already_interested
             and not _has_query
             and len(_tokens(text)) <= SHORTCUT_MAX_TOKENS + 3
             and (_is_bare_refusal(text) or bool(_CLEAR_REFUSAL_SHORT.match(text.strip())))
         )
+        if (
+            _is_refusal_here
+            and state.step == _Step.INTRODUCTION
+            and not state.refusal_confirm_asked
+            and not _CLEAR_REFUSAL_SHORT.match(text.strip())
+        ):
+            # A lone "nahi"/"no" can mean "didn't hear", "wrong person" or "not now". Ask ONE either/or question;
+            # a second bare refusal (or any clear refusal phrase) closes the call.
+            state.refusal_confirm_asked = True
+            logger.info(f"❓ Bare refusal at INTRODUCTION -> confirming once before closing: '{text}'")
+            self.speak_and_stop(
+                "No problem, Sir. Just checking, is it not for sale or rent, or is now just a bad time?"
+                if state.reply_lang == "en" else
+                "Theek hai Sir. Bas poochna tha, sell ya rent ka plan nahi hai, ya abhi bas time sahi nahi hai?",
+                allow_interruptions=True,
+            )
         if state.step in (_Step.INTRODUCTION, _Step.CATEGORY_SELECT) and _is_refusal_here:
             logger.info(f"🛑 Bare refusal at {state.step.value} -> mark_not_interested & closing (no LLM): '{text}'")
             try:
@@ -1163,6 +1280,9 @@ class RealEstateAgent(Agent):
                         _reask = _missing[0]["question_en"] if state.reply_lang == "en" else _missing[0]["question_hi"]
                         _kind = _missing[0]["id"]
                 elif _neutral:
+                    if BACKCHANNEL_IGNORE_WINDOW > 0 and (time.time() - state.last_agent_speech_end) < BACKCHANNEL_IGNORE_WINDOW:
+                        logger.info(f"🤫 Backchannel '{text}' overlapped the end of the agent's speech -> ignored")
+                        raise StopResponse()
                     _missing = state.get_missing_fields()
                     if _missing:
                         _kind = _missing[0]["id"]
@@ -1287,7 +1407,7 @@ class RealEstateAgent(Agent):
         if standalone_changed and not step_changed:
             # MUST be synchronous: otherwise the LLM could still see the old "ask unit & floor" instruction.
             try:
-                await self.update_instructions(get_step_instructions(state))
+                await self.session.update_instructions(get_step_instructions(state))
             except Exception as e:
                 logger.warning(f"Failed to refresh instructions after standalone detection: {e}")
 
@@ -1309,8 +1429,8 @@ class RealEstateAgent(Agent):
                 # the LLM to run with stale tools, which leads to wrong step transitions and
                 # premature closings (issues #1 and #2).
                 try:
-                    await self.update_instructions(get_step_instructions(state))
-                    await self.update_tools(self._re_tools.tools_for_step(state.step))
+                    await self.session.update_instructions(get_step_instructions(state))
+                    await self.session.update_tools(self._re_tools.tools_for_step(state.step))
                     logger.info(f"Step sync'd ({state.step.value}): instructions + tools updated.")
                 except Exception as e:
                     logger.warning(f"Failed to refresh instructions/tools on step change: {e}")
@@ -1320,7 +1440,7 @@ class RealEstateAgent(Agent):
                 _agent = self
                 async def _refresh_lang_instructions():
                     try:
-                        await _agent.update_instructions(get_step_instructions(state))
+                        await _agent.session.update_instructions(get_step_instructions(state))
                     except Exception as e:
                         logger.warning(f"Failed to refresh instructions: {e}")
                 asyncio.create_task(_refresh_lang_instructions())
@@ -1349,7 +1469,7 @@ class RealEstateAgent(Agent):
                         continue
                     # Check recent utterances (prior to current text)
                     for _prev_u in reversed(state.recent_user_texts[:-1] if len(state.recent_user_texts) > 1 else []):
-                        _bk = _fastpath_extract(_m_id, _prev_u)
+                        _bk = _fastpath_extract(_m_id, _prev_u, state=state, allow_bare=False)
                         if _bk:
                             logger.info(f"⚡ Backfilled {_m_id}={_bk} from recent speech '{_prev_u[:50]}'")
                             try:
@@ -1378,14 +1498,14 @@ class RealEstateAgent(Agent):
                                      and t not in {"hai", "hain", "sir", "ji", "haan", "ye", "yeh", "it", "is", "its", "a", "an", "space", "retail"}]
                             _fp_kw = {"commercial_type": _ct} if not _rest else None
                 else:
-                    _fp_kw = _fastpath_extract(_fp_field, text)
+                    _fp_kw = _fastpath_extract(_fp_field, text, state=state)
 
                 # If open field did not match, check other remaining missing fields (e.g. caller answered area first)
                 if not _fp_kw and len(_fp_missing) > 1:
                     for _other_item in _fp_missing[1:]:
                         _other_id = _other_item["id"]
                         if _other_id != "commercial_type":
-                            _other_kw = _fastpath_extract(_other_id, text)
+                            _other_kw = _fastpath_extract(_other_id, text, state=state, allow_bare=False)
                             if _other_kw:
                                 _fp_field = _other_id
                                 _fp_kw = _other_kw
@@ -1408,72 +1528,33 @@ class RealEstateAgent(Agent):
                                 self.speak_and_stop(_fp_reply, allow_interruptions=True)
                         raise StopResponse()
 
-    async def llm_node(self, chat_ctx, tools, model_settings):
-        """Prevent hallucinated second tool call when last item was tool output.
 
-        LATENCY: when the tool already decided the exact next line (state.direct_reply), speak it
-        directly instead of making a second LLM round trip just to read it out."""
-        if self._re_state.closing_spoken:
-            return  # closing is spoken deterministically via session.say
-        items = getattr(chat_ctx, "items", None) or []
-        if items and getattr(items[-1], "type", None) == "function_call_output":
-            reply = self._re_state.direct_reply
-            if reply:
-                self._re_state.direct_reply = None
-                logger.info(f"⚡ FAST_REPLY (2nd LLM call skipped): '{reply}'")
-                yield reply
-                return
-            tools = []
+    async def handle_turn(self, text: str) -> bool:
+        """Returns True when the turn was fully handled deterministically (LLM must NOT run)."""
+        try:
+            await self.on_user_turn_completed(text)
+        except StopResponse:
+            return True
+        return False
 
-        # LATENCY: cap history sent to the LLM (fewer prompt tokens -> faster TTFT). The system
-        # instructions are preserved by truncate(); step instructions already hold the open question.
-        if CHAT_CTX_MAX_ITEMS > 0 and len(items) > CHAT_CTX_MAX_ITEMS:
-            try:
-                chat_ctx = chat_ctx.copy()
-                chat_ctx.truncate(max_items=CHAT_CTX_MAX_ITEMS)
-            except Exception as e:
-                logger.debug(f"chat_ctx truncate skipped: {e}")
 
-        # Stream the LLM, but HOLD its text until the generation ends. Why: Llama often says a sentence
-        # AND calls a tool in the same turn. The tool then speaks the canonical next question (FAST_REPLY),
-        # so the caller heard two questions (the LLM's own, frequently for the wrong field, plus ours) and
-        # questions got repeated. Tool-call chunks are still forwarded immediately, so tool turns lose no time
-        # (the call has to finish before the tool can run anyway); only text-only turns wait for the short
-        # reply to finish.
-        #   - real tool call in this generation -> drop the LLM text; the tool's reply is the only thing spoken
-        #   - tool call typed as text (anywhere in the reply) -> recover it, speak the canonical reply
-        #   - plain speech -> flush as-is
-        held = []
-        saw_tool = False
-        async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
-            if _chunk_has_tool_call(chunk):
-                saw_tool = True
-                yield chunk
-                continue
-            if not _chunk_text(chunk):
-                yield chunk                      # empty / metadata chunk
-                continue
-            held.append(chunk)
+    _QUESTION_WORDS_RE = re.compile(r"\b(kya|kitn[aei]|kaun|kahan|kyun|kyon|kaise|who|what|where|why|which|how|is|are|do|does|can)\b|\?")
 
-        full = "".join(_chunk_text(c) or "" for c in held)
-        if saw_tool:
-            if full.strip():
-                logger.info(f"🔇 Dropped LLM text that came with a tool call (avoids double question): {full.strip()[:140]!r}")
-            return
-        m = _INLINE_CALL_RE.search(full)
-        if m or _TEXT_CALL_RE.match(full):
-            start = m.start() if m else 0
-            if m and m.group(0).startswith('"name"'):
-                brace = full.rfind("{", 0, m.start())
-                start = brace if brace >= 0 else m.start()
-            recovered = await self._recover_text_tool_call(full[start:])
-            if recovered:
-                yield recovered
-            return
-
-        # No tool was called: LLM is speaking naturally (answering question, objection, or clarifying)
-        for c in held:
-            yield c
+    def _answer_preface(self, text: str):
+        """When the LLM answered a caller QUESTION and also called a tool, the tool speaks the next canonical
+        question; keep the LLM's (short) answer so the question is not ignored. Never keeps a second question,
+        leaked tool text, or an acknowledgement when the caller did not ask anything."""
+        heard = (self._re_state.last_user_text or "").lower()
+        if not self._QUESTION_WORDS_RE.search(heard):
+            return None
+        t = _clean_leaks(text).strip()
+        if not t or "?" in t or _TEXT_CALL_RE.match(t):
+            return None
+        sents = re.split(r"(?<=[.!\u0964])\s+", t)
+        out = " ".join(sents[:2]).strip()
+        if len(out.split()) > 30:
+            out = sents[0].strip()
+        return out if 0 < len(out.split()) <= 30 else None
 
     async def _recover_text_tool_call(self, raw: str):
         """The LLM typed a tool call as text. Execute it safely and return the line to speak."""
@@ -1571,27 +1652,4 @@ class RealEstateAgent(Agent):
                 else:
                     return await self._re_tools.finish_property_intake()
         return "Sorry, could you please repeat that?" if en else "Sorry, kya aap dobara bata sakte hain?"
-
-    def tts_node(self, text, model_settings):
-        """Safety net. LLM output arrives as tiny token fragments, so we buffer until a full
-        sentence is complete and only then strip leaked tool-call text. Whitespace between
-        tokens is preserved (never strip() individual chunks)."""
-        async def guard():
-            buf = ""
-            async for chunk in text:
-                buf += chunk
-                if not _call_open(buf) and buf.rstrip().endswith((".", "?", "!", "\u0964")):
-                    out, buf = _soften_tts_phrase(_clean_leaks(buf)), ""
-                    if out.strip():
-                        _q = extract_question(out)
-                        if _q:
-                            self._re_state.last_agent_question = _q   # for "repeat that"
-                        yield out
-            out = _soften_tts_phrase(_clean_leaks(buf))
-            if out.strip():
-                _q = extract_question(out)
-                if _q:
-                    self._re_state.last_agent_question = _q
-                yield out
-
-        return Agent.default.tts_node(self, guard(), model_settings)
+        
