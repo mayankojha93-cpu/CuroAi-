@@ -310,18 +310,26 @@ _DIRECT_NOT_INTERESTED = re.compile(
     r"(?:bech|de)\s*(?:diya|di|chuke|chuki|hain)|bik\s*gay[aei]|"
     r"koi\s*(?:bhi\s*)?property\s*(?:nahi|nhi)|"
     r"kat\s+karo|kaat\s+do|kaato|kaat\s*karo|call\s+kaat[a-z]*|phone\s+kaat[a-z]*|cut\s+the\s+call|"
-    r"abhi\s+kuch\s+nahi|abhi\s+kuchh\s+nahi|kuch\s+nahi|kuchh\s+nahi|abhi\s+nahi"
+    r"nothing(?:\s+(?:at\s+the\s+moment|right\s+now|as\s+of\s+now|currently))?|"
+    r"no\s+plans?(?:\s+(?:right\s+now|at\s+the\s+moment|as\s+of\s+now|currently))?|"
+    r"not\s+(?:right\s+now|at\s+the\s+moment|at\s+present|currently)|"
+    r"abhi\s+kuch\s+nahi|abhi\s+kuchh\s+nahi|kuch\s+nahi|kuchh\s+nahi|abhi\s+nahi|abhi\s+koi\s+plan\s+nahi"
     r")\b"
     r"|(नॉट\s*इंटरेस्टेड|नहीं\s*बेचना|नहीं\s*देना|नहीं\s*चाहिए|कॉल\s*काटो|काट\s*दो|कुछ\s*नहीं|अभी\s*नहीं)",
     re.I,
 )
 
 
-# The ONLY phrase-level refusals closed without the LLM: short, unambiguous, no "abhi"/"kuch"/"baad mein"
-# style words (those can mean "not now" / "ask me later" and need the LLM to decide).
+# Clear short refusals closed without an LLM round trip
 _CLEAR_REFUSAL_SHORT = re.compile(
-    r"^\W*(?:(?:mujhe|hum|mai|main)\s+)?(?:not\s+interested|interested\s+nahi|nahi\s+bechna|nahi\s+dena|"
-    r"nahi\s+chahiye|no\s+thanks?|no\s+thank\s+you)(?:\s+(?:hai|hain|sir|ji|thanks?))*\W*$",
+    r"^\W*(?:(?:mujhe|hum|mai|main|uh|um|umm)[\s,]+)?(?:"
+    r"not\s+interested|interested\s+nahi|nahi\s+bechna|nahi\s+dena|"
+    r"nahi\s+chahiye|no\s+thanks?|no\s+thank\s+you|"
+    r"nothing(?:\s+(?:at\s+the\s+moment|right\s+now|as\s+of\s+now|currently))?|"
+    r"no\s+plans?(?:\s+(?:right\s+now|at\s+the\s+moment|as\s+of\s+now|currently))?|"
+    r"not\s+(?:right\s+now|at\s+the\s+moment|at\s+present|currently|planning)|"
+    r"kuch\s+nahi|kuchh\s+nahi|abhi\s+nahi|abhi\s+koi\s+plan\s+nahi|abhi\s+kuch\s+nahi"
+    r")(?:[\s,]+(?:hai|hain|sir|ji|thanks?))*\W*$",
     re.I,
 )
 
@@ -975,7 +983,17 @@ class RealEstateAgent(Agent):
                 self.speak_and_stop(reply, allow_interruptions=True)
 
         # A2: caller answered ambiguous "Haan" / "Yes" AFTER greeting was already acknowledged -> prompt to choose
+        _prior_texts = [t.lower() for t in state.recent_user_texts[:-1]]
+        _prior_refusal = any(bool(_DIRECT_NOT_INTERESTED.search(pt) or _CLEAR_REFUSAL_SHORT.match(pt)) for pt in _prior_texts[-2:])
         if state.step == _Step.INTRODUCTION and state.greeting_acknowledged and _is_greeting_ack(text) and not _intro_int and not _has_query:
+            if _prior_refusal or state.is_interested is False:
+                logger.info(f"🛑 Follow-up affirmation '{text}' confirms prior refusal -> mark_not_interested & closing")
+                try:
+                    await tools_.mark_not_interested()
+                    tools_._speak_closing_and_hangup()
+                except Exception as e:
+                    logger.warning(f"mark_not_interested shortcut failed on follow-up affirmation: {e}")
+                raise StopResponse()
             en = state.reply_lang == "en"
             clarify = (
                 "Could you please tell me if you'd like to sell it, or put it on rent?"
@@ -992,11 +1010,7 @@ class RealEstateAgent(Agent):
             self.speak_and_stop(clarify, allow_interruptions=True)
 
         # B-alt: a BARE refusal ("nahi", "no sir", "nahi ji") or one of a handful of unambiguous short phrases
-        # ("not interested", "nahi bechna") closes the call without an LLM round trip. Every other way of
-        # refusing ("abhi nahi", "is location pe nahi", "pehle hi bech di", "hum khud rehte hain", "mere paas
-        # koi property nahi") is a SENTENCE: the LLM reads it and picks mark_not_interested /
-        # not_interested_in_this_location / schedule_callback. Ending a call on a keyword guess is worse than
-        # spending one LLM call.
+        # ("not interested", "nahi bechna") closes the call without an LLM round trip.
         _is_callback_request = bool(
             _HUMAN_CALLBACK_RE.search(text)
             or re.search(r"\b(call\s*(me\s*)?(back|later)|later|busy|baad\s*mein|baad\s*me|shaam|kal|subah|driving|drive|meeting|hospital)\b", low_text)
@@ -1006,7 +1020,7 @@ class RealEstateAgent(Agent):
             not _is_callback_request
             and not _already_interested
             and not _has_query
-            and len(_tokens(text)) <= SHORTCUT_MAX_TOKENS
+            and len(_tokens(text)) <= SHORTCUT_MAX_TOKENS + 3
             and (_is_bare_refusal(text) or bool(_CLEAR_REFUSAL_SHORT.match(text.strip())))
         )
         if state.step in (_Step.INTRODUCTION, _Step.CATEGORY_SELECT) and _is_refusal_here:
