@@ -583,12 +583,18 @@ class RealEstateTools:
         """True only if `value` is backed by the caller's latest words (digits, or a 3+ letter word).
         Guarantees we never read back a detail the LLM invented."""
         heard = (self.state.last_user_text or "").lower()
+        if not heard and hasattr(self.state, "get_recent_speech_context"):
+            heard = self.state.get_recent_speech_context(max_turns=3).lower()
         if not heard or value is None:
             return False
         v = str(value).lower()
         digits = re.findall(r"\d+(?:\.\d+)?", v)
         if digits:
-            return any(re.search(r"(?<![\d.])" + re.escape(d) + r"(?!\d)", heard) for d in digits)
+            heard_clean = re.sub(r"(?<=\d),(?=\d)", "", heard)
+            for d in digits:
+                d_norm = d[:-2] if d.endswith(".0") else d
+                if re.search(r"(?<![\d.])" + re.escape(d_norm) + r"(?!\d)", heard_clean):
+                    return True
         return any(w in heard for w in re.findall(r"[a-z]{3,}", v))
 
     def _echo_from_changes(self, before: Dict[str, Any]) -> Optional[str]:
