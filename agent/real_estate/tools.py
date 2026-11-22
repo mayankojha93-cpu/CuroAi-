@@ -149,10 +149,12 @@ _POSITIVE_OR_ANSWER_RE = re.compile(
 # 2. Explicit negative intent phrases (clearly refusing to sell / rent / talk)
 _EXPLICIT_REFUSAL_PHRASES = re.compile(
     r"\b("
-    r"not\s+(?:interested|looking|selling|renting|leasing|wanting|planning|for\s+sale|at\s+all)"
+    r"not\s+(?:interested|looking|selling|renting|leasing|wanting|planning|for\s+sale|at\s+all|right\s+now|at\s+the\s+moment|at\s+present|currently)"
     r"|(?:un|not\s+)interested"
     r"|don'?t\s+want\s+to\s+(?:sell|rent|lease|talk|proceed)"
     r"|no\s+thanks?|no\s+thank\s+you"
+    r"|nothing(?:\s+(?:at\s+the\s+moment|right\s+now|as\s+of\s+now|currently))?"
+    r"|no\s+plans?(?:\s+(?:right\s+now|at\s+the\s+moment|as\s+of\s+now|currently))?"
     r"|already\s+(?:sold|rented|showed|given|let\s*out|disposed)"
     r"|don'?t\s+have\s+(?:any\s+)?(?:other\s+)?property(?:\s+to\s+(?:sell|rent|lease))?"
     r"|no\s+property(?:\s+to\s+(?:sell|rent|lease))?"
@@ -170,6 +172,7 @@ _EXPLICIT_REFUSAL_PHRASES = re.compile(
     r"|(?:kat|kaat)\s*(?:karo|do|kijiye|kar\s*do)|call\s*(?:kaat|kat)\s*(?:do|karo)|cut\s*the\s*call|phone\s*(?:rakho|kaato|kaat\s*do)"
     r"|(?:kyun|kyon|why)\s*(?:bechn[aei]|den[aei]|chahenge|chahein)"
     r"|abhi\s*(?:kuch|kuchh)?\s*(?:nahi|nhi)"
+    r"|abhi\s*(?:koi\s*)?plan\s*(?:nahi|nhi)"
     r"|kuch\s*(?:nahi|nhi)"
     r"|never\s*call|stop\s*calling"
     r")\b",
