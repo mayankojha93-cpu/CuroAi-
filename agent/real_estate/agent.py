@@ -570,6 +570,37 @@ def _asks_if_broker(text: str) -> bool:
     return any(_BROKER_Q_LATIN.search((c or "").lower()) for c in cands)
 
 
+_AI_AUTOMATED_Q_LATIN = re.compile(
+    r"\b("
+    r"(is\s+this\s+(an?\s+)?(automotive|automated|auto|computer|recorded|bot|robot|ai)\s*call)"
+    r"|(are\s+you\s+(an?\s+)?(ai\s*(agent|bot)?|robot|bot|computer|machine|automotive|automated))"
+    r"|(is\s+this\s+(ai|a\s+robot|a\s+bot|automated|automotive))"
+    r"|(you\s+are\s+(an?\s+)?(ai|robot|bot))"
+    r"|(ai\s*(agent|bot)?\s+ho\s+kya|robot\s+ho\s+kya|automated\s+call\s+hai|automotive\s+call\s+hai)"
+    r"|(kya\s+(yeh|ye|aap)\s+(ai|robot|automated|automotive|computer))"
+    r"|(robot\s+bol\s+raha\s+hai|ai\s+bol\s+rahi\s+hai)"
+    r")\b",
+    re.I,
+)
+_AI_AUTOMATED_Q_DEV = re.compile(
+    r"(क्या\s*(आप|ये|यह)\s*(एआई|रोबोट|कंप्यूटर|ऑटोमेटेड)|(रोबोट|एआई)\s*(हो|बोल\s*रहा|है))"
+)
+
+
+def _asks_if_ai_or_automated(text: str) -> bool:
+    if not text:
+        return False
+    if _AI_AUTOMATED_Q_DEV.search(text):
+        return True
+    cands = [text]
+    try:
+        from src.transliteration import romanize_hindi
+        cands.append(romanize_hindi(text))
+    except Exception:
+        pass
+    return any(_AI_AUTOMATED_Q_LATIN.search((c or "").lower()) for c in cands)
+
+
 _CONSIDERING_LATIN = re.compile(
     r"\b(soch\s*(raha|rahe|rahi|ta|te|ti|at[ae]|na|un)|thinking|considering|plan\s*(hai|kar)|dekh\s*(raha|rahe|te))\b",
     re.I,
@@ -841,11 +872,58 @@ class RealEstateAgent(Agent):
             _is_pickup_or_identity_query(text)
             or _asks_number_source(text)
             or _asks_if_broker(text)
+            or _asks_if_ai_or_automated(text)
             or _asks_location_clarification(text)
             or _asks_agent_for_price(text)
             or "?" in text
             or re.search(r"\b(kaun|kahan|kidhar|kya|kyun|kyon|who|what|where|why|which|how|kisne|kisko|broker|dealer)\b", low_text)
         )
+
+        # Caller specifically asks "Is this an automotive call?" or "Are you an AI Agent?"
+        if _asks_if_ai_or_automated(text) and len(_tokens(text)) <= SHORTCUT_MAX_TOKENS + 4:
+            en = state.reply_lang == "en"
+            t_low = text.lower()
+            if en:
+                if "automotive" in t_low:
+                    confirm = "Yes, it is an automotive call and I'm an AI agent calling on behalf of My Estate Finder."
+                elif "ai" in t_low:
+                    confirm = "Yes, I'm an AI agent calling on behalf of My Estate Finder."
+                else:
+                    confirm = "Yes, it is an automated call and I'm an AI agent calling on behalf of My Estate Finder."
+            else:
+                if "automotive" in t_low:
+                    confirm = "Haanji, ye ek automotive call hai aur main My Estate Finder ki taraf se AI agent baat kar rahi hoon."
+                else:
+                    confirm = "Haanji, ye ek automated call hai aur main My Estate Finder ki taraf se AI agent baat kar rahi hoon."
+
+            followup = ""
+            if state.step == RealEstateStep.INTRODUCTION:
+                state.greeting_acknowledged = True
+                loc = state.initial_property_location or state.sector_or_location
+                followup = (
+                    f" Were you looking to sell or rent out the property in {loc}?"
+                    if loc else
+                    " Were you looking to sell or rent out your property?"
+                ) if en else (
+                    f" Aap apni {loc} wali property sell karna chahte hain, ya rent out?"
+                    if loc else
+                    " Kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"
+                )
+            elif state.step == RealEstateStep.CATEGORY_SELECT:
+                followup = (
+                    " Were you looking to sell or rent it out?"
+                    if en else
+                    " Aap ise sell karna chahte hain, ya rent par dena?"
+                )
+            else:
+                missing = state.get_missing_fields()
+                if missing:
+                    q = missing[0]["question_en"] if en else missing[0]["question_hi"]
+                    followup = f" {q}"
+
+            reply = f"{confirm}{followup}".strip()
+            logger.info(f"🤖 Caller asked if AI/automated ('{text}') -> confirmed: '{reply}'")
+            self.speak_and_stop(reply, allow_interruptions=True)
 
         # A: caller acknowledges opening greeting (e.g. "Hello", "Haan", "Yes", "Speaking")
         if state.step == _Step.INTRODUCTION and _is_greeting_ack(text) and not state.greeting_acknowledged:
@@ -1116,8 +1194,6 @@ class RealEstateAgent(Agent):
         # ordinary sentences). The LLM judges tone and calls book_advisor_handoff(reason="...impatient...").
 
         # Proactively detect category & intent directly from caller utterance
-        from .state import RealEstateStep
-
         # A refusal ("nahi, us location pe nahi bechna") must not be read as an intent ('bechna' -> sale).
         _refusal = state.step in (RealEstateStep.INTRODUCTION, RealEstateStep.CHECK_OTHER_PROPERTY) and (
             _rejects_this_location(text) or _starts_with_negation(text)
@@ -1128,7 +1204,12 @@ class RealEstateAgent(Agent):
             RealEstateStep.INTRODUCTION, RealEstateStep.CATEGORY_SELECT,
             RealEstateStep.CHECK_OTHER_PROPERTY, RealEstateStep.ASK_NEW_LOCATION
         ))
-        _is_asking_question = bool(_asks_agent_for_price(text) or _asks_number_source(text) or _asks_if_broker(text))
+        _is_asking_question = bool(
+            _asks_agent_for_price(text)
+            or _asks_number_source(text)
+            or _asks_if_broker(text)
+            or _asks_if_ai_or_automated(text)
+        )
         # Keyword classification is trusted only for a SHORT reply with no question in it ("residential sell",
         # "flat rent pe"). A long / questioning sentence ("rent kitna milega?", "ghar pe baat karni hai baad
         # mein") is read by the LLM, which calls set_category_and_intent / customer_interested itself.
