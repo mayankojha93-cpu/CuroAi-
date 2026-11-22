@@ -33,7 +33,7 @@ AGENT_PERSONA_NAME = os.getenv("REAL_ESTATE_PERSONA_NAME", "Kavitha")
 
 # LLM Configuration
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-LLM_MODEL = os.getenv("LLM_MODEL", "meta-llama/llama-3.3-70b-instruct")
+LLM_MODEL = os.getenv("LLM_MODEL", "meta-llama/llama-3.1-8b-instruct")
 
 # STT Configuration (Soniox)
 SONIOX_API_KEY = os.getenv("SONIOX_API_KEY")
