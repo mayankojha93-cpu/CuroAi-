@@ -580,6 +580,18 @@ class RealEstateTools:
         "unit_number", "floor_number", "bhk_config", "commercial_type",
         "approx_area_sqft", "furnishing_status", "expected_sale_price", "expected_monthly_rent",
     )
+    _DIGIT_WORDS_MAP = {
+        "1": ("one", "first", "ek", "1st"),
+        "2": ("two", "second", "do", "2nd"),
+        "3": ("three", "third", "teen", "3rd"),
+        "4": ("four", "fourth", "char", "chaar", "4th"),
+        "5": ("five", "fifth", "paanch", "5th"),
+        "6": ("six", "sixth", "chhe", "6th"),
+        "7": ("seven", "seventh", "saat", "7th"),
+        "8": ("eight", "eighth", "aath", "8th"),
+        "9": ("nine", "ninth", "nau", "9th"),
+        "10": ("ten", "tenth", "das", "10th"),
+    }
 
     def _snap(self) -> Dict[str, Any]:
         return {k: getattr(self.state, k, None) for k in self._ECHO_FIELDS}
@@ -599,6 +611,10 @@ class RealEstateTools:
             for d in digits:
                 d_norm = d[:-2] if d.endswith(".0") else d
                 if re.search(r"(?<![\d.])" + re.escape(d_norm) + r"(?!\d)", heard_clean):
+                    return True
+                # Check word variants for small numbers (e.g. caller said "third", slot has "3")
+                words = self._DIGIT_WORDS_MAP.get(d_norm)
+                if words and any(re.search(r"\b" + re.escape(w) + r"\b", heard) for w in words):
                     return True
         return any(w in heard for w in re.findall(r"[a-z]{3,}", v))
 

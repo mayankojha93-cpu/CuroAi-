@@ -180,7 +180,24 @@ internalRouter.get(
   async (req: Request<{ callId: string }>, res: Response, next: NextFunction) => {
     try {
       const call = await callService.getCall(req.params.callId);
-      return res.status(200).json({ success: true, call });
+      return res.status(200).json({
+        success: true,
+        call,
+        callId: call.id,
+        leadId: call.re_lead_id || call.customer_id,
+        customerId: call.customer_id,
+        customerName: call.customer_name,
+        ownerName: call.customer_name,
+        phone: call.customer_phone || call.phone,
+        preferredLanguage: call.language || 'en',
+        language: call.language || 'en',
+        propertyLocation: call.property_location || call.customer_address,
+        address: call.customer_address || call.property_location,
+        location: call.property_location,
+        category: call.re_category || call.category || 'residential',
+        propertyCategory: call.re_category || call.category || 'residential',
+        direction: call.direction || 'outbound',
+      });
     } catch (err) {
       return next(err);
     }

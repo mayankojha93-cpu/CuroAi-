@@ -10,7 +10,6 @@ import { errorHandler } from './middleware/errorHandler.js';
 import { healthRouter } from './routes/health.js';
 import { callsRouter } from './routes/calls.js';
 import { internalRouter } from './routes/internal.js';
-import { webhooksRouter } from './routes/webhooks.js';
 import { callService } from './services/callService.js';
 import { downloadPendingRecordings, getRecordingsDir } from './services/recordingDownloader.js';
 import { s3Service } from './services/s3Service.js';
@@ -75,13 +74,6 @@ app.use(
     },
   })
 );
-
-// ──────────────────────────────────────────────────────────────────────────
-// LiveKit webhook MUST be mounted BEFORE the body parsers below.
-// LiveKit signs the exact raw bytes (content-type: application/webhook+json); webhooksRouter uses
-// express.raw() itself, so the untouched Buffer reaches the signature check.
-// ──────────────────────────────────────────────────────────────────────────
-app.use(webhooksRouter);
 
 // Body parsers for all other endpoints
 app.use(express.json({ limit: '10mb' }));

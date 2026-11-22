@@ -53,10 +53,9 @@ async function main() {
     console.log('\n🎉 TEST CALL INITIATED SUCCESSFULLY!');
     console.log(`  - Call ID:           ${call.id}`);
     console.log(`  - Customer ID:       ${customer.id}`);
-    console.log(`  - LiveKit Room:      ${call.room_name}`);
-    console.log(`  - Call Status:       ${call.status}`);
-    console.log('\n👉 LiveKit room and agent dispatch created.');
-    console.log('👉 Dispatched to Exotel SIP gateway:', env.SIP_DOMAIN || 'in.voip.exotel.com:5070');
+  console.log(`  - Call Room:         ${call.room_name}`);
+  console.log(`  - Call Status:       ${call.status}`);
+  console.log('\n👉 Outbound call dispatched via Exotel WSS to Pipecat agent.');
     console.log('👉 Agent Priya will greet the customer upon pickup.');
     console.log('\nMonitoring call and waiting for conversation...');
     let lastStatus = '';

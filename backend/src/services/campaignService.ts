@@ -1348,7 +1348,8 @@ export class CampaignService {
               c.ended_at,
               COALESCE(ro.final_disposition, c.call_status, c.status) as disposition,
               ro.final_disposition as outcome_disposition,
-              ro.agent_summary as call_summary
+              ro.agent_summary as call_summary,
+              COALESCE(ro.transcript, c.transcript) as transcript
             FROM calls c
             LEFT JOIN real_estate_outcomes ro ON c.id = ro.call_id
             WHERE c.re_lead_id = $1 OR (c.campaign_id = $2 AND c.re_lead_id = $1)
@@ -1357,6 +1358,46 @@ export class CampaignService {
           const callsRes = await pool.query(callsQuery, [lead.lead_id, campaignId]);
           const calls = callsRes.rows;
           const attemptsCount = Math.max(lead.total_attempts || 0, calls.length);
+
+          // Extract and format transcript across call attempts
+          const callTranscripts: string[] = [];
+          for (let i = 0; i < calls.length; i++) {
+            const call = calls[i];
+            const rawTr = call.transcript;
+            let turns: any[] = [];
+            if (Array.isArray(rawTr)) {
+              turns = rawTr;
+            } else if (typeof rawTr === 'string' && rawTr.trim()) {
+              try {
+                const parsed = JSON.parse(rawTr);
+                if (Array.isArray(parsed)) turns = parsed;
+              } catch {
+                turns = [];
+              }
+            }
+            if (turns.length > 0) {
+              const formattedTurns = turns
+                .map((t: any) => {
+                  const role = (t.role === 'customer' || t.role === 'user') ? 'Customer' : 'Agent';
+                  const text = (t.text || '').trim();
+                  return text ? `${role}: ${text}` : '';
+                })
+                .filter(Boolean)
+                .join('\n');
+
+              if (formattedTurns) {
+                if (calls.length > 1) {
+                  const attNum = typeof call.attempt_number === 'number' && call.attempt_number >= 1
+                    ? call.attempt_number
+                    : (i + 1);
+                  callTranscripts.push(`[Attempt ${attNum}]\n${formattedTurns}`);
+                } else {
+                  callTranscripts.push(formattedTurns);
+                }
+              }
+            }
+          }
+          const fullTranscript = callTranscripts.join('\n\n');
 
           const attemptDispositions: (string | null)[] = Array(8).fill(null);
           for (let i = 0; i < calls.length; i++) {
@@ -1402,7 +1443,6 @@ export class CampaignService {
             lead_id: lead.lead_id,
             customer_name: lead.customer_name || 'Property Owner',
             mobile: formatMobileNumber(lead.mobile),
-            email: lead.email || '',
             address: lead.address || '',
             category: lead.category ? (lead.category.charAt(0).toUpperCase() + lead.category.slice(1).toLowerCase()) : '',
             intent: lead.intent ? (lead.intent.charAt(0).toUpperCase() + lead.intent.slice(1).toLowerCase()) : '',
@@ -1438,6 +1478,7 @@ export class CampaignService {
             conclusion_date: lastCallTime ? formatDateTime(lastCallTime) : '',
             recording: lastRecordingUrl || '',
             agent_summary: agentSummary,
+            transcript: fullTranscript || '',
           });
         }
         return reportRows;

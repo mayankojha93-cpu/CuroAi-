@@ -445,7 +445,6 @@ export interface RealEstateCampaignReportRow {
   lead_id: string;
   customer_name: string;
   mobile: string;
-  email?: string;
   address: string;
   category?: string;
   intent?: string;
@@ -473,6 +472,7 @@ export interface RealEstateCampaignReportRow {
   conclusion_date: string;
   recording: string;
   agent_summary?: string;
+  transcript?: string;
 }
 
 export type CampaignReportRow = AirtelCampaignReportRow | RealEstateCampaignReportRow;

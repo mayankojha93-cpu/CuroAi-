@@ -635,7 +635,6 @@ export function generateRealEstateCampaignReportCsv(reportData: any[]): string {
     'Lead Id',
     'Customer Name',
     'Mobile',
-    'Email',
     'Address',
     'Category',
     'Intent',
@@ -663,6 +662,7 @@ export function generateRealEstateCampaignReportCsv(reportData: any[]): string {
     'Conclusion Date',
     'Recording',
     'Agent Summary',
+    'Transcript',
   ];
 
   const escapeCsv = (val: any): string => {
@@ -688,7 +688,6 @@ export function generateRealEstateCampaignReportCsv(reportData: any[]): string {
       escapeCsv(row.lead_id),
       escapeCsv(row.customer_name),
       escapeCsv(row.mobile),
-      escapeCsv(row.email || '-'),
       escapeCsv(row.address),
       escapeCsv(row.category || '-'),
       escapeCsv(row.intent || '-'),
@@ -716,6 +715,7 @@ export function generateRealEstateCampaignReportCsv(reportData: any[]): string {
       escapeCsv(row.conclusion_date),
       escapeCsv(row.recording),
       escapeCsv(row.agent_summary || '-'),
+      escapeCsv(row.transcript || '-'),
     ].join(','));
   }
 
@@ -730,7 +730,7 @@ export function generateRealEstateCampaignReportCsv(reportData: any[]): string {
 export function generateCampaignAuditedReportCsv(reportData: any[], pipeline?: string): string {
   if (
     pipeline === 'real_estate' ||
-    (!pipeline && reportData.length > 0 && ('bhk_config' in reportData[0] || 'email' in reportData[0] || 'society' in reportData[0]))
+    (!pipeline && reportData.length > 0 && ('bhk_config' in reportData[0] || 'society' in reportData[0] || 'transcript' in reportData[0]))
   ) {
     return generateRealEstateCampaignReportCsv(reportData);
   }

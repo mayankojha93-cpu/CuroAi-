@@ -1,7 +1,7 @@
 {
   "name": "ai-calling-backend",
   "version": "1.0.0",
-  "description": "Outbound AI Voice Calling backend with LiveKit and PostgreSQL",
+  "description": "Outbound AI Voice Calling backend with Pipecat and PostgreSQL",
   "main": "dist/src/index.js",
   "scripts": {
     "dev": "nodemon",
@@ -10,10 +10,6 @@
     "start": "node dist/src/index.js",
     "migrate": "tsx src/db/migrate.ts",
     "seed": "tsx src/db/seed.ts",
-    "trunk:create": "tsx scripts/create-outbound-trunk.ts",
-    "trunk:inbound:create": "tsx scripts/create-inbound-trunk.ts",
-    "trunk:list": "tsx scripts/list-trunks.ts",
-    "trunk:dial": "tsx scripts/test-dial.ts",
     "call:test": "tsx scripts/test-agent-call.ts",
     "re:test": "tsx scripts/test-real-estate-call.ts",
     "s3:sync": "tsx scripts/sync-s3.ts"
@@ -21,13 +17,11 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.750.0",
     "@aws-sdk/s3-request-presigner": "^3.750.0",
-    "@livekit/protocol": "^1.51.0",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.3",
-    "livekit-server-sdk": "^2.9.8",
     "pg": "^8.13.1",
     "pino": "^9.6.0",
     "pino-http": "^10.4.0",

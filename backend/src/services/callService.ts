@@ -1,14 +1,6 @@
 import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
-import {
-  SipClient,
-  AgentDispatchClient,
-  RoomServiceClient,
-  SipCallError,
-  WebhookReceiver,
-} from 'livekit-server-sdk';
-import { ParticipantInfo_Kind } from '@livekit/protocol';
 import { pool, query } from '../db/index.js';
 import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
@@ -22,7 +14,6 @@ import {
 } from '../utils/dispositions.js';
 import { matchRealEstateDisposition } from '../utils/realEstateDispositions.js';
 import { romanizeTranscript } from '../utils/transliteration.js';
-import { livekitEgressService } from './livekitEgressService.js';
 import { getRecordingsDir } from './recordingDownloader.js';
 import { realEstateCallService } from './realEstateCallService.js';
 import { initiateExotelWssCall, fetchExotelCallDetails } from './exotelService.js';
@@ -135,35 +126,13 @@ function serializeCustomer<T extends Record<string, any> | null | undefined>(row
   } as T;
 }
 
-/**
- * LiveKit SIP participants are named `sip_<number>` for inbound calls (outbound ones are `phone-<number>`
- * because we set the identity ourselves). The real caller number is in the `sip.phoneNumber` attribute.
- */
 function extractPhone(value?: string | null): string {
   if (!value) return '';
   return value.replace(/^(phone-|sip_|sip:)/i, '').trim();
 }
 
-function isSipParticipant(p: any): boolean {
-  if (!p) return false;
-  return (
-    p.kind === ParticipantInfo_Kind.SIP ||
-    (typeof p.identity === 'string' && (p.identity.startsWith('phone-') || p.identity.startsWith('sip_')))
-  );
-}
-
 export class CallService {
-  private sipClient: SipClient;
-  private dispatchClient: AgentDispatchClient;
-  private roomService: RoomServiceClient;
-  private webhookReceiver: WebhookReceiver;
-
-  constructor() {
-    this.sipClient = new SipClient(env.LIVEKIT_URL, env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET);
-    this.dispatchClient = new AgentDispatchClient(env.LIVEKIT_URL, env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET);
-    this.roomService = new RoomServiceClient(env.LIVEKIT_URL, env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET);
-    this.webhookReceiver = new WebhookReceiver(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET);
-  }
+  constructor() {}
 
   /**
    * Initiates an outbound phone call to the customer.
@@ -375,9 +344,7 @@ export class CallService {
 
   /**
    * Registers an inbound call session. IDEMPOTENT per room_name.
-   * Both the LiveKit webhook and the voice agent call this for the same room; previously each one
-   * inserted its own `calls` row, so every inbound call was stored twice and the outcome ended up
-   * on a different row than the one the webhook updated.
+   * Inserts or retrieves the call row, and links to the customer if known.
    */
   async registerInboundCall(data: { roomName: string; phone?: string; sipCallId?: string }) {
     const rawPhone = extractPhone(data.phone);
@@ -455,100 +422,44 @@ export class CallService {
   }
 
   /**
-   * Internal workflow: Creates room, dispatches agent with account metadata, dials SIP participant.
+   * Internal workflow: Dials customer via Exotel WSS bidirectional audio stream to Pipecat agent.
    */
   private async executeOutboundCallWorkflow(
     callId: string,
     customer: any,
     roomName: string,
-    attemptNumber: number
+    _attemptNumber: number
   ) {
     try {
-      await this.roomService.createRoom({ name: roomName, emptyTimeout: 300 });
-
-      logger.info({ roomName, agentName: env.AGENT_NAME }, 'Creating agent dispatch');
-      await this.dispatchClient.createDispatch(roomName, env.AGENT_NAME, {
-        metadata: JSON.stringify({
-          callId,
-          customerId: customer.id,
-          customerName: customer.name,
-          address: customer.address,
-          phone: customer.phone,
-          preferredLanguage: customer.language || 'hi',
-          accountNo: customer.account_no || '',
-          subsDelNo: customer.subs_del_no || '',
-          serviceEndDate: ymd(customer.service_end_date),
-          rDate: ymd(customer.r_date),
-          attemptNumber,
-          direction: 'outbound',
-        }),
-      });
-
       const dialablePhone = normalizePhone(customer.phone, customer.subs_del_no);
-      let callerId = env.SIP_CALLER_ID || undefined;
+      let callerId = env.SIP_CALLER_ID || env.EXOTEL_CALLER_ID || undefined;
       if (callerId && callerId.startsWith('+91') && callerId.length === 13) {
         callerId = `0${callerId.slice(3)}`;
       }
 
       await query("UPDATE calls SET status = 'dialing', call_status = 'dialing' WHERE id = $1", [callId]);
 
-      const useWss = env.EXOTEL_USE_WSS !== 'false';
-      if (useWss) {
-        logger.info(
-          { callId, phone: dialablePhone, callerId },
-          'Updated call status to dialing. Dispatching Exotel WSS audio stream call...'
-        );
-        const exotelCall = await initiateExotelWssCall({
-          callId,
-          phone: dialablePhone,
-          callerId,
-        });
+      logger.info(
+        { callId, roomName, phone: dialablePhone, callerId, customer: customer.name },
+        'Updated call status to dialing. Dispatching Exotel WSS audio stream call to Pipecat agent...'
+      );
+      const exotelCall = await initiateExotelWssCall({
+        callId,
+        phone: dialablePhone,
+        callerId,
+      });
 
-        logger.info({ callId, exotelCallSid: exotelCall.sid }, 'Exotel WSS call dispatched to carrier!');
-        await query(`UPDATE calls SET exotel_call_sid = $1, sip_call_id = $2 WHERE id = $3`, [
-          exotelCall.sid,
-          exotelCall.sid,
-          callId,
-        ]);
-      } else {
-        if (!env.SIP_OUTBOUND_TRUNK_ID) {
-          throw new Error('Missing SIP_OUTBOUND_TRUNK_ID in environment. Please configure your Exotel Outbound SIP trunk in .env');
-        }
-
-        logger.info(
-          { callId, phone: dialablePhone, trunkId: env.SIP_OUTBOUND_TRUNK_ID, callerId },
-          'Updated call status to dialing. Dispatching Exotel SIP call...'
-        );
-
-        const participant = await this.sipClient.createSipParticipant(
-          env.SIP_OUTBOUND_TRUNK_ID,
-          dialablePhone,
-          roomName,
-          {
-            participantIdentity: `phone-${dialablePhone.replace(/[^0-9]/g, '')}`,
-            participantName: customer.name,
-            fromNumber: callerId,
-            waitUntilAnswered: false,
-          } as any
-        );
-        logger.info({ callId, sipCallId: participant.sipCallId }, 'Exotel SIP call dispatched to carrier!');
-        await query(`UPDATE calls SET sip_call_id = $1 WHERE id = $2`, [participant.sipCallId || null, callId]);
-      }
+      logger.info({ callId, exotelCallSid: exotelCall.sid }, 'Exotel WSS call dispatched to carrier!');
+      await query(`UPDATE calls SET exotel_call_sid = $1, sip_call_id = $2 WHERE id = $3`, [
+        exotelCall.sid,
+        exotelCall.sid,
+        callId,
+      ]);
     } catch (err: any) {
       let mappedStatus: 'NO_ANSWER' | 'BUSY' | 'FAILED' = 'FAILED';
-      let failureReason = err.message || 'Call placement failed';
+      const failureReason = err.message || 'Call placement failed';
 
-      if (err instanceof SipCallError) {
-        failureReason = `SIP ${err.sipStatusCode} (${err.sipStatus || 'Error'}): ${err.message}`;
-        if (err.sipStatusCode === 486 || err.sipStatusCode === 600) {
-          mappedStatus = 'BUSY';
-        } else if (err.sipStatusCode === 408 || err.sipStatusCode === 480 || err.sipStatusCode === 487) {
-          mappedStatus = 'NO_ANSWER';
-        } else if (err.sipStatusCode === 403) {
-          failureReason = `SIP 403 Forbidden: Exotel rejected call authentication or caller ID. Check SIP credentials or ExoPhone caller ID (${env.SIP_CALLER_ID || 'Trunk Default'}).`;
-          mappedStatus = 'FAILED';
-        }
-      } else if (err.message && err.message.toLowerCase().includes('timeout')) {
+      if (err.message && err.message.toLowerCase().includes('timeout')) {
         mappedStatus = 'NO_ANSWER';
       }
 
@@ -562,10 +473,6 @@ export class CallService {
       );
 
       await this.evaluateRetry(customer.id, mappedStatus, null);
-
-      try {
-        await this.roomService.deleteRoom(roomName);
-      } catch (_) {}
     }
   }
 
@@ -1131,102 +1038,11 @@ export class CallService {
   }
 
   /**
-   * Validates and processes incoming LiveKit webhooks.
-   */
-  async processLiveKitWebhook(rawBody: Buffer | string, authHeader?: string) {
-    if (!authHeader) {
-      throw new AppError('Missing Authorization header in LiveKit webhook', 400);
-    }
-
-    const bodyString = typeof rawBody === 'string' ? rawBody : rawBody.toString('utf-8');
-    const event = await this.webhookReceiver.receive(bodyString, authHeader);
-    logger.info({ event: event.event, room: event.room?.name }, 'Received verified LiveKit webhook');
-
-    // Handle LiveKit Egress webhooks
-    if (event.event === 'egress_ended' || event.event === 'egress_started' || event.event === 'egress_updated') {
-      await livekitEgressService.handleEgressWebhook((event as any).egressInfo);
-      return { handled: true, event: event.event };
-    }
-
-    const roomName = event.room?.name;
-    if (!roomName) {
-      return { handled: false, reason: 'unrelated_room' };
-    }
-
-    const p: any = event.participant;
-    const sip = isSipParticipant(p);
-
-    let callId: string | null = null;
-    const isInbound = roomName.startsWith('inbound-');
-
-    if (isInbound) {
-      const existing = await query('SELECT id FROM calls WHERE room_name = $1', [roomName]);
-      if (existing.rows.length > 0) {
-        callId = existing.rows[0].id;
-      } else if (event.event === 'participant_joined' && sip) {
-        // Only register once the real caller is known; room_started / agent-joined events carry no number.
-        const attrs = p?.attributes || {};
-        const inbound = await this.registerInboundCall({
-          roomName,
-          phone: attrs['sip.phoneNumber'] || extractPhone(p?.identity),
-          sipCallId: attrs['sip.callID'] || undefined,
-        });
-        callId = inbound.call.id;
-      } else {
-        // The agent registers the call itself; nothing to update yet.
-        return { handled: false, reason: 'inbound_call_not_registered_yet' };
-      }
-    } else if (roomName.startsWith('re-call-')) {
-      callId = roomName.replace('re-call-', '');
-    } else if (roomName.startsWith('call-')) {
-      callId = roomName.replace('call-', '');
-    } else {
-      return { handled: false, reason: 'unrelated_room' };
-    }
-
-    if (event.event === 'participant_joined') {
-      if (sip) {
-        logger.info({ callId, participant: p?.identity }, 'Customer phone joined LiveKit room via SIP');
-        await query(
-          `UPDATE calls
-           SET status = 'answered',
-               call_status = 'answered',
-               answered_at = COALESCE(answered_at, NOW())
-           WHERE id = $1 AND status IN ('initiated', 'dialing')`,
-          [callId]
-        );
-
-        // Start LiveKit Cloud Egress if S3 storage is configured
-        if (callId) {
-          livekitEgressService.startAudioRecording(roomName, callId).catch((err) => {
-            logger.warn({ callId, err: err?.message }, 'LiveKit egress auto-start error');
-          });
-        }
-      }
-    } else if ((event.event === 'participant_left' && sip) || event.event === 'room_finished') {
-      // Only the phone leg ends the call (the agent leaving is not the customer hanging up)
-      logger.info({ callId, event: event.event }, 'Call ended via webhook');
-      await query(
-        `UPDATE calls
-         SET status = CASE WHEN status = 'answered' THEN 'completed' ELSE status END,
-             duration_seconds = CASE WHEN (duration_seconds IS NULL OR duration_seconds = 0) AND answered_at IS NOT NULL THEN GREATEST(1, ROUND(EXTRACT(EPOCH FROM (NOW() - answered_at)))::int) ELSE duration_seconds END,
-             ended_at = COALESCE(ended_at, NOW())
-         WHERE id = $1`,
-        [callId]
-      );
-    }
-
-    return { handled: true, event: event.event };
-  }
-
-  /**
-   * Reconciler: Inspects in-flight calls against real LiveKit rooms.
-   * - Queries LiveKit RoomService to get authoritative room and participant status.
-   * - Never blindly flips active calls to NO_ANSWER based on an arbitrary timer.
-   * - If a call's room is active with participants in LiveKit, it stays alive and is marked answered.
-   * - If the room has closed in LiveKit:
-   *   - If callee answered / transcript exists: computes real duration and completes the call.
-   *   - If callee never answered and timeout elapsed: marks as no_answer (canonical lowercase).
+   * Reconciler: Inspects in-flight calls against telephony carrier status and timeouts.
+   * - Queries Exotel REST API to get authoritative carrier call status.
+   * - If dialing older than ringing timeout (65s) and unanswered: marks as no_answer.
+   * - If answered and completed by carrier or duration elapsed: marks as completed with duration and recording.
+   * - Recovers missing outcomes, recordings, and transcripts.
    */
   async reconcileStuckCalls() {
     // 1. Fetch all calls currently in progress older than 30 seconds
@@ -1245,140 +1061,66 @@ export class CallService {
 
     if (inFlight.rows.length === 0) return;
 
-    // 2. Fetch active rooms from LiveKit RoomService
-    let activeRooms: any[] = [];
-    try {
-      activeRooms = await this.roomService.listRooms();
-    } catch (err: any) {
-      logger.warn({ err: err?.message }, 'Reconciler could not reach LiveKit roomService; skipping cycle');
-      return;
-    }
-
-    const liveRoomMap = new Map<string, any>();
-    for (const r of activeRooms) {
-      liveRoomMap.set(r.name, r);
-    }
-
     for (const call of inFlight.rows) {
-      const room = liveRoomMap.get(call.room_name);
+      const ageSeconds = Math.round((Date.now() - new Date(call.created_at).getTime()) / 1000);
 
-      if (room) {
-        // Room is currently active on LiveKit!
-        // Check if phone participant is actually active (picked up)
+      // Check Exotel carrier status if call SID is available
+      let exotelDetails: { recordingUrl?: string; duration?: number; status?: string } = {};
+      if (call.exotel_call_sid) {
         try {
-          const participants = await this.roomService.listParticipants(call.room_name);
-          const isAnswered = participants.some((p: any) =>
-            p.attributes?.['sip.callStatus'] === 'active'
-          );
-
-          if (isAnswered && (call.status === 'dialing' || call.status === 'initiated')) {
-            await query(
-              `UPDATE calls
-               SET status = 'answered',
-                   call_status = 'answered',
-                   answered_at = COALESCE(answered_at, NOW())
-               WHERE id = $1`,
-              [call.id]
-            );
-            logger.info({ callId: call.id, room: call.room_name }, `📞 [CALL ANSWERED] Reconciler detected active phone call | Call ID: ${call.id}`);
-          }
+          exotelDetails = await fetchExotelCallDetails(call.exotel_call_sid);
         } catch (e: any) {
-          logger.debug({ err: e?.message }, 'Reconciler participant check note');
+          logger.debug({ callId: call.id, err: e?.message }, 'Reconciler could not fetch Exotel call details');
         }
-        // Active room: do NOT finalize
-        continue;
       }
 
-      // Room is NO LONGER ACTIVE on LiveKit (call completed or ended)
-      let transcript = call.re_transcript || call.call_transcript || [];
-      // Self-healing check: check if conversation file exists on disk with dialogue
-      if (!Array.isArray(transcript) || transcript.length === 0) {
-        try {
-          const convDir = path.join(getRecordingsDir(), 'conversations');
-          if (fs.existsSync(convDir)) {
-            const files = fs.readdirSync(convDir);
-            const matched = files.find((f: string) => f.includes(call.id));
-            if (matched) {
-              const content = fs.readFileSync(path.join(convDir, matched), 'utf-8');
-              const parsedTurns: any[] = [];
-              for (const line of content.split('\n')) {
-                const turnM = line.match(/^\[\d{2}:\d{2}(?::\d{2})?\]\s*(🤖\s*Priya|🗣️\s*Customer)\s*:\s*(.+)$/);
-                if (turnM) {
-                  parsedTurns.push({
-                    role: turnM[1].includes('Priya') ? 'assistant' : 'customer',
-                    text: turnM[2].trim(),
-                  });
-                }
-              }
-              if (parsedTurns.length > 0) {
-                transcript = parsedTurns;
-              }
-            }
-          }
-        } catch {}
-      }
+      const carrierStatus = (exotelDetails.status || '').toLowerCase();
 
-      // Self-healing check: check if audio recording exists on disk
-      let recoveredRecordingUrl: string | null = null;
-      try {
-        const recDir = getRecordingsDir();
-        if (fs.existsSync(path.join(recDir, `${call.id}.mp3`)) || fs.existsSync(path.join(recDir, `${call.id}.wav`))) {
-          recoveredRecordingUrl = `/api/calls/${call.id}/audio`;
+      // If call is still dialing / ringing:
+      if (call.status === 'initiated' || call.status === 'dialing') {
+        if (carrierStatus === 'in-progress' && ageSeconds < 65) {
+          // Still ringing within normal ringing timeout
+          continue;
         }
-      } catch {}
 
-      // Fallback: check Exotel carrier recording if local recording not yet on disk
-      if (!recoveredRecordingUrl && call.exotel_call_sid) {
-        try {
-          const exotelDetails = await fetchExotelCallDetails(call.exotel_call_sid);
-          if (exotelDetails.recordingUrl) {
-            recoveredRecordingUrl = exotelDetails.recordingUrl;
-            logger.info({ callId: call.id, exotelRecordingUrl: recoveredRecordingUrl }, 'Retrieved carrier recording URL from Exotel');
-          }
-        } catch {}
-      }
-
-      const hasCustomerTurns = Array.isArray(transcript) && transcript.some((t: any) => t.role === 'customer' || t.role === 'user');
-      const wasAnswered = Boolean(call.answered_at) || hasCustomerTurns;
-
-      if (wasAnswered) {
-        // Callee answered and spoke! Finalize as completed with actual duration
-        const startTime = call.answered_at ? new Date(call.answered_at).getTime() : new Date(call.created_at).getTime();
-        const durationSec = Math.max(1, Math.round((Date.now() - startTime) / 1000));
-
-        await query(
-          `UPDATE calls
-           SET status = 'completed',
-               call_status = CASE WHEN call_status IN ('initiated', 'dialing') THEN 'completed' ELSE call_status END,
-               duration_seconds = GREATEST($1, COALESCE(duration_seconds, 0)),
-               recording_url = COALESCE(recording_url, $3),
-               recording_download_status = CASE WHEN $3 IS NOT NULL THEN 'done' ELSE recording_download_status END,
-               ended_at = NOW()
-           WHERE id = $2`,
-          [durationSec, call.id, recoveredRecordingUrl]
-        );
-
-        // If Real Estate call has no outcome record yet, synthesize outcome from the transcript
-        if (call.pipeline === 'real_estate' && !call.re_disposition) {
-          try {
-            const hasDialogue = Array.isArray(transcript) && transcript.length > 0;
-            const disp = hasDialogue ? 'Abruptly Disconnected Call' : 'Agent Not Connected (No Audio)';
+        if (carrierStatus === 'busy') {
+          await query(
+            `UPDATE calls SET status = 'busy', call_status = 'busy', ended_at = NOW() WHERE id = $1`,
+            [call.id]
+          );
+          if (call.pipeline === 'real_estate' && !call.re_disposition) {
             await realEstateCallService.saveOutcome(call.id, {
-              final_disposition: disp,
-              duration_seconds: durationSec,
-              transcript: transcript,
-              recording_url: recoveredRecordingUrl || undefined,
-              failure_reason: hasDialogue ? undefined : 'Call answered but agent had not joined the room before disconnect',
-            });
-            logger.info({ callId: call.id, disposition: disp }, 'Reconciler finalized missing real estate outcome for ended call');
-          } catch (e: any) {
-            logger.warn({ callId: call.id, err: e?.message }, 'Reconciler saveOutcome warning');
+              final_disposition: 'Line Busy',
+              duration_seconds: 0,
+              transcript: [],
+            }).catch(() => {});
           }
+          if (call.customer_id) {
+            await this.evaluateRetry(call.customer_id, 'BUSY', null);
+          }
+          continue;
         }
-      } else {
-        // Callee never answered: only mark no_answer after at least 65 seconds (ringingTimeout)
-        const ageSeconds = Math.round((Date.now() - new Date(call.created_at).getTime()) / 1000);
-        if (ageSeconds >= 65) {
+
+        if (carrierStatus === 'failed' || carrierStatus === 'canceled' || carrierStatus === 'cancelled') {
+          await query(
+            `UPDATE calls SET status = 'failed', call_status = 'failed', ended_at = NOW() WHERE id = $1`,
+            [call.id]
+          );
+          if (call.pipeline === 'real_estate' && !call.re_disposition) {
+            await realEstateCallService.saveOutcome(call.id, {
+              final_disposition: 'Call Failed (Carrier Disconnect)',
+              duration_seconds: 0,
+              transcript: [],
+            }).catch(() => {});
+          }
+          if (call.customer_id) {
+            await this.evaluateRetry(call.customer_id, 'FAILED', null);
+          }
+          continue;
+        }
+
+        // Callee did not answer or carrier says no-answer, or ringing timed out (>65s)
+        if (carrierStatus === 'no-answer' || ageSeconds >= 65) {
           await query(
             `UPDATE calls
              SET status = 'no_answer',
@@ -1405,6 +1147,95 @@ export class CallService {
             await this.evaluateRetry(call.customer_id, 'NO_ANSWER', null);
           }
           logger.info({ callId: call.id }, 'Reconciler resolved unanswered call to no_answer');
+          continue;
+        }
+      }
+
+      // If call is in 'answered' (or carrier reports completed):
+      const isCarrierCompleted = carrierStatus === 'completed' || Boolean(exotelDetails.recordingUrl);
+      const answeredAge = call.answered_at ? Math.round((Date.now() - new Date(call.answered_at).getTime()) / 1000) : ageSeconds;
+      const isDurationTimeout = answeredAge > (env.CALL_MAX_DURATION_SECONDS || 200) + 30;
+
+      if (!isCarrierCompleted && !isDurationTimeout) {
+        // Call is actively in progress
+        continue;
+      }
+
+      // Recover transcript if available
+      let transcript = call.re_transcript || call.call_transcript || [];
+      if (!Array.isArray(transcript) || transcript.length === 0) {
+        try {
+          const convDir = path.join(getRecordingsDir(), 'conversations');
+          if (fs.existsSync(convDir)) {
+            const files = fs.readdirSync(convDir);
+            const matched = files.find((f: string) => f.includes(call.id));
+            if (matched) {
+              const content = fs.readFileSync(path.join(convDir, matched), 'utf-8');
+              const parsedTurns: any[] = [];
+              for (const line of content.split('\n')) {
+                const turnM = line.match(/^\[\d{2}:\d{2}(?::\d{2})?\]\s*(🤖\s*Priya|🗣️\s*Customer)\s*:\s*(.+)$/);
+                if (turnM) {
+                  parsedTurns.push({
+                    role: turnM[1].includes('Priya') ? 'assistant' : 'customer',
+                    text: turnM[2].trim(),
+                  });
+                }
+              }
+              if (parsedTurns.length > 0) {
+                transcript = parsedTurns;
+              }
+            }
+          }
+        } catch {}
+      }
+
+      // Recover recording URL
+      let recoveredRecordingUrl: string | null = null;
+      try {
+        const recDir = getRecordingsDir();
+        if (fs.existsSync(path.join(recDir, `${call.id}.mp3`)) || fs.existsSync(path.join(recDir, `${call.id}.wav`))) {
+          recoveredRecordingUrl = `/api/calls/${call.id}/audio`;
+        }
+      } catch {}
+
+      if (!recoveredRecordingUrl && exotelDetails.recordingUrl) {
+        recoveredRecordingUrl = exotelDetails.recordingUrl;
+      }
+
+      const hasCustomerTurns = Array.isArray(transcript) && transcript.some((t: any) => t.role === 'customer' || t.role === 'user');
+      const wasAnswered = Boolean(call.answered_at) || hasCustomerTurns || call.status === 'answered';
+
+      if (wasAnswered) {
+        const startTime = call.answered_at ? new Date(call.answered_at).getTime() : new Date(call.created_at).getTime();
+        const durationSec = exotelDetails.duration || Math.max(1, Math.round((Date.now() - startTime) / 1000));
+
+        await query(
+          `UPDATE calls
+           SET status = 'completed',
+               call_status = CASE WHEN call_status IN ('initiated', 'dialing') THEN 'completed' ELSE call_status END,
+               duration_seconds = GREATEST($1, COALESCE(duration_seconds, 0)),
+               recording_url = COALESCE(recording_url, $3),
+               recording_download_status = CASE WHEN $3 IS NOT NULL THEN 'done' ELSE recording_download_status END,
+               ended_at = NOW()
+           WHERE id = $2`,
+          [durationSec, call.id, recoveredRecordingUrl]
+        );
+
+        if (call.pipeline === 'real_estate' && !call.re_disposition) {
+          try {
+            const hasDialogue = Array.isArray(transcript) && transcript.length > 0;
+            const disp = hasDialogue ? 'Abruptly Disconnected Call' : 'Agent Not Connected (No Audio)';
+            await realEstateCallService.saveOutcome(call.id, {
+              final_disposition: disp,
+              duration_seconds: durationSec,
+              transcript: transcript,
+              recording_url: recoveredRecordingUrl || undefined,
+              failure_reason: hasDialogue ? undefined : 'Call answered but agent had not connected before disconnect',
+            });
+            logger.info({ callId: call.id, disposition: disp }, 'Reconciler finalized missing real estate outcome for ended call');
+          } catch (e: any) {
+            logger.warn({ callId: call.id, err: e?.message }, 'Reconciler saveOutcome warning');
+          }
         }
       }
     }

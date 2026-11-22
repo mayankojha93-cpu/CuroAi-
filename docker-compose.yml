@@ -81,7 +81,7 @@ services:
       backend:
         condition: service_started
 
-  # Exotel WSS Audio Bridge: proxies Exotel WebSocket media stream to LiveKit Cloud WebRTC
+  # Exotel WSS Audio Bridge: runs Pipecat Voice AI agent over Exotel WebSocket media stream
   exotel-bridge:
     build:
       context: ./agent
