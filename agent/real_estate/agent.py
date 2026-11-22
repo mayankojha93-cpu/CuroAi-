@@ -758,16 +758,17 @@ def _parse_text_tool_call(raw: str):
     # 1. JSON name
     m = re.search(r'"name"\s*:\s*"([A-Za-z_]\w*)"', raw_clean)
     if m:
-        name = m.group(1)
+        name = m.group(1).lower()
     if not name:
         m = (
-            re.search(r'<function[=\s]([A-Za-z_]\w*)', raw_clean)
-            or re.search(r'<call:([A-Za-z_]\w*)', raw_clean)
-            or re.search(r'\b(' + _TOOL_NAMES_PATTERN + r')\b', raw_clean)
-            or re.match(r'\s*([a-z]+(?:_[a-z0-9]+)+)\b', raw_clean)
+            re.search(r'<function[=\s]([A-Za-z_]\w*)', raw_clean, re.I)
+            or re.search(r'<call:([A-Za-z_]\w*)', raw_clean, re.I)
+            or re.search(r'\b(' + _TOOL_NAMES_PATTERN + r')\b', raw_clean, re.I)
+            or re.match(r'\s*([a-zA-Z]+(?:_[a-zA-Z0-9]+)+)\b', raw_clean)
+            or re.search(r'([A-Za-z_]\w+)\s*\(', raw_clean)
         )
         if m:
-            name = m.group(1)
+            name = m.group(1).lower()
 
     if not name:
         return None, {}
@@ -1596,9 +1597,17 @@ class RealEstateTurnHandler:
                         v_clean = re.sub(r"[^a-z0-9]", "", v_str)
 
                         # Grounded check: digits match or word matches in caller's speech
+                        _w_map = {
+                            "1": ("one", "first", "ek", "1st"), "2": ("two", "second", "do", "2nd"),
+                            "3": ("three", "third", "teen", "3rd"), "4": ("four", "fourth", "char", "chaar", "4th"),
+                            "5": ("five", "fifth", "paanch", "5th"), "6": ("six", "sixth", "chhe", "6th"),
+                            "7": ("seven", "seventh", "saat", "7th"), "8": ("eight", "eighth", "aath", "8th"),
+                            "9": ("nine", "ninth", "nau", "9th"), "10": ("ten", "tenth", "das", "10th"),
+                        }
                         digits_in_speech = any(
                             n in speech_digits or (n.endswith('.0') and n[:-2] in speech_digits)
                             or any(n in s for s in speech_digits)
+                            or any(w in recent_speech for w in _w_map.get(n.rstrip('.0'), ()))
                             for n in v_nums
                         )
                         words_in_speech = (len(v_clean) >= 3 and v_clean in re.sub(r"[^a-z0-9]", "", recent_speech))
