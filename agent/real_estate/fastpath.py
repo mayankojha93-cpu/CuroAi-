@@ -146,7 +146,7 @@ _WORD_NUM = {
 }
 _BHK = re.compile(
     r"\b(\d(?:\.5)?|one|two|three|four|five|six|ek|do|teen|char|chaar|paanch|chhe)\s*(?:\+\s*\d\s*)?"
-    r"(?:bhk|b\.h\.k|bed\s*rooms?)"
+    r"(?:bhk|b\.h\.k|bed\s*rooms?|beds?)"
 )
 _RK = re.compile(r"\b(\d)\s*rk\b")
 _STUDIO = re.compile(r"\bstudio\b")
@@ -250,17 +250,41 @@ def _x_furnishing(v: str) -> Optional[Dict[str, Any]]:
 
 # ── Unit number + floor ──────────────────────────────────────────────────────
 _ORD = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7,
-        "eighth": 8, "ninth": 9, "tenth": 10}
+        "eighth": 8, "ninth": 9, "tenth": 10, "eleventh": 11, "twelfth": 12, "thirteenth": 13,
+        "fourteenth": 14, "fifteenth": 15, "sixteenth": 16, "seventeenth": 17, "eighteenth": 18,
+        "nineteenth": 19, "twentieth": 20}
+_ORD_WORDS = {
+    "first": "1", "second": "2", "third": "3", "fourth": "4", "fifth": "5",
+    "sixth": "6", "seventh": "7", "eighth": "8", "ninth": "9", "tenth": "10",
+    "eleventh": "11", "twelfth": "12", "thirteenth": "13", "fourteenth": "14",
+    "fifteenth": "15", "sixteenth": "16", "seventeenth": "17", "eighteenth": "18",
+    "nineteenth": "19", "twentieth": "20",
+    "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+    "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10",
+    "ek": "1", "do": "2", "teen": "3", "char": "4", "chaar": "4", "paanch": "5",
+}
+_NUM_WORDS_STR = "|".join(sorted(_ORD_WORDS.keys(), key=len, reverse=True))
+
+_WORD_UNIT = re.compile(
+    r"\b(?:unit|flat|room|door|shop|office)\s*(?:number\s+|no\.?\s*|num\s*)?(" + _NUM_WORDS_STR + r"|\d{1,5}[a-z]?)\b"
+    r"|\b(" + _NUM_WORDS_STR + r"|\d{1,5}(?:st|nd|rd|th)?)\s+(?:unit|flat|room|door|shop|office)\b",
+    re.IGNORECASE,
+)
+
 _FLOOR = re.compile(
     r"(?:(\d{1,2})\s*(?:st|nd|rd|th)?\s*(?:floor|flr)\b)"
     r"|(?:\bfloor\s*(?:no\.?\s*|number\s*)?(\d{1,2})\b)"
-    r"|\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s*floor\b"
+    r"|\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth)\s*floor\b"
     r"|\b(ground)\s*floor\b"
 )
 _UNIT_TOKEN = re.compile(r"\b[a-z]{0,2}[\-/]?\d{1,5}[a-z]?\b")
 _UNIT_PREFIX = {"flat", "unit", "no", "number", "house", "shop", "office", "plot", "door", "room"}
-_UF_VOCAB = {"flat", "unit", "number", "no", "num", "floor", "flr", "st", "nd", "rd", "th", "ground", "house",
-             "door", "room", "office", "shop", "plot", "on", "at", "the", "of", "wale", "wala", "wali"}
+_UF_VOCAB = {
+    "flat", "unit", "number", "no", "num", "floor", "flr", "st", "nd", "rd", "th", "ground", "house",
+    "door", "room", "office", "shop", "plot", "on", "at", "the", "of", "wale", "wala", "wali", "is",
+    "and", "aur", "its", "it", "in", "pe", "par", "mein", "me", "hai", "hain", "my", "meri", "mera",
+    "gf", "ug", "upper", "lower", "top", "basement",
+} | set(_ORD_WORDS.keys())
 
 
 def _ordinal(n: int) -> str:
@@ -296,7 +320,7 @@ def _floor_label(m: "re.Match") -> str:
     if m.group(2):
         return _ordinal(int(m.group(2)))
     if m.group(3):
-        return _ordinal(_ORD[m.group(3)])
+        return _ordinal(_ORD.get(m.group(3).lower(), 1))
     return "Ground"
 
 
@@ -312,20 +336,41 @@ def _x_unit_floor(v: str) -> Optional[Dict[str, Any]]:
     if ms:
         m = ms[0]
         if m.group(1):
-            # "flat 12 floor 3" would read as floor 12 -> refuse when the number is a unit label
-            before = re.findall(r"[a-z]+", v[:m.start()])
-            if before and before[-1] in _UNIT_PREFIX:
+            # Only refuse if the immediately preceding token is a unit prefix (e.g. "flat 12 floor")
+            toks_before = _TOK.findall(v[:m.start()])
+            if toks_before and toks_before[-1] in _UNIT_PREFIX:
                 return None
         rest = v[:m.start()] + " " + v[m.end():]
-        if _leftover(rest, [_UNIT_TOKEN], _UF_VOCAB):
-            return None
-        units = _UNIT_TOKEN.findall(rest)
-        if not units:
-            return {"floor_number": _floor_label(m)}
-        unit = _pick_unit_number(units)
-        return {"unit_number": unit, "floor_number": _floor_label(m)} if unit else None
 
-    # no floor word: a lone unit number ("407", "flat 402", "D-17")
+        # 1. First check explicit word/labelled unit in rest (e.g. "third unit", "unit 3", "flat 302")
+        wu = _WORD_UNIT.search(rest)
+        if wu:
+            raw_u = wu.group(1) or wu.group(2)
+            raw_u_low = raw_u.lower()
+            unit = _ORD_WORDS.get(raw_u_low, re.sub(r"(?:st|nd|rd|th)$", "", raw_u, flags=re.I).upper())
+            rest_after = rest[:wu.start()] + " " + rest[wu.end():]
+            if not _leftover(rest_after, [_UNIT_TOKEN], _UF_VOCAB):
+                return {"unit_number": unit, "floor_number": _floor_label(m)}
+
+        # 2. Check standard digit unit token
+        if not _leftover(rest, [_UNIT_TOKEN], _UF_VOCAB):
+            units = _UNIT_TOKEN.findall(rest)
+            if not units:
+                return {"floor_number": _floor_label(m)}
+            unit = _pick_unit_number(units)
+            return {"unit_number": unit, "floor_number": _floor_label(m)} if unit else None
+        return None
+
+    # no floor word: a lone unit number ("407", "flat 402", "third unit", "D-17")
+    wu = _WORD_UNIT.search(v)
+    if wu:
+        raw_u = wu.group(1) or wu.group(2)
+        raw_u_low = raw_u.lower()
+        unit = _ORD_WORDS.get(raw_u_low, re.sub(r"(?:st|nd|rd|th)$", "", raw_u, flags=re.I).upper())
+        v_after = v[:wu.start()] + " " + v[wu.end():]
+        if not _leftover(v_after, [_UNIT_TOKEN], _UF_VOCAB):
+            return {"unit_number": unit}
+
     if _leftover(v, [_UNIT_TOKEN], _UF_VOCAB):
         return None
     unit = _pick_unit_number(_UNIT_TOKEN.findall(v))
@@ -380,19 +425,52 @@ _RENT_VOCAB = {"rs", "rupees", "rupaye", "rupay", "inr", "per", "month", "monthl
 _SALE_VOCAB = {"rs", "rupees", "rupaye", "rupay", "inr", "expect", "expecting", "expected", "price", "crore",
                "lakh", "demand", "rate", "cost", "total"}
 
-# "one point five" / "dedh" / "fifty": a tiny closed list of spoken numbers. Anything else spoken in words
-# ("paanch lakh", "saadhe teen crore") is not handled here -> the LLM converts it.
-_SPOKEN_SALE_NUMS = [
+# Spoken numbers converted before matching amounts (sale price, rent, deposit)
+_SPOKEN_AMOUNT_NUMS = [
     (re.compile(r"\bone\s+point\s+five\b", re.IGNORECASE), "1.5"),
     (re.compile(r"\btwo\s+point\s+five\b", re.IGNORECASE), "2.5"),
     (re.compile(r"\bthree\s+point\s+five\b", re.IGNORECASE), "3.5"),
+    (re.compile(r"\bfour\s+point\s+five\b", re.IGNORECASE), "4.5"),
+    (re.compile(r"\bone\s+and\s+a\s+half\b", re.IGNORECASE), "1.5"),
+    (re.compile(r"\btwo\s+and\s+a\s+half\b", re.IGNORECASE), "2.5"),
+    (re.compile(r"\bthree\s+and\s+a\s+half\b", re.IGNORECASE), "3.5"),
     (re.compile(r"\bdedh\b", re.IGNORECASE), "1.5"),
     (re.compile(r"\bdhai\b", re.IGNORECASE), "2.5"),
+    (re.compile(r"\btwenty\s+five\b", re.IGNORECASE), "25"),
+    (re.compile(r"\bthirty\s+five\b", re.IGNORECASE), "35"),
+    (re.compile(r"\bforty\s+five\b", re.IGNORECASE), "45"),
+    (re.compile(r"\bfifty\s+five\b", re.IGNORECASE), "55"),
+    (re.compile(r"\bsixty\s+five\b", re.IGNORECASE), "65"),
+    (re.compile(r"\bseventy\s+five\b", re.IGNORECASE), "75"),
+    (re.compile(r"\beighty\s+five\b", re.IGNORECASE), "85"),
+    (re.compile(r"\bninety\s+five\b", re.IGNORECASE), "95"),
+    (re.compile(r"\beleven\b", re.IGNORECASE), "11"),
+    (re.compile(r"\btwelve\b", re.IGNORECASE), "12"),
+    (re.compile(r"\bthirteen\b", re.IGNORECASE), "13"),
+    (re.compile(r"\bfourteen\b", re.IGNORECASE), "14"),
+    (re.compile(r"\bfifteen\b", re.IGNORECASE), "15"),
+    (re.compile(r"\bsixteen\b", re.IGNORECASE), "16"),
+    (re.compile(r"\bseventeen\b", re.IGNORECASE), "17"),
+    (re.compile(r"\beighteen\b", re.IGNORECASE), "18"),
+    (re.compile(r"\bnineteen\b", re.IGNORECASE), "19"),
+    (re.compile(r"\btwenty\b", re.IGNORECASE), "20"),
+    (re.compile(r"\bthirty\b", re.IGNORECASE), "30"),
+    (re.compile(r"\bforty\b", re.IGNORECASE), "40"),
     (re.compile(r"\bfifty\b", re.IGNORECASE), "50"),
     (re.compile(r"\bsixty\b", re.IGNORECASE), "60"),
     (re.compile(r"\bseventy\b", re.IGNORECASE), "70"),
     (re.compile(r"\beighty\b", re.IGNORECASE), "80"),
     (re.compile(r"\bninety\b", re.IGNORECASE), "90"),
+    (re.compile(r"\bten\b", re.IGNORECASE), "10"),
+    (re.compile(r"\bone\b", re.IGNORECASE), "1"),
+    (re.compile(r"\btwo\b", re.IGNORECASE), "2"),
+    (re.compile(r"\bthree\b", re.IGNORECASE), "3"),
+    (re.compile(r"\bfour\b", re.IGNORECASE), "4"),
+    (re.compile(r"\bfive\b", re.IGNORECASE), "5"),
+    (re.compile(r"\bsix\b", re.IGNORECASE), "6"),
+    (re.compile(r"\bseven\b", re.IGNORECASE), "7"),
+    (re.compile(r"\beight\b", re.IGNORECASE), "8"),
+    (re.compile(r"\bnine\b", re.IGNORECASE), "9"),
 ]
 
 _MARKET_RATE_STMT = re.compile(
@@ -413,8 +491,8 @@ def _x_amount(v: str, open_field: str) -> Optional[str]:
             return "Market Rate"
 
     v_norm = v
-    if open_field == "sale_price":
-        for pat, rep in _SPOKEN_SALE_NUMS:
+    if open_field in ("sale_price", "monthly_rent", "current_rent"):
+        for pat, rep in _SPOKEN_AMOUNT_NUMS:
             v_norm = pat.sub(rep, v_norm)
 
     nums = [n.replace(",", "").rstrip(".") for n in _NUM.findall(v_norm)]
@@ -427,7 +505,8 @@ def _x_amount(v: str, open_field: str) -> Optional[str]:
         if [t for t in _leftover(v_norm, [_AMT], vocab) if t.replace(",", "").rstrip(".") != nums[0]]:
             return None
         unit = _UNIT_CANON.get(m.group(2).lower(), m.group(2).lower())
-        return f"{m.group(1).replace(',', '')} {unit}"
+        amt_clean = m.group(1).replace(",", "")
+        return f"{amt_clean} {unit}"
 
     # number with no unit: only meaningful for the open field's usual scale
     raw = _bare_number(v_norm, vocab)
