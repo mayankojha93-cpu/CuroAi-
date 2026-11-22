@@ -28,10 +28,7 @@ const envSchema = z.object({
   DEFAULT_ADMIN_PASSWORD: z.string().default('admin12345'),
   OPENROUTER_API_KEY: z.string().optional().default(''),
 
-  // LiveKit credentials
-  LIVEKIT_URL: z.string().optional().default(''),
-  LIVEKIT_API_KEY: z.string().optional().default(''),
-  LIVEKIT_API_SECRET: z.string().optional().default(''),
+  // Agent Personas
   AGENT_NAME: z.string().default('telecom-router-pickup-agent'),
   REAL_ESTATE_AGENT_NAME: z.string().default('my-estate-finder-agent'),
 
@@ -68,13 +65,12 @@ const envSchema = z.object({
   // Recording storage: local path for downloaded audio files (swap for S3/GCS bucket URL in prod)
   RECORDING_STORAGE_DIR: z.string().optional().default(''),
 
-  // S3 / Object Storage for LiveKit Cloud Egress
+  // S3 / Object Storage for Audio Recording Archive
   S3_BUCKET: z.string().optional().default(''),
   S3_REGION: z.string().optional().default(''),
   S3_ENDPOINT: z.string().optional().default(''),
   AWS_ACCESS_KEY_ID: z.string().optional().default(''),
   AWS_SECRET_ACCESS_KEY: z.string().optional().default(''),
-  LIVEKIT_EGRESS_ENABLED: z.string().optional().default('auto'),
 
   // AI Providers
   SARVAM_API_KEY: z.string().optional().default(''),
