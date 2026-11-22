@@ -53,7 +53,7 @@ from .config import (
     PRERENDER_COMMON,
 )
 from .state import RealEstateState, RealEstateStep
-from .agent import RealEstateAgent, _HUMAN_CALLBACK_RE, _is_bare_refusal, _DIRECT_NOT_INTERESTED, _clean_leaks
+from .agent import RealEstateAgent, _HUMAN_CALLBACK_RE, _STRONG_VM_RE, _is_bare_refusal, _DIRECT_NOT_INTERESTED, _clean_leaks
 from .tools import RealEstateTools, explicit_refusal
 from .prompts import _owner_call_name
 from .audio_recorder import RoomAudioRecorder
@@ -420,7 +420,7 @@ def _apply_disconnect_disposition(state: RealEstateState):
                     advisor_mentioned = True
 
         # Check if caller expressed negative refusal in any customer turn
-        is_already_interested = (state.is_interested is True) or (state.intent in ("sell", "rent", "lease"))
+        is_already_interested = (state.is_interested is True) or (state.intent in ("sale", "sell", "rent", "lease"))
 
         caller_refused = False
         for turn in state.transcript:
@@ -446,7 +446,7 @@ def _apply_disconnect_disposition(state: RealEstateState):
             state.agent_summary = "Customer not interested in selling or renting property"
             return
 
-        is_interested = state.is_interested or (state.intent in ("sell", "rent", "lease"))
+        is_interested = state.is_interested or (state.intent in ("sale", "sell", "rent", "lease"))
 
         # Interested callers who shared property details, inquired about pricing/valuation, or were promised an advisor follow-up
         # are actionable Advisor Callback Booked leads, NOT abruptly disconnected calls!
@@ -1068,6 +1068,8 @@ async def entrypoint(ctx: agents.JobContext):
     @session.on("agent_state_changed")
     def on_agent_state_changed(ev):
         state.last_activity_time = time.time()
+        if getattr(ev, "old_state", None) == "speaking" and getattr(ev, "new_state", None) != "speaking":
+            state.last_agent_speech_end = time.time()
 
     @session.on("user_state_changed")
     def on_user_state_changed(ev):
@@ -1087,8 +1089,9 @@ async def entrypoint(ctx: agents.JobContext):
         raw_text = getattr(ev, "transcript", None) or getattr(ev, "text", "")
         if raw_text and raw_text.strip():
             # Safety override: carrier detection runs before property qualification or human engagement
-            if not _HUMAN_CALLBACK_RE.search(raw_text) and not state.is_interested:
-                carrier_kind = classify_carrier_message(raw_text)
+            _strong_vm = bool(_STRONG_VM_RE.search(raw_text))
+            if not state.is_interested and (_strong_vm or not _HUMAN_CALLBACK_RE.search(raw_text)):
+                carrier_kind = classify_carrier_message(raw_text) or ("voicemail" if _strong_vm else None)
                 if carrier_kind:
                     logger.warning(f"📵 Carrier announcement ({carrier_kind}) on audio stream: '{raw_text.strip()[:100]}'. Dropping call immediately.")
                     state.add_transcript("system", f"[carrier announcement: {carrier_kind}] {raw_text.strip()}")
@@ -1387,6 +1390,21 @@ async def entrypoint(ctx: agents.JobContext):
                         if state.reply_lang == "en"
                         else "Kya aap line par hain? Kya aap mujhe sun pa rahe hain?"
                     )
+                    # Mid-call: do not just ask "are you there?", ALSO repeat the open question so the caller
+                    # who zoned out or lost the line knows what is being asked.
+                    if has_customer:
+                        _en = state.reply_lang == "en"
+                        _q = ""
+                        try:
+                            if state.step.value.startswith(("RESIDENTIAL", "COMMERCIAL")):
+                                _m = state.get_missing_fields()
+                                if _m:
+                                    _q = _m[0]["question_en"] if _en else _m[0]["question_hi"]
+                        except Exception:
+                            _q = ""
+                        _q = _q or (state.last_agent_question or "")
+                        if _q:
+                            reprompt = ("Sir, are you there? " if _en else "Sir, line par hain? ") + _q
                     try:
                         speech = session.say(reprompt, allow_interruptions=True)
                         log_dialogue("assistant", reprompt)
