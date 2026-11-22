@@ -134,6 +134,11 @@ LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "300"))
 # Leave unset unless the logs show END_SPEECH arriving >1s after the caller stopped talking.
 VAD_DEACTIVATION = _opt_float("VAD_DEACTIVATION")
 
+
+BACKCHANNEL_IGNORE_WINDOW = float(os.getenv("BACKCHANNEL_IGNORE_WINDOW", "0.6"))
+# TTS_SPEAKABLE=1 : flat numbers are spoken digit by digit ("407" -> "4 0 7") and BHK is spelled out ("B H K").
+TTS_SPEAKABLE = os.getenv("TTS_SPEAKABLE", "1") == "1"
+
 # Backend & Secret
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:3000")
 INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "")
