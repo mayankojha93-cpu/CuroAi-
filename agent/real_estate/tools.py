@@ -1271,6 +1271,8 @@ class RealEstateTools:
             details.append("Leased" + rent_str if self.state.is_currently_leased else "Vacant")
         if self.state.immediate_occupancy is not None:
             details.append("Immediate Occupancy: Yes" if self.state.immediate_occupancy else "Immediate Occupancy: No")
+        if self.state.skipped_fields:
+            details.append("Not captured (caller unsure / unclear audio): " + ", ".join(sorted(self.state.skipped_fields)))
         return "; ".join(details)
 
     @function_tool
@@ -1295,7 +1297,7 @@ class RealEstateTools:
         heard = (self.state.last_user_text or "").strip()
         grounded = _quote_grounded(caller_words, heard)
         # If caller already confirmed interest to sell/rent, a bare "nahi" / "no" is an answer to a question, not a refusal of service
-        if self.state.is_interested or (self.state.intent in ("sell", "rent", "lease")):
+        if self.state.is_interested or (self.state.intent in ("sale", "sell", "rent", "lease")):
             if not ((_EXPLICIT_REFUSAL_PHRASES.search(heard.lower()) if heard else False) or grounded):
                 logger.warning(f"🛑 mark_not_interested rejected: caller already confirmed intent ({self.state.intent}), utterance '{heard}' is not an explicit refusal to sell/rent")
                 return (
