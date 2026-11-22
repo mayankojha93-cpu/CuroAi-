@@ -38,7 +38,27 @@ _TOK = re.compile(r"\d[\d,]*(?:\.\d+)?|[a-z\u0900-\u097F]+")
 
 def _variants(text: str) -> List[str]:
     t = (text or "").strip().replace("\u2019", "'")
-    out = [t.lower().replace("'", "")]   # it's -> its, don't -> dont
+    base = t.lower().replace("'", "")   # it's -> its, don't -> dont
+    out = [base]
+    # Normalize spoken decimal/fraction configurations (e.g. "three point five" -> "3.5")
+    norm = base
+    for pat, rep in [
+        (r"\bthree\s*(?:point|\.)\s*five\b", "3.5"),
+        (r"\btwo\s*(?:point|\.)\s*five\b", "2.5"),
+        (r"\bone\s*(?:point|\.)\s*five\b", "1.5"),
+        (r"\bfour\s*(?:point|\.)\s*five\b", "4.5"),
+        (r"\bthree\s*and\s*a\s*half\b", "3.5"),
+        (r"\btwo\s*and\s*a\s*half\b", "2.5"),
+        (r"\bone\s*and\s*a\s*half\b", "1.5"),
+        (r"\b(?:saadhe|sadhe)\s*teen\b", "3.5"),
+        (r"\b(?:saadhe|sadhe)\s*cha?ar\b", "4.5"),
+        (r"\b(?:dhaai|dhai)\b", "2.5"),
+        (r"\bdedh\b", "1.5"),
+    ]:
+        norm = re.sub(pat, rep, norm)
+    if norm != base:
+        out.append(norm)
+
     if _DEV.search(t):
         try:
             r = romanize_hindi(t)
@@ -58,6 +78,7 @@ _FILL: Set[str] = {
     "approx", "approximately", "around", "about", "roughly", "lagbhag", "kareeb", "karib", "basically",
     "so", "toh", "to", "bhi", "ka", "ke", "ki", "ko", "me", "mein", "main", "pe", "par", "per", "wala", "wali",
     "and", "aur", "please", "only", "bas", "just", "that", "this", "ye", "yeh", "woh", "wo", "um", "uh", "umm", "hmm",
+    "i", "think", "guess", "say", "saying", "would", "maybe", "lagta", "lagti",
 }
 
 
@@ -86,10 +107,15 @@ def _bare_number(v: str, vocab: Set[str]) -> Optional[str]:
 
 
 # ── BHK ──────────────────────────────────────────────────────────────────────
-_WORD_NUM = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
-             "ek": "1", "do": "2", "teen": "3", "char": "4", "chaar": "4", "paanch": "5"}
+_WORD_NUM = {
+    "one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6",
+    "ek": "1", "do": "2", "teen": "3", "char": "4", "chaar": "4", "paanch": "5", "chhe": "6",
+    "one point five": "1.5", "two point five": "2.5", "three point five": "3.5", "four point five": "4.5",
+    "one and a half": "1.5", "two and a half": "2.5", "three and a half": "3.5",
+    "dedh": "1.5", "dhai": "2.5", "dhaai": "2.5", "sadhe teen": "3.5", "saadhe teen": "3.5", "sadhe char": "4.5",
+}
 _BHK = re.compile(
-    r"\b(\d(?:\.5)?|one|two|three|four|five|ek|do|teen|char|chaar|paanch)\s*(?:\+\s*\d\s*)?"
+    r"\b(\d(?:\.5)?|one|two|three|four|five|six|ek|do|teen|char|chaar|paanch|chhe)\s*(?:\+\s*\d\s*)?"
     r"(?:bhk|b\.h\.k|bed\s*rooms?)"
 )
 _RK = re.compile(r"\b(\d)\s*rk\b")
@@ -113,10 +139,12 @@ def _x_bhk(v: str) -> Optional[Dict[str, Any]]:
     m = _RK.search(v)
     if m:
         return {"bhk_config": f"{m.group(1)} RK"} if not _leftover(v, [_RK], _BHK_VOCAB) else None
-    # bhk_config is the open question, so a bare digit ("3", "it's 3", "3 bed") is unambiguous
+    # bhk_config is the open question, so a bare digit/decimal ("3", "it's 3", "3.5", "3 bed") is unambiguous
     bare = _bare_number(v, _BHK_BARE_VOCAB)
-    if bare and bare in ("1", "2", "3", "4", "5", "6"):
-        return {"bhk_config": f"{bare} BHK"}
+    if bare:
+        val = _WORD_NUM.get(bare, bare)
+        if re.fullmatch(r"[1-6](?:\.5)?", val):
+            return {"bhk_config": f"{val} BHK"}
     return None
 
 

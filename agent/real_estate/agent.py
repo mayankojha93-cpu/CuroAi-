@@ -1246,6 +1246,24 @@ class RealEstateAgent(Agent):
             and not state.impatient_detected
         ):
             _fp_missing = state.get_missing_fields()
+            # Backfill any missing field already answered in recent turns if uncaptured
+            if _fp_missing and state.recent_user_texts:
+                for _m_item in list(_fp_missing):
+                    _m_id = _m_item["id"]
+                    if _m_id == "commercial_type":
+                        continue
+                    # Check recent utterances (prior to current text)
+                    for _prev_u in reversed(state.recent_user_texts[:-1] if len(state.recent_user_texts) > 1 else []):
+                        _bk = _fastpath_extract(_m_id, _prev_u)
+                        if _bk:
+                            logger.info(f"⚡ Backfilled {_m_id}={_bk} from recent speech '{_prev_u[:50]}'")
+                            try:
+                                await self._re_tools.save_property_details(**_bk)
+                            except Exception:
+                                pass
+                            break
+                _fp_missing = state.get_missing_fields()
+
             if _fp_missing:
                 _fp_field = _fp_missing[0]["id"]
                 if _fp_field == "commercial_type":
@@ -1266,6 +1284,18 @@ class RealEstateAgent(Agent):
                             _fp_kw = {"commercial_type": _ct} if not _rest else None
                 else:
                     _fp_kw = _fastpath_extract(_fp_field, text)
+
+                # If open field did not match, check other remaining missing fields (e.g. caller answered area first)
+                if not _fp_kw and len(_fp_missing) > 1:
+                    for _other_item in _fp_missing[1:]:
+                        _other_id = _other_item["id"]
+                        if _other_id != "commercial_type":
+                            _other_kw = _fastpath_extract(_other_id, text)
+                            if _other_kw:
+                                _fp_field = _other_id
+                                _fp_kw = _other_kw
+                                break
+
                 if _fp_kw:
                     try:
                         await self._re_tools.save_property_details(**_fp_kw)
@@ -1373,12 +1403,35 @@ class RealEstateAgent(Agent):
                 fn = getattr(self._re_tools, name, None)
                 if name == "save_property_details":
                     missing = state.get_missing_fields()
+                    missing_ids = {m["id"] for m in missing} if missing else set()
                     keep = set(_FIELD_TO_PARAMS.get(missing[0]["id"], ())) if missing else set()
-                    # Also keep any fields that are genuinely backed by caller's speech
-                    heard_lower = (state.last_user_text or "").lower()
+
+                    # Also include any fields from missing that args has values for,
+                    # or that are backed by user speech (current turn or recent turns)
+                    recent_speech = f"{state.get_recent_speech_context(max_turns=3)} {state.last_user_text or ''}".lower()
+                    speech_clean = re.sub(r"[,']", "", recent_speech)
+                    speech_digits = re.findall(r"\d+(?:\.\d+)?", speech_clean)
+
                     for k, v in args.items():
-                        if v is not None and str(v).lower() in heard_lower:
+                        if v is None:
+                            continue
+                        v_str = str(v).lower()
+                        v_nums = re.findall(r"\d+(?:\.\d+)?", v_str)
+                        v_clean = re.sub(r"[^a-z0-9]", "", v_str)
+
+                        # Grounded check: digits match or word matches in caller's speech
+                        digits_in_speech = any(
+                            n in speech_digits or (n.endswith('.0') and n[:-2] in speech_digits)
+                            or any(n in s for s in speech_digits)
+                            for n in v_nums
+                        )
+                        words_in_speech = (len(v_clean) >= 3 and v_clean in re.sub(r"[^a-z0-9]", "", recent_speech))
+
+                        if digits_in_speech or words_in_speech:
                             keep.add(k)
+                        elif any(k in _FIELD_TO_PARAMS.get(mid, ()) for mid in missing_ids):
+                            keep.add(k)
+
                     safe = {k: v for k, v in args.items() if k in keep}
                     if safe:
                         await fn(**safe)
@@ -1397,13 +1450,31 @@ class RealEstateAgent(Agent):
             logger.info(f"⚡ RECOVERED reply: '{reply}'")
             return reply
 
-        # Nothing usable -> never stay silent: re-ask the question that is currently open.
+        # Nothing usable -> re-ask the open question, but NEVER loop repeatedly on the same question
         missing = state.get_missing_fields()
         en = state.reply_lang == "en"
         if missing:
-            q = missing[0]["question_en"] if en else missing[0]["question_hi"]
-            lead = "Sorry, I missed that. " if en else "Sorry, main sun nahi payi. "
-            return lead + q
+            field_id = missing[0]["id"]
+            n = _bump_reask(state, f"{state.step.value}|{field_id}")
+            if n == 1:
+                q = missing[0]["question_en"] if en else missing[0]["question_hi"]
+                lead = "Sorry, I missed that. " if en else "Sorry, main sun nahi payi. "
+                return lead + q
+            elif n == 2:
+                # Ask once more in simpler/gentler words
+                alt = _intake_slot_nudge(en, field_id, 2)
+                return alt if alt else (missing[0]["question_en"] if en else missing[0]["question_hi"])
+            else:
+                # Already asked multiple times -> skip this field to avoid annoying the caller
+                logger.info(f"⏭️ Skipping slot '{field_id}' after {n} failed re-asks to prevent loop")
+                state.skipped_fields.add(field_id)
+                missing_after = state.get_missing_fields()
+                if missing_after:
+                    next_q = missing_after[0]["question_en"] if en else missing_after[0]["question_hi"]
+                    lead = "No problem Sir. " if en else "Koi baat nahi Sir. "
+                    return lead + next_q
+                else:
+                    return await self._re_tools.finish_property_intake()
         return "Sorry, could you please repeat that?" if en else "Sorry, kya aap dobara bata sakte hain?"
 
     def tts_node(self, text, model_settings):

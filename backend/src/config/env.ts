@@ -19,6 +19,7 @@ const envSchema = z.object({
   DATABASE_URL: z.string().default('postgresql://localhost:5432/ai_calling'),
   BACKEND_URL: z.string().default('http://localhost:3000'),
   INTERNAL_SECRET: z.string().default('dev-secret-key-12345'),
+  CALL_MAX_DURATION_SECONDS: z.coerce.number().default(200),
 
   // Auth / JWT
   JWT_SECRET: z.string().default('curo-ai-super-secret-jwt-key-2026-auth'),
