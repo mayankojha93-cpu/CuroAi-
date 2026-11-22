@@ -5,23 +5,24 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
-# Install system audio and build tools
+# ffmpeg is needed for WAV -> MP3 call recordings
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ffmpeg \
-    libasound2-dev \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python requirements
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download models and plugin weights
-RUN python -c "from livekit.plugins import silero; silero.VAD.load()"
+# Pre-load the Silero VAD model so the first call does not pay for it
+RUN python -c "from pipecat.audio.vad.silero import SileroVADAnalyzer; SileroVADAnalyzer()"
 
-# Copy application source code
 COPY . .
 
-# Run the LiveKit agent worker in production mode
-CMD ["python", "agent.py", "start"]
+EXPOSE 8088
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD curl -fs http://localhost:8088/health || exit 1
+
+# The Exotel <-> Pipecat bridge (index.ts proxies /api/exotel/media-stream to this port).
+# The old `python agent.py start` started a LiveKit worker that no longer exists: agent.py is now a library module.
+CMD ["python", "agent_real_estate.py"]
