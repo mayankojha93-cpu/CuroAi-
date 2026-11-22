@@ -402,7 +402,7 @@ export class RealEstateCallService {
             participantName: safeLeadName || undefined,
             fromNumber: callerId,
             ringingTimeout: 65,      // Server-side SIP 65s ringing timeout enforced by LiveKit gateway
-            maxCallDuration: 900,    // Server-side SIP 15-minute max call duration
+            maxCallDuration: env.CALL_MAX_DURATION_SECONDS || 200,    // Server-side SIP 2-minute max call duration
             waitUntilAnswered: false,
           } as any
         );
