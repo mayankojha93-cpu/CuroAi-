@@ -23,13 +23,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("real-estate-agent")
 
-# Suppress noisy internal LiveKit/Sarvam debug spam so conversation logs stand out cleanly
-for _name in ("livekit.plugins.silero", "livekit.agents", "livekit"):
+# Suppress noisy internal Pipecat debug spam so conversation logs stand out cleanly
+for _name in ("pipecat", "pipecat.services.sarvam", "pipecat.services.soniox", "pipecat.audio.vad.silero"):
     logging.getLogger(_name).setLevel(logging.INFO)
-# The Sarvam plugin sets DEBUG on its own child loggers (".log", ".log.SpeechStream"), so the parent
-# level alone is ignored and every 100 audio chunks / VAD event is printed 3x. Silence them explicitly.
-for _name in ("livekit.plugins.sarvam", "livekit.plugins.sarvam.log", "livekit.plugins.sarvam.log.SpeechStream", "livekit.plugins.soniox"):
-    logging.getLogger(_name).setLevel(logging.WARNING)
 
 # Agent Name registered on LiveKit Server
 AGENT_NAME = os.getenv("REAL_ESTATE_AGENT_NAME", "my-estate-finder-agent")
@@ -144,3 +140,20 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:3000")
 INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "")
 if not INTERNAL_SECRET:
     logger.warning("INTERNAL_SECRET is not set; backend calls will be rejected.")
+
+# ── Pipecat / telephony runtime ───────────────────────────────────────────────
+# Exotel media streams are 8 kHz 16-bit mono. STT/VAD run at 16 kHz inside the pipeline, TTS is asked for 8 kHz
+# directly so no extra resample happens on the way out.
+PIPELINE_IN_SAMPLE_RATE = int(os.getenv("PIPELINE_IN_SAMPLE_RATE", "16000"))
+PIPELINE_OUT_SAMPLE_RATE = int(os.getenv("PIPELINE_OUT_SAMPLE_RATE", "8000"))
+TTS_SAMPLE_RATE = int(os.getenv("TTS_SAMPLE_RATE", str(PIPELINE_OUT_SAMPLE_RATE)))
+
+# Hard cap on call length. At the limit the agent speaks its closing line (it does NOT cut the line mid-sentence).
+MAX_CALL_SECONDS = int(os.getenv("MAX_CALL_SECONDS", "200"))
+# Dead-air handling: after this many seconds of silence (nobody talking, no hold requested) ask "are you there?";
+# after MAX_SILENCE_PROMPTS unanswered prompts the call is ended.
+SILENCE_PROMPT_SECONDS = float(os.getenv("SILENCE_PROMPT_SECONDS", "8"))
+MAX_SILENCE_PROMPTS = int(os.getenv("MAX_SILENCE_PROMPTS", "2"))
+RECORD_CALLS = os.getenv("RECORD_CALLS", "1") == "1"
+# Extra wait after VAD reports silence before the caller's turn is considered finished (collects late STT words).
+USER_SPEECH_TIMEOUT = float(os.getenv("USER_SPEECH_TIMEOUT", "0.4"))
