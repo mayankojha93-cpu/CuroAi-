@@ -8,7 +8,7 @@ from livekit.agents import Agent, StopResponse
 from src.carrier_filter import classify_carrier_message
 from .prompts import get_step_instructions
 from .state import RealEstateState, RealEstateStep, RealEstateStep as _Step
-from .config import CHAT_CTX_MAX_ITEMS, FAST_TOOL_REPLY, FASTPATH_ENABLED, SHORTCUT_MAX_TOKENS
+from .config import CHAT_CTX_MAX_ITEMS, FAST_TOOL_REPLY, FASTPATH_ENABLED, SHORTCUT_MAX_TOKENS, BACKCHANNEL_IGNORE_WINDOW, TTS_SPEAKABLE
 from .fastpath import extract as _fastpath_extract
 from .tools import (
     classify_category,
@@ -38,6 +38,15 @@ _IVR_EXTRA = re.compile(
     r"\u092c\u0940\u092a|\u091f\u094b\u0928\s*\u0915\u0947\s*\u092c\u093e\u0926\s*(\u0938\u0902\u0926\u0947\u0931|\u092e\u0947\u0938\u0947\u091c)|"
     r"\u0921\u093e\u092f\u0932\s*\u0915\u093f\u092f\u093e\s*(\u0917\u092f\u093e|\u0939\u0941\u0906)\s*\u0928\u0902\u092c\u0930|"
     r"(?:\u0928\u0902\u092c\u0930|\u092b\u094b\u0928)\s+.*(?:\u0938\u094d\u0935\u093f\u091a\s*\u0911\u092b))",
+    re.I,
+)
+
+# Markers that ONLY a machine says. They win even when the same sentence also has human-sounding words
+# ("Hi, I'm not available right now, please leave a message after the beep" contains "I'm" and "my").
+_STRONG_VM_RE = re.compile(
+    r"(after\s+the\s+(tone|beep)|at\s+the\s+tone|leave\s+(a\s+|your\s+)*(message|voicemail)|record\s+your\s+message|"
+    r"voice\s*mail|mail\s*box|press\s+(star|hash|pound|\d)|please\s+(stay|hold)\s+on\s+the\s+line|"
+    r"(not\s+reachable|switched\s+off|out\s+of\s+coverage)|(beep|tone)\s+ke\s+baad)",
     re.I,
 )
 
@@ -118,14 +127,25 @@ def _soften_tts_phrase(s: str) -> str:
     # 1. Opening affirmations with trailing period -> comma pause
     s = re.sub(r'^(Achha|Theek hai|Haanji|Haan ji|Samajh gayi|Got it|Sure|Perfect|Noted|Understood|Alright|Right)\.\s*', r'\1, ', s, flags=re.I)
     # 2. Never allow '[Name] Sir' (e.g. 'Raja Sir' -> 'Raja')
-    s = re.sub(r'\b(?!Hello\b|Yes\b|No\b|Thank\b|Thanks\b|Right\b|Sure\b|Sorry\b|Please\b|Okay\b|Alright\b)([A-Z][a-z]+)\s+[Ss]ir\b', r'\1', s)
+    s = re.sub(r'\b(?!Hello\b|Yes\b|No\b|Thank\b|Thanks\b|Right\b|Sure\b|Sorry\b|Please\b|Okay\b|Alright\b|Perfect\b|Noted\b|Understood\b|Great\b|Bilkul\b|Achha\b|Haanji\b|Haan\b|Ji\b|Theek\b|Samajh\b|Certainly\b|Absolutely\b|Good\b|Hi\b|Fine\b|Waise\b|Chaliye\b|Toh\b)([A-Z][a-z]+)\s+[Ss]ir\b', r'\1', s)
     # 3. Mid-sentence honorific stops ("got it, Sir. And..." -> "got it, Sir... And...")
     s = re.sub(r'(,\s*Sir|\bSir|\bji)\.\s+([A-Z])', r'\1... \2', s)
     # 4. Exclamations to natural breathing pauses
     s = s.replace("!", "... ")
     # 5. Collapse accidental multiple spaces
     s = re.sub(r'[ \t]{2,}', ' ', s)
+    if TTS_SPEAKABLE:
+        s = _speakable(s)
     return s.strip()
+
+
+def _speakable(s: str) -> str:
+    """TTS reads "407" as "four hundred seven" and may mangle "BHK". Flat numbers are spoken digit by digit."""
+    s = re.sub(r"\bBHK\b", "B H K", s)
+    s = re.sub(r"\b(unit|flat|house|shop|office|plot|number)(\s+)(\d{3,5})\b",
+               lambda m: f"{m.group(1)}{m.group(2)}{' '.join(m.group(3))}", s, flags=re.I)
+    s = re.sub(r"(?<![\d.])(\d{3,5})(?=\s+on\s+\d)", lambda m: " ".join(m.group(1)), s)   # "407 on 4th floor"
+    return s
 
 
 logger = logging.getLogger("real-estate-agent")
@@ -808,6 +828,7 @@ class RealEstateAgent(Agent):
         # LATENCY: a new customer turn invalidates any unspoken fast reply left over from an
         # interrupted previous turn.
         self._re_state.direct_reply = None
+        self._re_state.pending_preface = None
 
         # Closing line is already being spoken: ignore anything the customer says now
         # (e.g. 'haan haan theek hai') so it cannot trigger a second reply.
@@ -815,8 +836,11 @@ class RealEstateAgent(Agent):
             raise StopResponse()
         text = (getattr(new_message, "text_content", None) or "").strip()
         kind = None
+        # Strong machine-only markers win even if the greeting also has human-sounding words.
+        if text and not self._re_state.is_interested and _STRONG_VM_RE.search(text):
+            kind = "voicemail"
         # Safety override: carrier detection runs before property qualification or human engagement
-        if not _HUMAN_CALLBACK_RE.search(text) and not self._re_state.is_interested:
+        if kind is None and not _HUMAN_CALLBACK_RE.search(text) and not self._re_state.is_interested:
             kind = classify_carrier_message(text)
             if not kind and self._re_state.step == _Step.INTRODUCTION:
                 if _IVR_EXTRA.search(text):
@@ -827,7 +851,7 @@ class RealEstateAgent(Agent):
                         kind = "voicemail"
                 else:
                     self._ivr_long_turns = 0
-        elif _HUMAN_CALLBACK_RE.search(text):
+        elif kind is None and _HUMAN_CALLBACK_RE.search(text):
             logger.info(f"🗣️ Human callback / personal busy pattern in customer utterance: '{text}' -> bypassing IVR filter")
         if kind:
             logger.warning(f"📵 Carrier announcement ({kind}) detected: '{text[:100]}'. Dropping call.")
@@ -892,17 +916,12 @@ class RealEstateAgent(Agent):
             en = state.reply_lang == "en"
             t_low = text.lower()
             if en:
-                if "automotive" in t_low:
-                    confirm = "Yes, it is an automotive call and I'm an AI agent calling on behalf of My Estate Finder."
-                elif "ai" in t_low:
+                if re.search(r"\bai\b", t_low):
                     confirm = "Yes, I'm an AI agent calling on behalf of My Estate Finder."
                 else:
                     confirm = "Yes, it is an automated call and I'm an AI agent calling on behalf of My Estate Finder."
             else:
-                if "automotive" in t_low:
-                    confirm = "Haanji, ye ek automotive call hai aur main My Estate Finder ki taraf se AI agent baat kar rahi hoon."
-                else:
-                    confirm = "Haanji, ye ek automated call hai aur main My Estate Finder ki taraf se AI agent baat kar rahi hoon."
+                confirm = "Haanji, ye ek automated call hai aur main My Estate Finder ki taraf se AI agent baat kar rahi hoon."
 
             followup = ""
             if state.step == RealEstateStep.INTRODUCTION:
@@ -967,8 +986,17 @@ class RealEstateAgent(Agent):
             state.greeting_acknowledged = True
             state.intent = _intro_int
             state.is_interested = True
-            cat = state.category or "residential"
-            state.category = cat
+            cat = state.category
+            if not cat:
+                # Category is not in the lead record: ask once instead of assuming residential
+                # (a commercial owner would otherwise be asked for BHK).
+                state.step = _Step.CATEGORY_SELECT
+                await self.sync_step()
+                self.speak_and_stop(
+                    "Great, Sir! Is it a residential or a commercial property?" if state.reply_lang == "en"
+                    else "Ji bilkul Sir! Ye residential property hai ya commercial?",
+                    allow_interruptions=True,
+                )
             if cat == "commercial":
                 state.step = _Step.COMMERCIAL_LEASE if _intro_int == "lease" else _Step.COMMERCIAL_SALE
             else:
@@ -985,7 +1013,7 @@ class RealEstateAgent(Agent):
         # A2: caller answered ambiguous "Haan" / "Yes" AFTER greeting was already acknowledged -> prompt to choose
         _prior_texts = [t.lower() for t in state.recent_user_texts[:-1]]
         _prior_refusal = any(bool(_DIRECT_NOT_INTERESTED.search(pt) or _CLEAR_REFUSAL_SHORT.match(pt)) for pt in _prior_texts[-2:])
-        if state.step == _Step.INTRODUCTION and state.greeting_acknowledged and _is_greeting_ack(text) and not _intro_int and not _has_query:
+        if state.step == _Step.INTRODUCTION and state.greeting_acknowledged and _is_greeting_ack(text) and not _intro_int and not _has_query and not state.refusal_confirm_asked:
             if _prior_refusal or state.is_interested is False:
                 logger.info(f"🛑 Follow-up affirmation '{text}' confirms prior refusal -> mark_not_interested & closing")
                 try:
@@ -1015,7 +1043,7 @@ class RealEstateAgent(Agent):
             _HUMAN_CALLBACK_RE.search(text)
             or re.search(r"\b(call\s*(me\s*)?(back|later)|later|busy|baad\s*mein|baad\s*me|shaam|kal|subah|driving|drive|meeting|hospital)\b", low_text)
         )
-        _already_interested = (state.is_interested is True) or (state.intent in ("sell", "rent", "lease"))
+        _already_interested = (state.is_interested is True) or (state.intent in ("sale", "sell", "rent", "lease"))
         _is_refusal_here = (
             not _is_callback_request
             and not _already_interested
@@ -1023,6 +1051,22 @@ class RealEstateAgent(Agent):
             and len(_tokens(text)) <= SHORTCUT_MAX_TOKENS + 3
             and (_is_bare_refusal(text) or bool(_CLEAR_REFUSAL_SHORT.match(text.strip())))
         )
+        if (
+            _is_refusal_here
+            and state.step == _Step.INTRODUCTION
+            and not state.refusal_confirm_asked
+            and not _CLEAR_REFUSAL_SHORT.match(text.strip())
+        ):
+            # A lone "nahi"/"no" can mean "didn't hear", "wrong person" or "not now". Ask ONE either/or question;
+            # a second bare refusal (or any clear refusal phrase) closes the call.
+            state.refusal_confirm_asked = True
+            logger.info(f"❓ Bare refusal at INTRODUCTION -> confirming once before closing: '{text}'")
+            self.speak_and_stop(
+                "No problem, Sir. Just checking, is it not for sale or rent, or is now just a bad time?"
+                if state.reply_lang == "en" else
+                "Theek hai Sir. Bas poochna tha, sell ya rent ka plan nahi hai, ya abhi bas time sahi nahi hai?",
+                allow_interruptions=True,
+            )
         if state.step in (_Step.INTRODUCTION, _Step.CATEGORY_SELECT) and _is_refusal_here:
             logger.info(f"🛑 Bare refusal at {state.step.value} -> mark_not_interested & closing (no LLM): '{text}'")
             try:
@@ -1163,6 +1207,9 @@ class RealEstateAgent(Agent):
                         _reask = _missing[0]["question_en"] if state.reply_lang == "en" else _missing[0]["question_hi"]
                         _kind = _missing[0]["id"]
                 elif _neutral:
+                    if BACKCHANNEL_IGNORE_WINDOW > 0 and (time.time() - state.last_agent_speech_end) < BACKCHANNEL_IGNORE_WINDOW:
+                        logger.info(f"🤫 Backchannel '{text}' overlapped the end of the agent's speech -> ignored")
+                        raise StopResponse()
                     _missing = state.get_missing_fields()
                     if _missing:
                         _kind = _missing[0]["id"]
@@ -1349,7 +1396,7 @@ class RealEstateAgent(Agent):
                         continue
                     # Check recent utterances (prior to current text)
                     for _prev_u in reversed(state.recent_user_texts[:-1] if len(state.recent_user_texts) > 1 else []):
-                        _bk = _fastpath_extract(_m_id, _prev_u)
+                        _bk = _fastpath_extract(_m_id, _prev_u, state=state, allow_bare=False)
                         if _bk:
                             logger.info(f"⚡ Backfilled {_m_id}={_bk} from recent speech '{_prev_u[:50]}'")
                             try:
@@ -1378,14 +1425,14 @@ class RealEstateAgent(Agent):
                                      and t not in {"hai", "hain", "sir", "ji", "haan", "ye", "yeh", "it", "is", "its", "a", "an", "space", "retail"}]
                             _fp_kw = {"commercial_type": _ct} if not _rest else None
                 else:
-                    _fp_kw = _fastpath_extract(_fp_field, text)
+                    _fp_kw = _fastpath_extract(_fp_field, text, state=state)
 
                 # If open field did not match, check other remaining missing fields (e.g. caller answered area first)
                 if not _fp_kw and len(_fp_missing) > 1:
                     for _other_item in _fp_missing[1:]:
                         _other_id = _other_item["id"]
                         if _other_id != "commercial_type":
-                            _other_kw = _fastpath_extract(_other_id, text)
+                            _other_kw = _fastpath_extract(_other_id, text, state=state, allow_bare=False)
                             if _other_kw:
                                 _fp_field = _other_id
                                 _fp_kw = _other_kw
@@ -1420,6 +1467,9 @@ class RealEstateAgent(Agent):
             reply = self._re_state.direct_reply
             if reply:
                 self._re_state.direct_reply = None
+                _pre, self._re_state.pending_preface = self._re_state.pending_preface, None
+                if _pre:
+                    reply = f"{_pre} {reply}"
                 logger.info(f"⚡ FAST_REPLY (2nd LLM call skipped): '{reply}'")
                 yield reply
                 return
@@ -1458,7 +1508,12 @@ class RealEstateAgent(Agent):
         full = "".join(_chunk_text(c) or "" for c in held)
         if saw_tool:
             if full.strip():
-                logger.info(f"🔇 Dropped LLM text that came with a tool call (avoids double question): {full.strip()[:140]!r}")
+                _pre = self._answer_preface(full)
+                if _pre:
+                    self._re_state.pending_preface = _pre
+                    logger.info(f"💬 Kept LLM answer to the caller's question as preface: {_pre!r}")
+                else:
+                    logger.info(f"🔇 Dropped LLM text that came with a tool call (avoids double question): {full.strip()[:140]!r}")
             return
         m = _INLINE_CALL_RE.search(full)
         if m or _TEXT_CALL_RE.match(full):
@@ -1474,6 +1529,24 @@ class RealEstateAgent(Agent):
         # No tool was called: LLM is speaking naturally (answering question, objection, or clarifying)
         for c in held:
             yield c
+
+    _QUESTION_WORDS_RE = re.compile(r"\b(kya|kitn[aei]|kaun|kahan|kyun|kyon|kaise|who|what|where|why|which|how|is|are|do|does|can)\b|\?")
+
+    def _answer_preface(self, text: str):
+        """When the LLM answered a caller QUESTION and also called a tool, the tool speaks the next canonical
+        question; keep the LLM's (short) answer so the question is not ignored. Never keeps a second question,
+        leaked tool text, or an acknowledgement when the caller did not ask anything."""
+        heard = (self._re_state.last_user_text or "").lower()
+        if not self._QUESTION_WORDS_RE.search(heard):
+            return None
+        t = _clean_leaks(text).strip()
+        if not t or "?" in t or _TEXT_CALL_RE.match(t):
+            return None
+        sents = re.split(r"(?<=[.!\u0964])\s+", t)
+        out = " ".join(sents[:2]).strip()
+        if len(out.split()) > 30:
+            out = sents[0].strip()
+        return out if 0 < len(out.split()) <= 30 else None
 
     async def _recover_text_tool_call(self, raw: str):
         """The LLM typed a tool call as text. Execute it safely and return the line to speak."""
