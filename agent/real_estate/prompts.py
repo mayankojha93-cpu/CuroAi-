@@ -530,8 +530,26 @@ MANDATORY RULES FOR THIS STEP:
 
         # Build a summary of already-captured fields to prevent re-asking them
         captured_summary = state.get_captured_summary() if hasattr(state, "get_captured_summary") else ""
+        captured_parts = []
+        if state.bhk_config:
+            captured_parts.append(f"- BHK Configuration is ALREADY CONFIRMED as '{state.bhk_config}'. DO NOT ask about BHK, bedrooms, or configuration again!")
+        if state.unit_number and state.floor_number:
+            captured_parts.append(f"- Unit and floor are ALREADY CONFIRMED (Unit '{state.unit_number}', Floor '{state.floor_number}'). DO NOT ask about unit or floor again!")
+        elif state.unit_number:
+            captured_parts.append(f"- Unit number is ALREADY CONFIRMED as '{state.unit_number}'. Ask ONLY for floor number if missing; NEVER re-ask unit number!")
+        elif state.floor_number:
+            captured_parts.append(f"- Floor number is ALREADY CONFIRMED as '{state.floor_number}'. Ask ONLY for unit number if missing; NEVER re-ask floor number!")
+        if state.approx_area_sqft:
+            captured_parts.append(f"- Super area is ALREADY CONFIRMED as {state.approx_area_sqft} sq ft. DO NOT ask about area again!")
+        if state.furnishing_status:
+            captured_parts.append(f"- Furnishing status is ALREADY CONFIRMED as '{state.furnishing_status}'. DO NOT ask about furnishing again!")
+        if state.expected_sale_price:
+            captured_parts.append(f"- Expected sale price is ALREADY CONFIRMED as '{state.expected_sale_price}'. DO NOT ask about price again!")
+        if state.expected_monthly_rent:
+            captured_parts.append(f"- Expected rent is ALREADY CONFIRMED as '{state.expected_monthly_rent}'. DO NOT ask about rent again!")
+
         captured_note = (
-            f"ALREADY CAPTURED — STRICTLY FORBIDDEN TO RE-ASK: [{captured_summary}]"
+            f"ALREADY CAPTURED — STRICTLY FORBIDDEN TO RE-ASK:\n[{captured_summary}]\n" + "\n".join(captured_parts)
             if captured_summary else ""
         )
 
