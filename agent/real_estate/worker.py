@@ -1433,7 +1433,7 @@ async def entrypoint(ctx: agents.JobContext):
 
     # 5. Safety ceiling
     async def call_duration_watchdog():
-        max_safety_seconds = float(os.getenv("CALL_MAX_DURATION_SECONDS", "900"))
+        max_safety_seconds = float(os.getenv("CALL_MAX_DURATION_SECONDS", "200"))
         while not state.hangup_started:
             await asyncio.sleep(5.0)
             if state.hangup_started:
