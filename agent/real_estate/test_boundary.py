@@ -44,7 +44,17 @@ def test_fastpath_values():
     assert F.extract("approx_area", "1200 sq ft") == {"approx_area_sqft": 1200.0}
     assert F.extract("furnishing", "semi furnished") == {"furnishing_status": "semi-furnished"}
     assert F.extract("sale_price", "50 lakh") == {"expected_sale_price": "50 lakh"}
+    assert F.extract("sale_price", "one crore") == {"expected_sale_price": "1 crore"}
+    assert F.extract("sale_price", "two crore") == {"expected_sale_price": "2 crore"}
+    assert F.extract("monthly_rent", "twenty thousand") == {"expected_monthly_rent": "20 thousand"}
+    assert F.extract("monthly_rent", "twenty five thousand") == {"expected_monthly_rent": "25 thousand"}
+    assert F.extract("bhk_config", "3 bed") == {"bhk_config": "3 BHK"}
     assert F.extract("unit_floor", "407 on 4th floor") == {"unit_number": "407", "floor_number": "4th"}
+    assert F.extract("unit_floor", "second floor and third unit") == {"unit_number": "3", "floor_number": "2nd"}
+    assert F.extract("unit_floor", "third unit second floor") == {"unit_number": "3", "floor_number": "2nd"}
+    assert F.extract("unit_floor", "unit 3 and second floor") == {"unit_number": "3", "floor_number": "2nd"}
+    assert F.extract("unit_floor", "3rd unit on 2nd floor") == {"unit_number": "3", "floor_number": "2nd"}
+    assert F.extract("unit_floor", "flat 302 on 4th floor") == {"unit_number": "302", "floor_number": "4th"}
 
 def test_fastpath_defers_to_llm():
     assert F.extract("furnishing", "furnished nahi hai") is None or F.extract("furnishing", "furnished nahi hai") == {"furnishing_status": "unfurnished"}
