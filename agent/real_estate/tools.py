@@ -3,7 +3,12 @@ import random
 import logging
 import asyncio
 from typing import Optional, List, Dict, Any, Union, Tuple
-from livekit.agents import function_tool
+def function_tool(func=None, **kwargs):
+    if func is not None:
+        return func
+    def decorator(f):
+        return f
+    return decorator
 from .state import RealEstateState, RealEstateStep
 from .prompts import get_step_instructions, get_closing_text
 from .config import FAST_TOOL_REPLY, AGENT_PERSONA_NAME
@@ -146,15 +151,15 @@ _POSITIVE_OR_ANSWER_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 2. Explicit negative intent phrases (clearly refusing to sell / rent / talk)
+# 2. Explicit negative intent phrases (clearly refusing to sell / rent / talk).
+#    SOFT answers ("nothing", "no plans right now", "not right now", "kuch nahi", "abhi nahi") are deliberately NOT
+#    here: they mean "maybe later", the LLM offers one callback before anything ends the call (see prompts.py).
 _EXPLICIT_REFUSAL_PHRASES = re.compile(
     r"\b("
-    r"not\s+(?:interested|looking|selling|renting|leasing|wanting|planning|for\s+sale|at\s+all|right\s+now|at\s+the\s+moment|at\s+present|currently)"
+    r"not\s+(?:interested|looking|selling|renting|leasing|wanting|planning|for\s+sale|at\s+all)"
     r"|(?:un|not\s+)interested"
     r"|don'?t\s+want\s+to\s+(?:sell|rent|lease|talk|proceed)"
     r"|no\s+thanks?|no\s+thank\s+you"
-    r"|nothing(?:\s+(?:at\s+the\s+moment|right\s+now|as\s+of\s+now|currently))?"
-    r"|no\s+plans?(?:\s+(?:right\s+now|at\s+the\s+moment|as\s+of\s+now|currently))?"
     r"|already\s+(?:sold|rented|showed|given|let\s*out|disposed)"
     r"|don'?t\s+have\s+(?:any\s+)?(?:other\s+)?property(?:\s+to\s+(?:sell|rent|lease))?"
     r"|no\s+property(?:\s+to\s+(?:sell|rent|lease))?"
@@ -171,16 +176,13 @@ _EXPLICIT_REFUSAL_PHRASES = re.compile(
     r"|kripya\s*call\s*na\s*kar(?:ein|na)?"
     r"|(?:kat|kaat)\s*(?:karo|do|kijiye|kar\s*do)|call\s*(?:kaat|kat)\s*(?:do|karo)|cut\s*the\s*call|phone\s*(?:rakho|kaato|kaat\s*do)"
     r"|(?:kyun|kyon|why)\s*(?:bechn[aei]|den[aei]|chahenge|chahein)"
-    r"|abhi\s*(?:kuch|kuchh)?\s*(?:nahi|nhi)"
-    r"|abhi\s*(?:koi\s*)?plan\s*(?:nahi|nhi)"
-    r"|kuch\s*(?:nahi|nhi)"
     r"|never\s*call|stop\s*calling"
     r")\b",
     re.IGNORECASE,
 )
 
 _EXPLICIT_REFUSAL_DEV = re.compile(
-    r"(नहीं\s*(बेचना|देना|करना|चाहिए|बताना)|(बेचना|देना)\s*नहीं|इंटरेस्टेड\s*नहीं|रुचि\s*नहीं|कॉल\s*मत\s*करो|फोन\s*मत|कॉल\s*काटो|काट\s*दो|कुछ\s*नहीं|अभी\s*नहीं)"
+    r"(नहीं\s*(बेचना|देना|करना|चाहिए|बताना)|(बेचना|देना)\s*नहीं|इंटरेस्टेड\s*नहीं|रुचि\s*नहीं|कॉल\s*मत\s*करो|फोन\s*मत|कॉल\s*काटो|काट\s*दो)"
 )
 
 # 3. Clean bare refusal tokens: when the entire utterance is just "no", "nahi ji", "no thanks"
@@ -190,7 +192,7 @@ _BARE_REFUSAL_WORDS = {
 }
 _REFUSAL_FILL_WORDS = {
     "ji", "jee", "sir", "madam", "bhai", "bhaiya", "thanks", "thank", "you",
-    "shukriya", "dhanyawad", "re", "baba", "ab", "abhi", "kuch", "kuchh",
+    "shukriya", "dhanyawad", "re", "baba",
     "bas", "toh", "to", "bhi", "yar", "yaar", "जी", "सर", "मैडम", "भैया", "भाई", "बस", "तो", "भी"
 }
 
