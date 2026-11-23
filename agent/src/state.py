@@ -126,6 +126,7 @@ class ConversationState:
         if message and message.strip():
             self.transcript.append({
                 "role": role,
+                "text": message.strip(),
                 "message": message.strip(),
                 "timestamp": time.time(),
             })
