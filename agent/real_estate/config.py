@@ -102,7 +102,7 @@ FAST_TOOL_REPLY = os.getenv("FAST_TOOL_REPLY", "1") == "1"
 # LATENCY_LOG=1 : per-turn EOU / LLM TTFT / TTS TTFB breakdown in the logs.
 LATENCY_LOG = os.getenv("LATENCY_LOG", "1") == "1"
 # VAD silence needed to end a speech segment (0.28s gives snappy turn transitions without premature cut-off).
-VAD_MIN_SILENCE = float(os.getenv("VAD_MIN_SILENCE", "0.35"))
+VAD_MIN_SILENCE = float(os.getenv("VAD_MIN_SILENCE", "0.45"))
 # OpenRouter provider ordering: routes through ultra-fast LPU/hardware providers (Groq/Cerebras) first
 # with automatic fallback, dropping TTFT from ~2.5s down to 300-500ms. Set "none" to disable.
 _prov_raw = os.getenv("OPENROUTER_PROVIDER_ORDER", "Groq,Cerebras,Together,DeepInfra")
@@ -149,11 +149,14 @@ PIPELINE_OUT_SAMPLE_RATE = int(os.getenv("PIPELINE_OUT_SAMPLE_RATE", "8000"))
 TTS_SAMPLE_RATE = int(os.getenv("TTS_SAMPLE_RATE", str(PIPELINE_OUT_SAMPLE_RATE)))
 
 # Hard cap on call length. At the limit the agent speaks its closing line (it does NOT cut the line mid-sentence).
-MAX_CALL_SECONDS = int(os.getenv("MAX_CALL_SECONDS", "200"))
+MAX_CALL_SECONDS = int(os.getenv("MAX_CALL_SECONDS", "300"))
+# If the cap is reached while the intake is almost finished (<= 3 fields left) the call gets this many extra
+# seconds once, so a good lead is not cut off one question before the end.
+MAX_CALL_EXTENSION_SECONDS = int(os.getenv("MAX_CALL_EXTENSION_SECONDS", "40"))
 # Dead-air handling: after this many seconds of silence (nobody talking, no hold requested) ask "are you there?";
 # after MAX_SILENCE_PROMPTS unanswered prompts the call is ended.
 SILENCE_PROMPT_SECONDS = float(os.getenv("SILENCE_PROMPT_SECONDS", "8"))
-MAX_SILENCE_PROMPTS = int(os.getenv("MAX_SILENCE_PROMPTS", "2"))
+MAX_SILENCE_PROMPTS = int(os.getenv("MAX_SILENCE_PROMPTS", "3"))
 RECORD_CALLS = os.getenv("RECORD_CALLS", "1") == "1"
 # Extra wait after VAD reports silence before the caller's turn is considered finished (collects late STT words).
-USER_SPEECH_TIMEOUT = float(os.getenv("USER_SPEECH_TIMEOUT", "0.4"))
+USER_SPEECH_TIMEOUT = float(os.getenv("USER_SPEECH_TIMEOUT", "0.6"))
