@@ -438,6 +438,7 @@ export interface AirtelCampaignReportRow {
   final_disposition: string;
   conclusion_date: string;
   recording: string;
+  transcript?: string;
 }
 
 export interface RealEstateCampaignReportRow {
