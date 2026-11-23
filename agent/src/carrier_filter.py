@@ -63,9 +63,6 @@ _VOICEMAIL_ENGLISH_PATTERNS = [
     r"press\s*(pound|hash)\s*when you are finished",
     r"please leave your name and (contact\s+|phone\s+)?number",
     r"the person you are trying to reach is (currently\s+)?(unavailable|not available)",
-    r"\b(which|who)\s+is\s+(currently\s+)?(not\s+available|unavailable)\b",
-    r"\b(is\s+currently\s+(not\s+available|unavailable))\b",
-    r"\b(is\s+not\s+available)\b",
     r"\b(at|after)\s+the\s+tone\b",
     r"\bafter\s+the\s+beep\b",
     r"the person you are calling cannot answer (right now)?",
@@ -197,8 +194,7 @@ _AUTOMATED_SYSTEM_PATTERNS = [
     r"please check the number and try again",
     r"(?:number|phone|mobile|subscriber|grahak)\s+.*(?:is\s+)?(?:currently\s+)?(?:switched\s*off|स्विच(?:्ड)?\s*ऑफ)",
     r"(?:switched\s*off|स्विच(?:्ड)?\s*ऑफ)\s*(?:hai|aa\s*raha|bata\s*raha)",
-    r"not reachable",
-    r"can\s*not be reached",
+    r"(number|subscriber|customer|phone|mobile|grahak)\b[^.]{0,50}\b(not\s+reachable|can\s*not\s+be\s+reached|cannot\s+be\s+reached)",
     r"pahunch se bahar",
     r"पहुंच से बाहर",
     r"पहुँच से बाहर",
@@ -268,3 +264,4 @@ def classify_carrier_message(text: Optional[str]) -> Optional[str]:
 def is_ivr_or_voicemail(text: Optional[str]) -> bool:
     """Returns True if the text represents any IVR, Voicemail, Answering Machine, or Automated carrier message."""
     return classify_carrier_message(text) is not None
+    

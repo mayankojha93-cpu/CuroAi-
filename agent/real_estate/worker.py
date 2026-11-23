@@ -49,6 +49,7 @@ from .config import (
     LLM_MODEL,
     LLM_PROVIDER,
     MAX_CALL_SECONDS,
+    MAX_CALL_EXTENSION_SECONDS,
     MAX_SILENCE_PROMPTS,
     OPENROUTER_API_KEY,
     OPENROUTER_PROVIDER_ORDER,
@@ -586,6 +587,22 @@ async def run_real_estate_pipeline(
                 await asyncio.sleep(MAX_CALL_SECONDS)
                 if state.closing_spoken or state.hangup_started:
                     return
+                # Intake almost finished: give it one short extension instead of cutting off the last question.
+                try:
+                    _left = len(state.get_missing_fields())
+                    _in_intake = state.step.value in ("RESIDENTIAL_SALE", "RESIDENTIAL_LEASE", "COMMERCIAL_SALE", "COMMERCIAL_LEASE")
+                except Exception:
+                    _left, _in_intake = 99, False
+                if _in_intake and 0 < _left <= 3 and MAX_CALL_EXTENSION_SECONDS > 0:
+                    logger.info(f"⏰ [Watchdog] {_left} field(s) left at the limit -> extending by {MAX_CALL_EXTENSION_SECONDS}s")
+                    await asyncio.sleep(MAX_CALL_EXTENSION_SECONDS)
+                    if state.closing_spoken or state.hangup_started:
+                        return
+                # Never cut the caller / agent off mid-sentence: wait (max 10s) for the line to go quiet.
+                _w = 0.0
+                while tracker.speaking and _w < 10.0:
+                    await asyncio.sleep(0.5)
+                    _w += 0.5
                 logger.info(f"⏰ [Watchdog] Call {state.call_id} reached {MAX_CALL_SECONDS}s limit -> closing.")
                 tools._speak_closing_and_hangup()
             except asyncio.CancelledError:
@@ -612,7 +629,11 @@ async def run_real_estate_pipeline(
                         await _hangup()
                         return
                     en = state.reply_lang == "en"
-                    line = "Hello Sir, are you still there?" if en else "Hello Sir, kya aap line par hain?"
+                    if prompts == 1:
+                        line = "Hello Sir, are you still there?" if en else "Hello Sir, kya aap line par hain?"
+                    else:
+                        line = ("Sir, if this is a bad time, I can call you back later." if en
+                                else "Sir, agar abhi busy hain toh main baad mein call kar sakti hoon.")
                     log_dialogue("assistant", line)
                     session.say(line)
                     state.last_activity_time = now

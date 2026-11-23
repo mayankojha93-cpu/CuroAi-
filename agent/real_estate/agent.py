@@ -74,6 +74,7 @@ _HUMAN_CALLBACK_RE = re.compile(
     r"meeting|baad\s*mein|baad\s*me|call\s*(?:me\s*)?(?:back|later)|later|busy\s*hai|busy\s*hain|"
     r"shaam\s*ko|kal\s*call|subah|abhi\s*nahi|driving|drive\s*kar|office\s*mein|hospital|"
     r"main|maine|mujhe|mere\s*paas|meri|mera|hum|hamara|hamare|apna|apni|"
+    r"he|she|they|him|his|her|unka|unki|unke|inka|inki|woh|wo|vo|available\s+nahi|abhi\s+available|bahar\s+gaye|bahar\s+gaya|ghar\s+par\s+nahi|"
     r"i\s*am|i'?m|we\s*are|my|me\b|"
     r"kya\s*(?:kaam|baat|chahiye)|batao|bataiye|boliye|kaun\s*bol|sun\s*raha|bol\s*raha|bolo|"
     r"time\s*(?:nahi|nhi|kam)|samay\s*nahi"
@@ -84,6 +85,46 @@ _HUMAN_CALLBACK_RE = re.compile(
 _IVR_LONG_WORDS = 30
 # While the IVR drop timer is running, only a SHORT reply counts as a human (long text is more IVR).
 _IVR_HUMAN_MAX_WORDS = 15
+
+
+# Soniox / Sarvam STT often return Hindi in Devanagari, but the busy / hold / third-party regexes are Latin.
+# Append Latin equivalents of the key words so those checks work for both scripts.
+_DEV_WORD_HINTS = {
+    "रुको": "ruko", "रुकिए": "ruko", "रुकिये": "ruko", "रुकना": "rukna", "होल्ड": "hold", "वेट": "wait",
+    "मीटिंग": "meeting", "ड्राइविंग": "driving", "व्यस्त": "busy", "बिज़ी": "busy", "बिजी": "busy",
+    "शाम": "shaam", "सुबह": "subah", "कल": "kal", "पापा": "papa", "पिताजी": "father", "मम्मी": "mummy",
+    "भैया": "bhaiya", "साहब": "sir", "सर": "sir", "मैडम": "madam", "मैं": "main", "मैंने": "maine",
+    "मुझे": "mujhe", "मेरा": "mera", "मेरी": "meri", "हम": "hum", "वो": "wo", "वह": "wo", "उनका": "unka",
+    "उनकी": "unki", "उनके": "unke", "अस्पताल": "hospital", "ऑफिस": "office", "बाद": "baad",
+}
+_DEV_PHRASE_HINTS = {
+    "एक मिनट": "ek minute", "एक सेकंड": "ek second", "एक सेकेंड": "ek second", "थोड़ा रुको": "thoda ruko",
+    "देख रहा हूँ": "dekh raha hoon", "देख रहा हूं": "dekh raha hoon", "देख रही हूँ": "dekh rahi hoon",
+    "देखता हूँ": "dekhta hoon", "देखता हूं": "dekhta hoon", "देखती हूँ": "dekhti hoon", "देखने दो": "dekhne do",
+    "बाद में": "baad mein", "बाद मे": "baad me", "अभी नहीं": "abhi nahi", "उपलब्ध नहीं": "available nahi",
+    "अवेलेबल नहीं": "available nahi", "बाहर गए": "bahar gaye", "बाहर गये": "bahar gaye", "घर पर नहीं": "ghar par nahi",
+    "कॉल बैक": "call back", "बाद में कॉल": "baad mein call",
+}
+
+
+def _augment_devanagari(text: str) -> str:
+    """Returns text unchanged for Latin input; for Devanagari appends a romanised copy + keyword hints."""
+    if not text or not re.search(r"[\u0900-\u097F]", text):
+        return text
+    extra = []
+    try:
+        from src.transliteration import romanize_hindi
+        extra.append(romanize_hindi(text))
+    except Exception:
+        pass
+    for k, v in _DEV_PHRASE_HINTS.items():
+        if k in text:
+            extra.append(v)
+    toks = set(re.split(r"[\s,.?!\u0964]+", text))
+    for k, v in _DEV_WORD_HINTS.items():
+        if k in toks:
+            extra.append(v)
+    return (text + " " + " ".join(e for e in extra if e)).strip()
 
 
 def _ivr_long_turn_counts(text: str) -> bool:
@@ -903,12 +944,13 @@ class RealEstateTurnHandler:
         if self._re_state.closing_spoken:
             raise StopResponse()
         text = (text or "").strip()
+        text_x = _augment_devanagari(text)   # Latin hints for Devanagari speech (regex checks below)
         kind = None
         # Strong machine-only markers win even if the greeting also has human-sounding words.
         if text and not self._re_state.is_interested and _STRONG_VM_RE.search(text):
             kind = "voicemail"
         # Safety override: carrier detection runs before property qualification or human engagement
-        if kind is None and not _HUMAN_CALLBACK_RE.search(text) and not self._re_state.is_interested:
+        if kind is None and not _HUMAN_CALLBACK_RE.search(text_x) and not self._re_state.is_interested:
             kind = classify_carrier_message(text)
             if not kind and self._re_state.step == _Step.INTRODUCTION:
                 if _IVR_EXTRA.search(text):
@@ -919,7 +961,7 @@ class RealEstateTurnHandler:
                         kind = "voicemail"
                 else:
                     self._ivr_long_turns = 0
-        elif kind is None and _HUMAN_CALLBACK_RE.search(text):
+        elif kind is None and _HUMAN_CALLBACK_RE.search(text_x):
             logger.info(f"🗣️ Human callback / personal busy pattern in customer utterance: '{text}' -> bypassing IVR filter")
         if kind:
             logger.warning(f"📵 Carrier announcement ({kind}) detected: '{text[:100]}'. Dropping call.")
@@ -942,14 +984,14 @@ class RealEstateTurnHandler:
             r"ruko|rukna|ruk\s*jao|zara\s*ruko|thoda\s*(?:ruko|wait|time|samay)|2\s*min|do\s*minute|"
             r"let\s*me\s*(?:check|see|find)|just\s*(?:checking|a\s*(?:moment|sec(?:ond)?|min(?:ute)?))|give\s*me\s*a\s*moment|"
             r"dekh(?:ta|te|ti)\s*(?:hoon|hu|hain)?|dekh\s*ke\s*(?:bata(?:ta|te|ti)|bol(?:ta|te|ti))|dekhne\s*do|dekh\s*raha\s*hoon|"
-            r"paper[s]?\s*dekh[a-z]*|document[s]?\s*dekh[a-z]*|registry\s*dekh[a-z]*|check\s*kar[a-z]*|"
-            r"bata\s*(?:raha|rahi|rahe)\s*hoon"
+            r"paper[s]?\s*dekh[a-z]*|document[s]?\s*dekh[a-z]*|registry\s*dekh[a-z]*|check\s*kar[a-z]*"
             r")\b",
             re.IGNORECASE,
         )
-        if _HOLD_RE.search(low_text):
+        # Only a SHORT utterance counts as a hold request; a long sentence containing 'check kar' / 'wait' is an answer.
+        if len(_tokens(text)) <= 10 and _HOLD_RE.search(text_x.lower()):
             logger.info(f"⏳ Hold requested by customer: '{text}'. Granting grace period.")
-            state.hold_until = time.time() + 35.0
+            state.hold_until = time.time() + 45.0
             state.last_activity_time = time.time()
         else:
             state.hold_until = 0.0
@@ -1113,8 +1155,8 @@ class RealEstateTurnHandler:
         # B-alt: a BARE refusal ("nahi", "no sir", "nahi ji") or one of a handful of unambiguous short phrases
         # ("not interested", "nahi bechna") closes the call without an LLM round trip.
         _is_callback_request = bool(
-            _HUMAN_CALLBACK_RE.search(text)
-            or re.search(r"\b(call\s*(me\s*)?(back|later)|later|busy|baad\s*mein|baad\s*me|shaam|kal|subah|driving|drive|meeting|hospital)\b", low_text)
+            _HUMAN_CALLBACK_RE.search(text_x)
+            or re.search(r"\b(call\s*(me\s*)?(back|later)|later|busy|baad\s*mein|baad\s*me|shaam|kal|subah|driving|drive|meeting|hospital)\b", text_x.lower())
         )
         _already_interested = (state.is_interested is True) or (state.intent in ("sale", "sell", "rent", "lease"))
         _is_refusal_here = (
@@ -1469,7 +1511,7 @@ class RealEstateTurnHandler:
                     if _m_id == "commercial_type":
                         continue
                     # Check recent utterances (prior to current text)
-                    for _prev_u in reversed(state.recent_user_texts[:-1] if len(state.recent_user_texts) > 1 else []):
+                    for _prev_u in reversed(state.recent_user_texts[-2:-1]):   # only the previous turn (older turns can belong to another question)
                         _bk = _fastpath_extract(_m_id, _prev_u, state=state, allow_bare=False)
                         if _bk:
                             logger.info(f"⚡ Backfilled {_m_id}={_bk} from recent speech '{_prev_u[:50]}'")
