@@ -92,6 +92,17 @@ class ConversationState:
         self.hangup_started: bool = False  # clean_hangup runs at most once
         self.recording_url: Optional[str] = None
 
+        # Telephony & Pipecat runtime state
+        self.callee_connected: bool = False
+        self.answered_at: Optional[float] = None
+        self.last_activity_time: float = time.time()
+        self.last_agent_speech_end: float = time.time()
+        self.hold_until: float = 0.0
+        self.direct_reply: Optional[str] = None
+        self.pending_preface: Optional[str] = None
+        self.closing_spoken: bool = False
+        self.ivr_detected: bool = False
+
     def update_reply_lang(self, text: Optional[str]) -> bool:
         """Follow the customer's language. Can switch only once:
         - If initial is English ('en') and customer speaks Hinglish/Hindi, switch to Hinglish once.

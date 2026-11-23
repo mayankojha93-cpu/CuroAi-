@@ -439,22 +439,39 @@ export class CallService {
 
       await query("UPDATE calls SET status = 'dialing', call_status = 'dialing' WHERE id = $1", [callId]);
 
+      let streamBase = env.EXOTEL_STREAM_URL || '';
+      if (!streamBase) {
+        if (env.PUBLIC_WEBHOOK_URL) {
+          streamBase = env.PUBLIC_WEBHOOK_URL.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
+        } else {
+          streamBase = 'wss://zoo-gig-voluntary-marina.trycloudflare.com';
+        }
+      }
+      streamBase = streamBase.replace(/\/+$/, '');
+      const streamUrl = `${streamBase}/api/exotel/media-stream/${encodeURIComponent(callId)}?callId=${encodeURIComponent(callId)}&phone=${encodeURIComponent(dialablePhone)}&pipeline=telecom&sample-rate=16000`;
+
       logger.info(
-        { callId, roomName, phone: dialablePhone, callerId, customer: customer.name },
-        'Updated call status to dialing. Dispatching Exotel WSS audio stream call to Pipecat agent...'
+        { callId, roomName, phone: dialablePhone, callerId, customer: customer.name, streamUrl },
+        `📞 [DIALING CARRIER] Dials: ${dialablePhone} via Exotel WSS Audio Stream to Pipecat Airtel Agent`
       );
+
       const exotelCall = await initiateExotelWssCall({
         callId,
         phone: dialablePhone,
         callerId,
+        streamUrl,
       });
 
-      logger.info({ callId, exotelCallSid: exotelCall.sid }, 'Exotel WSS call dispatched to carrier!');
       await query(`UPDATE calls SET exotel_call_sid = $1, sip_call_id = $2 WHERE id = $3`, [
         exotelCall.sid,
         exotelCall.sid,
         callId,
       ]);
+
+      logger.info(
+        { callId, exotelCallSid: exotelCall.sid, phone: dialablePhone },
+        `📞 [RINGING] Exotel WSS carrier accepted call leg | Call SID: ${exotelCall.sid}`
+      );
     } catch (err: any) {
       let mappedStatus: 'NO_ANSWER' | 'BUSY' | 'FAILED' = 'FAILED';
       const failureReason = err.message || 'Call placement failed';
@@ -557,6 +574,49 @@ export class CallService {
     );
 
     logger.info({ customerId, disposition: canonical, attempt: cust.total_attempts, maxAttempts, retryDelayMinutes }, 'Scheduled next retry attempt for customer');
+  }
+
+  /**
+   * Incrementally appends a dialogue turn to PostgreSQL in real time.
+   * Eliminates data loss if the agent crashes, process is terminated, or network drops.
+   */
+  async appendTurn(callId: string, turn: { role: string; text: string; timestamp?: string }) {
+    const cleanText = (turn.text || '').trim();
+    if (!cleanText) return;
+    const role = turn.role === 'customer' || turn.role === 'user' ? 'customer' : 'assistant';
+    const turnObj = {
+      role,
+      text: cleanText,
+      timestamp: turn.timestamp || new Date().toISOString(),
+    };
+
+    logger.info(
+      { callId, role, text: cleanText },
+      `💬 [DIALOGUE] [${role === 'assistant' ? '🤖 Priya' : '🗣️ Customer'}]: "${cleanText}"`
+    );
+
+    // 1. Atomic JSONB append to calls table and mark answered
+    await query(
+      `UPDATE calls
+       SET transcript = COALESCE(transcript, '[]'::jsonb) || $1::jsonb,
+           status = CASE WHEN status IN ('initiated', 'dialing') THEN 'answered' ELSE status END,
+           call_status = CASE WHEN call_status IN ('initiated', 'dialing') THEN 'answered' ELSE call_status END,
+           answered_at = COALESCE(answered_at, NOW())
+       WHERE id = $2`,
+      [JSON.stringify([turnObj]), callId]
+    );
+
+    // 2. Also ensure call_outcomes records the turn incrementally
+    await query(
+      `INSERT INTO call_outcomes (
+         call_id, final_disposition, transcript
+       )
+       VALUES ($1, 'In Progress', $2::jsonb)
+       ON CONFLICT (call_id)
+       DO UPDATE SET
+         transcript = COALESCE(call_outcomes.transcript, '[]'::jsonb) || $2::jsonb`,
+      [callId, JSON.stringify([turnObj])]
+    );
   }
 
   /**

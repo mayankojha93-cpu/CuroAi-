@@ -2,7 +2,13 @@ import re
 import time
 import asyncio
 import logging
-from livekit.agents import function_tool
+
+def function_tool(func=None, **kwargs):
+    if func is not None:
+        return func
+    def decorator(f):
+        return f
+    return decorator
 
 from src.config import DIRECT_SPEAK
 from src.state import Step, ConversationState
@@ -103,9 +109,11 @@ class AgentTools:
     def __init__(self, state: ConversationState, timing_tracker: dict = None):
         self.state = state
         self.timing_tracker = timing_tracker if timing_tracker is not None else {}
-        self.agent = None  # set in worker.py after AirtelAgent is created
+        self.agent = None  # set in worker.py after PipecatSession is created
         # Set in worker.py: on_terminal(speech_handle) -> starts the hangup once the closing line is spoken.
         self.on_terminal = None
+        self.hangup_func = None
+        self.log_dialogue_func = None
         self._force_direct = False
 
     # ───────────────────────── helpers ─────────────────────────
@@ -127,27 +135,39 @@ class AgentTools:
     def _say(self, text: str):
         """Tool return value for a FIXED line the customer must hear.
 
-        DIRECT_SPEAK on  : speak it right now through TTS and return None. LiveKit treats a None tool result as
-                           "no reply needed", so the LLM is NOT called a second time just to read the line back
-                           (that second call was ~2s of every tool turn). The line is added to the chat history,
-                           logged and transcribed like any other assistant message.
-                           If the call is at a terminal step, the hangup is started from here, tied to the
-                           speech handle, so the phone call ends right after the closing line.
-        DIRECT_SPEAK off : (or if speaking fails) the original behaviour: tell the LLM to say it word for word.
+        DIRECT_SPEAK on  : speak it right now through TTS and return None.
+                           The line is added to the chat history, logged and transcribed.
+                           If the call is at a terminal step, the hangup is started from here.
+        DIRECT_SPEAK off : tell the LLM to say it word for word.
         """
+        self.state.direct_reply = text
         if (DIRECT_SPEAK or self._force_direct) and self.agent is not None:
             try:
                 session = self.agent.session
                 terminal = self.state.is_terminal()
-                # closing lines must not be cut off by "ok / thank you" from the customer
-                handle = session.say(text, allow_interruptions=not terminal, add_to_chat_ctx=True)
-                if terminal and self.on_terminal is not None:
+                if terminal:
+                    self.state.closing_spoken = True
                     self.state.closing_line = text
+                # closing lines must not be cut off by "ok / thank you" from the customer
+                handle = session.say(text, allow_interruptions=not terminal)
+                if terminal and self.on_terminal is not None:
                     self.on_terminal(handle)
+                elif terminal and self.hangup_func is not None:
+                    asyncio.create_task(self._hangup_after_playout(handle))
                 return None
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"Direct speak failed ({e}); falling back to LLM-spoken line")
         return f"Say exactly this to the customer, nothing else: {text}"
+
+    async def _hangup_after_playout(self, handle):
+        try:
+            if hasattr(handle, "wait_for_playout"):
+                await handle.wait_for_playout()
+        except Exception:
+            pass
+        await asyncio.sleep(0.8)
+        if self.hangup_func:
+            await self.hangup_func()
 
     async def _post_outcome(self):
         """Post outcome. Runs in a thread (requests is blocking and would freeze live audio).
@@ -192,8 +212,8 @@ class AgentTools:
 
     def _last_customer_text(self) -> str:
         for item in reversed(self.state.transcript):
-            if item.get("role") == "customer":
-                return item.get("message", "")
+            if item.get("role") in ("customer", "user"):
+                return item.get("message") or item.get("text") or ""
         return ""
 
     def _identity_question(self) -> str:
@@ -312,7 +332,7 @@ class AgentTools:
         if isinstance(res, str) and self.agent is not None:  # direct speak failed: say it ourselves
             try:
                 line = res.split(": ", 1)[-1]
-                self.agent.session.say(line, allow_interruptions=not s.is_terminal(), add_to_chat_ctx=True)
+                self.agent.session.say(line, allow_interruptions=not s.is_terminal())
             except Exception as e:  # noqa: BLE001
                 logger.error(f"Could not speak date confirmation: {e}")
         return True
@@ -480,6 +500,19 @@ class AgentTools:
                     return await self._accept_date(iso, spoken)
             return await self._decline_offer()
 
+        # An unclear answer is never treated as consent: ask again
+        last = self._last_customer_text()
+        if not date_text and not is_clear_yes(last):
+            n = self._strike("pickup_unclear")
+            logger.warning(f"[Tool] set_pickup REJECTED (unclear consent). strike={n}, last='{last}'")
+            if n <= 2:
+                when = self._offered_spoken()
+                return self._say(self._t(
+                    f"माफ़ कीजिए, आपकी बात स्पष्ट नहीं हो पाई। क्या मैं {when} को पिकअप शेड्यूल कर दूँ?",
+                    f"Sorry, that was not clear. May I schedule the pickup for {when}?",
+                ))
+            return await self._decline_offer()
+
         s.pickup_accepted = True
         if date_text:
             iso, spoken, err = self._parse_date(date_text)
@@ -550,6 +583,18 @@ class AgentTools:
             return "Not allowed yet: pickup date is not confirmed. Continue the current step."
         if not confirmed and not new_address:
             return self._say(self._t("कृपया अपना सही पता बताइए।", "Please tell me your correct address."))
+
+        # An unclear answer is never treated as consent
+        if confirmed:
+            last = self._last_customer_text()
+            if not is_clear_yes(last):
+                n = self._strike("address_unclear")
+                logger.warning(f"[Tool] confirm_address REJECTED (unclear consent). strike={n}, last='{last}'")
+                if n <= 2:
+                    return self._say(self._t(
+                        f"माफ़ कीजिए, क्या आपका रजिस्टर्ड पता '{s.address}' सही है?",
+                        f"Sorry, could you please confirm, is your registered address '{s.address}' correct?",
+                    ))
 
         s.registered_address_confirmed = confirmed
         if not confirmed:
@@ -841,13 +886,14 @@ class AgentTools:
 
     @function_tool
     async def escalate_to_121(self, reason: str = "") -> str:
-        """Complaint, dispute, or any question outside the script (fees, policy, refunds).
-        Never answer these yourself."""
+        """Complaint, dispute, question about fees, penalties, charges, refunds, policies,
+        or customer requested to speak to a human representative. Never invent answers: record and route to 121."""
         self._notify_tool_activity()
-        logger.info(f"[Tool] escalate_to_121: reason='{reason}'")
+        clean_reason = _clean(reason) or "Query outside script / policy or fee question"
+        logger.info(f"[Tool] escalate_to_121: reason='{clean_reason}'")
         self.state.escalation_required = True
         return await self._finish(
-            Step.ESCALATED, "NEEDS_AIRTEL_SUPPORT", f"Escalated to 121: {reason}",
+            Step.ESCALATED, "NEEDS_AIRTEL_SUPPORT", f"Escalated to 121: {clean_reason}",
             self._t(
                 f"इसके लिए कृपया एयरटेल 121 पर या एयरटेल Thanks ऐप पर संपर्क करें। {CLOSING_HI}",
                 f"For this, please contact Airtel 121 or the Airtel Thanks app. {CLOSING_EN}",

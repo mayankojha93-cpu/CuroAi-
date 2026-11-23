@@ -1,248 +1,219 @@
-import json
-import time
-import asyncio
-from typing import Optional
-from datetime import datetime
-from livekit import agents
-from livekit.agents import AgentSession, Agent, AgentServer, TurnHandlingOptions
-from livekit.plugins import sarvam, soniox, silero, openai
-try:
-    import numpy.fft  # Preload to prevent event loop blocking during audio STFT
-except ImportError:
-    pass
+"""Pipecat Voice AI worker for Airtel Wi-Fi Router Return Pickup agent (Priya / Kavitha).
 
+Telephony pipeline running directly over Exotel WSS stream:
+  Exotel media-stream -> FastAPIWebsocketTransport -> Silero VAD -> Soniox STT
+  -> ContextAggregator -> TurnGate (AirtelTurnHandler) -> LLM (Groq / OpenRouter)
+  -> LLMOutputGuard -> SpeechInjector -> Sarvam TTS -> FastAPIWebsocketTransport output.
+"""
+import asyncio
+import re
+import statistics
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+import aiohttp
+import requests
+
+from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.frames.frames import EndFrame
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.runner import PipelineRunner
+from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair, LLMUserAggregatorParams
+from pipecat.processors.audio.vad_processor import VADProcessor
+from pipecat.services.groq.llm import GroqLLMService
+from pipecat.services.openrouter.llm import OpenRouterLLMService
+from pipecat.services.sarvam.tts import SarvamHttpTTSService
+from pipecat.services.soniox.stt import SonioxSTTService
+from pipecat.transcriptions.language import Language
+from pipecat.transports.base_transport import BaseTransport
+from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
+
+from src.agent import AirtelTurnHandler
 from src.config import (
-    logger,
-    AGENT_NAME,
+    BACKEND_URL,
+    GROQ_API_KEY,
+    GROQ_MODEL,
+    INTERNAL_SECRET,
+    LLM_FALLBACK,
+    LLM_MAX_TOKENS,
     LLM_MODEL,
+    LLM_PROVIDER,
+    MAX_CALL_SECONDS,
+    MAX_SILENCE_PROMPTS,
+    OPENROUTER_API_KEY,
+    OPENROUTER_PROVIDER_ORDER,
+    OPENROUTER_PROVIDER_SORT,
+    PERSONA_NAME,
+    PIPELINE_IN_SAMPLE_RATE,
+    PIPELINE_OUT_SAMPLE_RATE,
+    RECORD_CALLS,
+    SARVAM_API_KEY,
+    SILENCE_PROMPT_SECONDS,
     SONIOX_API_KEY,
     SONIOX_MODEL,
-    SARVAM_API_KEY,
-    OPENROUTER_API_KEY,
-    OPENROUTER_PROVIDER_SORT,
-    PREEMPTIVE_GENERATION,
-    ENDPOINT_MIN_DELAY,
-    ENDPOINT_MAX_DELAY,
     STT_LANGUAGE,
-    TTS_LANGUAGE_HI,
-    TTS_LANGUAGE_EN,
     TTS_MODEL,
-    TTS_SPEAKER,
-    PERSONA_NAME,
     TTS_PACE,
+    TTS_SAMPLE_RATE,
+    TTS_SPEAKER_EN,
+    TTS_SPEAKER_HI,
     TTS_TEMPERATURE,
+    USER_SPEECH_TIMEOUT,
+    VAD_MIN_SILENCE,
+    logger,
 )
-from src.state import Step, ConversationState
 from src.lang import L
-from src.agent import AirtelAgent
-from src.carrier_filter import classify_carrier_message
-from src.transliteration import romanize_hindi
-from src.tools import AgentTools
-from src.utils import silence_watchdog, clean_hangup, RoomAudioRecorder
-from src.tools.api import post_outcome_to_backend, register_inbound_call_to_backend
+from src.pipecat_adapter import (
+    LLMOutputGuard,
+    PipecatSession,
+    PlayoutTracker,
+    SpeechInjector,
+    TurnGate,
+)
+from src.prompts import get_step_instructions
+from src.state import ConversationState, Step
+from src.tools.agent_tools import AgentTools
+from src.tools.api import post_outcome_to_backend
+from src.utils.audio_recorder import CallRecorder
 
-server = AgentServer()
+_UUID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
 
-
-def _load_vad():
-    return silero.VAD.load(
-        sample_rate=16000,
-        min_speech_duration=0.05,
-        min_silence_duration=0.45,
-        activation_threshold=0.45,
-    )
-
-
-def prewarm(proc: agents.JobProcess):
-    """Runs once when the worker process starts (NOT per call): the Silero VAD model is loaded here, so a new
-    call does not pay ~1-3 seconds of model loading before the greeting."""
-    try:
-        proc.userdata["vad"] = _load_vad()
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"VAD prewarm failed, will load per call: {e}")
+_backend_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="airtel-backend")
 
 
-server.setup_fnc = prewarm
+def _resolve_call_id(metadata: Optional[dict] = None) -> str:
+    metadata = metadata or {}
+    cid = str(metadata.get("callId") or metadata.get("call_id") or "").strip()
+    if cid:
+        return cid
+    return ""
 
 
-def _fetch_call_info_sync(call_id: str):
-    import requests
-    from src.config import BACKEND_URL, INTERNAL_SECRET
-    return requests.get(
-        f"{BACKEND_URL}/internal/calls/{call_id}",
-        headers={"X-Internal-Secret": INTERNAL_SECRET},
-        timeout=2.0,
-    )
+def _build_greeting(state: ConversationState) -> str:
+    customer_name = state.customer_name or "Customer"
+    is_inbound = state.direction == "inbound"
+    _n = customer_name.lower().strip()
+    is_generic = not _n or any(t in _n for t in ["customer", "subscriber", "user", "airtel", "client"])
+
+    if is_inbound:
+        if state.reply_lang == "en":
+            if not is_generic:
+                return f"Hello {customer_name}, welcome to Airtel. I am {PERSONA_NAME}. Have you called regarding your Wi-Fi router pickup or account?"
+            return f"Hello, welcome to Airtel. I am {PERSONA_NAME}. How may I assist you today?"
+        else:
+            if not is_generic:
+                return f"नमस्ते {customer_name} जी, एयरटेल में आपका स्वागत है। मैं {PERSONA_NAME} बोल रही हूँ। क्या आपने अपने वाई-फाई राउटर पिकअप या अकाउंट के संबंध में कॉल किया है?"
+            return f"नमस्ते, एयरटेल में आपका स्वागत है। मैं {PERSONA_NAME} बोल रही हूँ। मैं आपकी क्या मदद कर सकती हूँ?"
+    else:
+        if state.reply_lang == "en":
+            who = "the registered Airtel Wi-Fi customer" if is_generic else f"{customer_name}"
+            return f"Hello, I am {PERSONA_NAME} calling from Airtel. Am I speaking with {who}?"
+        else:
+            who = "एयरटेल वाई-फाई कनेक्शन के रजिस्टर्ड ग्राहक" if is_generic else f"{customer_name} जी"
+            return f"नमस्ते, मैं {PERSONA_NAME} बोल रही हूँ, एयरटेल की तरफ से। क्या मैं {who} से बात कर रही हूँ?"
 
 
-@server.rtc_session(agent_name=AGENT_NAME)
-async def entrypoint(ctx: agents.JobContext):
-    logger.info(f"Connecting to room: {ctx.room.name} (Job ID: {ctx.job.id})")
-    await ctx.connect()
-
-    # 1. Parse job metadata provided during dispatch
-    metadata = {}
-    if ctx.job.metadata:
+def _stt_languages() -> List[Language]:
+    langs: List[Language] = []
+    for code in (STT_LANGUAGE or "hi,en").replace(" ", "").split(","):
         try:
-            metadata = json.loads(ctx.job.metadata)
-            logger.info(f"Loaded job metadata: {metadata}")
-        except Exception as e:
-            logger.warning(f"Could not parse job metadata: {e}")
+            langs.append(Language(code.split("-")[0].lower()))
+        except ValueError:
+            logger.warning(f"Unknown STT language hint '{code}' ignored")
+    return langs or [Language.HI, Language.EN]
 
-    call_id = metadata.get("callId", "")
-    if not call_id and ctx.room.name.startswith("call-"):
-        call_id = ctx.room.name[5:]
 
-    customer_name = metadata.get("customerName", "Customer")
-    address = metadata.get("address", "Flat 402, Sunshine Heights, Koramangala 4th Block, Bengaluru")
-    phone = metadata.get("phone", "")
+def _build_llm_services() -> list:
+    services = []
+    provider = LLM_PROVIDER
+    use_groq = bool(GROQ_API_KEY) and provider in ("auto", "groq")
+    use_or = bool(OPENROUTER_API_KEY) and (provider in ("auto", "openrouter") or (use_groq and LLM_FALLBACK))
+
+    if use_groq:
+        services.append(
+            GroqLLMService(
+                api_key=GROQ_API_KEY,
+                settings=GroqLLMService.Settings(model=GROQ_MODEL, temperature=0.05, max_tokens=LLM_MAX_TOKENS),
+            )
+        )
+    if use_or:
+        if OPENROUTER_PROVIDER_ORDER:
+            prov: Any = {"order": OPENROUTER_PROVIDER_ORDER, "allow_fallbacks": True}
+        elif OPENROUTER_PROVIDER_SORT and OPENROUTER_PROVIDER_SORT.lower() != "none":
+            prov = {"sort": OPENROUTER_PROVIDER_SORT}
+        else:
+            prov = None
+        or_kwargs: Dict[str, Any] = dict(model=LLM_MODEL, temperature=0.05, max_tokens=LLM_MAX_TOKENS)
+        if prov:
+            or_kwargs["provider"] = prov
+        services.append(
+            OpenRouterLLMService(api_key=OPENROUTER_API_KEY, settings=OpenRouterLLMService.Settings(**or_kwargs))
+        )
+    if not services:
+        raise RuntimeError("No LLM configured: set GROQ_API_KEY and/or OPENROUTER_API_KEY")
+    if not LLM_FALLBACK:
+        services = services[:1]
+    return services
+
+
+def _wrap_llm(services: list):
+    if len(services) == 1:
+        return services[0]
+    from pipecat.pipeline.service_switcher import ServiceSwitcher, ServiceSwitcherStrategyFailover
+
+    return ServiceSwitcher(services=services, strategy_type=ServiceSwitcherStrategyFailover)
+
+
+def _build_tts(session: aiohttp.ClientSession, lang: str) -> SarvamHttpTTSService:
+    settings_kwargs: Dict[str, Any] = dict(
+        voice=TTS_SPEAKER_EN if lang == "en" else TTS_SPEAKER_HI,
+        model=TTS_MODEL,
+        language=Language.EN_IN if lang == "en" else Language.HI_IN,
+        pace=TTS_PACE,
+    )
+    if "v3" in TTS_MODEL:
+        settings_kwargs["temperature"] = TTS_TEMPERATURE
+    return SarvamHttpTTSService(
+        api_key=SARVAM_API_KEY,
+        aiohttp_session=session,
+        sample_rate=TTS_SAMPLE_RATE,
+        settings=SarvamHttpTTSService.Settings(**settings_kwargs),
+    )
+
+
+async def run_airtel_pipeline(
+    transport: BaseTransport,
+    call_id: Optional[str] = None,
+    phone: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+):
+    metadata = metadata or {}
+    resolved_call_id = call_id or _resolve_call_id(metadata=metadata)
+    resolved_phone = phone or metadata.get("phone", "")
+    customer_name = metadata.get("customerName") or metadata.get("name") or "Customer"
+    address = metadata.get("address") or metadata.get("propertyLocation") or "Delhi, 110011, burari, sant nagar"
     raw_lang = (metadata.get("preferredLanguage") or metadata.get("language") or "hi").strip().lower()
     language = "en" if raw_lang in ("en", "english", "en-in") else "hi"
-    account_no = metadata.get("accountNo", "")
-    subs_del_no = metadata.get("subsDelNo", "")
-    service_end_date = metadata.get("serviceEndDate", "")
+    account_no = metadata.get("accountNo") or metadata.get("account_no", "")
+    subs_del_no = metadata.get("subsDelNo") or metadata.get("subs_del_no", "")
+    service_end_date = metadata.get("serviceEndDate") or metadata.get("service_end_date", "")
     r_date = metadata.get("rDate") or metadata.get("r_date", "")
+    direction = metadata.get("direction", "outbound")
     attempt_number = int(metadata.get("attemptNumber", 1))
 
-    # Detect inbound call direction (from metadata or room prefix)
-    direction = metadata.get("direction", "outbound")
-    if ctx.room.name.startswith("inbound-"):
-        direction = "inbound"
-    elif ctx.room.name.startswith("call-"):
-        direction = "outbound"
-
-    # SPEED: the backend lookup (outbound, data missing from metadata) runs in the background WHILE the
-    # STT / LLM / TTS clients are being built below. It used to block the greeting for up to 3 seconds.
-    info_task = None
-    if direction == "outbound" and call_id and (not phone or customer_name == "Customer"):
-        info_task = asyncio.create_task(asyncio.to_thread(_fetch_call_info_sync, call_id))
-
-    # 2. Speech and audio pipeline (does not depend on the customer data)
-    # Support Hindi, English, and Hinglish code-switching with Language Identification
-    stt_hints = ["hi", "en"]
-
-    stt = soniox.STT(
-        api_key=SONIOX_API_KEY,
-        params=soniox.STTOptions(
-            model=SONIOX_MODEL,
-            language_hints=stt_hints,
-            language_hints_strict=False,
-            enable_language_identification=True,
-            enable_speaker_diarization=False,
-        ),
-    )
-    logger.info(f"🎯 Soniox STT initialized (model={SONIOX_MODEL}, hints={stt_hints}, lang_id=True)")
-
-    vad = ctx.proc.userdata.get("vad") if getattr(ctx, "proc", None) else None
-    if vad is None:
-        vad = await asyncio.to_thread(_load_vad)  # prewarm missing: load off the event loop
-
-    llm_extra = {}
-    if OPENROUTER_PROVIDER_SORT:
-        # Ask OpenRouter for the fastest host of this model (fallbacks stay enabled by default).
-        llm_extra["extra_body"] = {"provider": {"sort": OPENROUTER_PROVIDER_SORT}}
-    llm = openai.LLM(
-        model=LLM_MODEL,
-        base_url="https://openrouter.ai/api/v1",
-        api_key=OPENROUTER_API_KEY,
-        temperature=0.15,
-        parallel_tool_calls=False,
-        max_completion_tokens=150,
-        **llm_extra,
-    )
-
-    initial_tts_lang = TTS_LANGUAGE_EN if language == "en" else TTS_LANGUAGE_HI
-    tts = sarvam.TTS(
-        target_language_code=initial_tts_lang,
-        model=TTS_MODEL,
-        speaker=TTS_SPEAKER,
-        pace=TTS_PACE,
-        temperature=TTS_TEMPERATURE,
-        api_key=SARVAM_API_KEY,
-    )
-
-    def _set_tts_language(lang: str):
-        """Customer switched language: switch the voice's language too, so English sentences are pronounced
-        as English (and Hindi as Hindi)."""
-        code = TTS_LANGUAGE_EN if lang == "en" else TTS_LANGUAGE_HI
-        try:
-            tts.update_options(
-                model=TTS_MODEL,
-                speaker=TTS_SPEAKER,
-                target_language_code=code,
-                pace=TTS_PACE,
-                temperature=TTS_TEMPERATURE,
-            )
-            logger.info(f"TTS language -> {code}")
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"TTS update_options({code}) failed: {e}")
-
-    # Collect the backend lookup (it has been running in parallel with the setup above)
-    if info_task is not None:
-        try:
-            c_res = await asyncio.wait_for(info_task, timeout=2.5)
-            if c_res.status_code == 200:
-                c_data = c_res.json().get("call") or {}
-                customer_name = c_data.get("customer_name") or customer_name
-                phone = c_data.get("customer_phone") or phone
-                address = c_data.get("customer_address") or address
-                language = c_data.get("customer_language") or language
-                subs_del_no = c_data.get("subs_del_no") or subs_del_no
-                account_no = c_data.get("account_no") or account_no
-                logger.info(f"Loaded call details from backend for {call_id}: Customer={customer_name}, Phone={phone}")
-        except Exception as e:
-            logger.warning(f"Could not load call details from backend for {call_id}: {e}")
-
-    if direction == "inbound":
-        logger.info(f"Detected INBOUND call in room {ctx.room.name}. Registering session...")
-        # Wait for the real SIP caller: the dispatch rule fires on join, but remote_participants can
-        # still be empty at this instant. Inbound SIP identities look like "sip_<number>" (NOT "phone-").
-        sip_participant = None
-        try:
-            sip_participant = await asyncio.wait_for(ctx.wait_for_participant(), timeout=15.0)
-        except Exception as e:
-            logger.warning(f"No SIP participant found within 15s: {e}")
-
-        incoming_phone = phone
-        sip_call_id = ""
-        if sip_participant is not None:
-            attrs = getattr(sip_participant, "attributes", None) or {}
-            ident = (sip_participant.identity or "")
-            for prefix in ("phone-", "sip_", "sip:"):
-                if ident.startswith(prefix):
-                    ident = ident[len(prefix):]
-                    break
-            incoming_phone = attrs.get("sip.phoneNumber") or ident or phone
-            sip_call_id = attrs.get("sip.callID", "") or ""
-        logger.info(f"Inbound caller number: {incoming_phone or 'withheld/unknown'}")
-
-        # requests is blocking -> run in a thread so live audio is never frozen
-        inbound_data = await asyncio.to_thread(
-            register_inbound_call_to_backend, ctx.room.name, incoming_phone, sip_call_id
-        )
-        if inbound_data:
-            call_info = inbound_data.get("call") or {}
-            cust_info = inbound_data.get("customer") or {}
-            call_id = call_info.get("id", call_id)
-            phone = incoming_phone
-            if cust_info:
-                customer_name = cust_info.get("name") or customer_name
-                phone = cust_info.get("phone") or incoming_phone
-                db_address = cust_info.get("address") or ""
-                if db_address and db_address != "Pending address verification":
-                    address = db_address
-                account_no = cust_info.get("account_no") or account_no
-                subs_del_no = cust_info.get("subs_del_no") or subs_del_no
-                service_end_date = str(cust_info.get("service_end_date") or "")
-                r_date = str(cust_info.get("r_date") or "")
-        else:
-            logger.error("Inbound call could NOT be registered with backend; outcome will not be saved.")
-
-    # 3. Initialize Conversation State with lead info & call direction
     state = ConversationState(
-        call_id=call_id,
+        call_id=resolved_call_id,
         customer_name=customer_name,
-        phone=phone,
+        phone=resolved_phone,
         address=address,
         language=language,
         account_no=account_no,
@@ -253,453 +224,237 @@ async def entrypoint(ctx: agents.JobContext):
         direction=direction,
     )
 
-    recorder = RoomAudioRecorder(call_id=call_id) if call_id else None
-
-    # Timing metrics and silence watchdog tracking
-    timing_tracker = {
-        "stt_final": 0.0,
-        "last_activity_time": time.time(),
-        "is_agent_speaking": False,
-        "provider_filler_pending": False,  # True while waiting to inject "One moment please"
-        "provider_filler_task": None,      # Asyncio task for the filler timeout
-        "session_closed": False,           # True once the customer/session is gone: no timer may speak or save FAILED
-    }
-
-    # 4. Agent and Tools Setup
-    tools_instance = AgentTools(state, timing_tracker)
-    agent = AirtelAgent(state, tools_instance)
-    tools_instance.agent = agent
-    agent.on_language_change = _set_tts_language
-
-    turn_opts = {"preemptive_generation": {"enabled": PREEMPTIVE_GENERATION}}
-    endpointing_opts = {}
-    if ENDPOINT_MIN_DELAY is not None:
-        endpointing_opts["min_delay"] = ENDPOINT_MIN_DELAY
-    if ENDPOINT_MAX_DELAY is not None:
-        endpointing_opts["max_delay"] = ENDPOINT_MAX_DELAY
-    if endpointing_opts:
-        turn_opts["endpointing"] = endpointing_opts
-
-    session = AgentSession(
-        stt=stt,
-        vad=vad,
-        llm=llm,
-        tts=tts,
-        allow_interruptions=True,
-        max_tool_steps=1,
-        # Preemptive generation only pre-computes the LLM reply; nothing is spoken and no tool runs until the turn
-        # is authorized, so the carrier-announcement filter (on_user_turn_completed) still blocks those turns.
-        turn_handling=TurnHandlingOptions(**turn_opts),
-    )
-
-    watchdog_task = None
-
-    def _cancel_timers():
-        """Stop every background timer that could still speak or overwrite the outcome."""
-        timing_tracker["provider_filler_pending"] = False
-        task = timing_tracker.get("provider_filler_task")
-        if task and not task.done():
-            task.cancel()
-        if watchdog_task and not watchdog_task.done():
-            watchdog_task.cancel()
-
-    async def _save_outcome(force: bool = False):
-        """Blocking HTTP save in a thread. The backend save is an idempotent upsert, so re-posting is safe."""
-        if not state.call_id:
-            return
-        if state.outcome_posted and not force:
-            return
+    def _post_turn(role: str, text: str, ts: str):
         try:
-            if recorder:
-                rec_url = await recorder.stop()
-                if rec_url:
-                    state.recording_url = rec_url
-            if await asyncio.to_thread(post_outcome_to_backend, state):
-                state.outcome_posted = True
-        except Exception as e:
-            logger.error(f"Outcome save failed: {e}")
+            requests.post(
+                f"{BACKEND_URL}/internal/calls/{resolved_call_id}/turn",
+                headers={"X-Internal-Secret": INTERNAL_SECRET},
+                json={"role": role, "text": text, "timestamp": ts},
+                timeout=3.0,
+            )
+        except Exception as ex:
+            logger.debug(f"Incremental turn save note: {ex}")
 
-    def _hangup_after(speech):
-        """The closing line has been queued ('... for any other help dial 121, thank you'): hang up as soon as it
-        has been spoken. Called by AgentTools._say for every terminal step."""
-        if state.hangup_started:
+    def log_dialogue(role: str, text: str):
+        clean = (text or "").strip()
+        if not clean:
             return
-        state.is_completed = True
-        _cancel_timers()
-        logger.info(f"Closing line queued at terminal step {state.step.value}. Call will end after it is spoken.")
-        asyncio.create_task(clean_hangup(ctx, session, state, speech=speech))
+        is_agent = role in ("assistant", "agent")
+        now_str = datetime.now().strftime("%H:%M:%S")
+        prefix = f"[{now_str}] 🤖 [Agent ({PERSONA_NAME})]:" if is_agent else f"[{now_str}] 🗣️ [Customer]:"
+        logger.info(f"{prefix} {clean}")
+        state.add_transcript("assistant" if is_agent else "customer", clean)
+        if resolved_call_id:
+            _backend_pool.submit(_post_turn, "assistant" if is_agent else "customer", clean, datetime.now().isoformat())
 
-    tools_instance.on_terminal = _hangup_after
+    timing_tracker: Dict[str, Any] = {"last_activity_time": time.time()}
+    tools = AgentTools(state, timing_tracker)
+    tools.log_dialogue_func = log_dialogue
 
-    ivr_drop_task: Optional[asyncio.Task] = None
+    recorder: Optional[CallRecorder] = None
+    if RECORD_CALLS and resolved_call_id:
+        recorder = CallRecorder(resolved_call_id, sample_rate=PIPELINE_IN_SAMPLE_RATE)
 
-    def _drop_ivr_immediately(kind: str, text: str):
-        nonlocal ivr_drop_task
-        if state.is_completed:
-            return
-        if ivr_drop_task and not ivr_drop_task.done():
-            return
+    async with aiohttp.ClientSession() as aiohttp_session:
+        vad = VADProcessor(
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=VAD_MIN_SILENCE))
+        )
+        stt = SonioxSTTService(
+            api_key=SONIOX_API_KEY,
+            settings=SonioxSTTService.Settings(
+                model=SONIOX_MODEL,
+                language_hints=_stt_languages(),
+                enable_language_identification=True,
+            ),
+        )
+        llm_services = _build_llm_services()
+        llm = _wrap_llm(llm_services)
+        tts = _build_tts(aiohttp_session, state.reply_lang)
 
-        async def _do_drop():
+        context = LLMContext(messages=[{"role": "system", "content": get_step_instructions(state)}])
+        user_agg, assistant_agg = LLMContextAggregatorPair(
+            context,
+            user_params=LLMUserAggregatorParams(
+                user_turn_strategies=UserTurnStrategies(
+                    stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=USER_SPEECH_TIMEOUT)]
+                ),
+            ),
+        )
+
+        injector = SpeechInjector()
+        tracker = PlayoutTracker(state)
+        session = PipecatSession(state, tools, context, injector, tracker, log_dialogue)
+        tools.agent = session
+        handler = AirtelTurnHandler(state, tools, session)
+        handler.on_language_change = session.set_reply_language
+        gate = TurnGate(state, handler, context, log_dialogue)
+        guard = LLMOutputGuard(state, handler, log_dialogue)
+        session.guard = guard
+
+        all_tools = [
+            tools.confirm_identity, tools.set_pickup, tools.set_pickup_date, tools.record_willing_no_date,
+            tools.schedule_callback, tools.confirm_address, tools.record_device_issue, tools.record_refusal,
+            tools.record_temporarily_unavailable, tools.record_recharge, tools.escalate_to_121,
+            tools.record_shifted, tools.record_already_picked_up, tools.record_already_returned,
+            tools.record_still_using_device, tools.record_do_not_call, tools.record_language_barrier,
+        ]
+        for svc in llm_services:
+            session.register_tools_on(svc, all_tools)
+        await session.update_tools(tools.tools_for_step(state.step))
+
+        processors = [
+            transport.input(),
+            vad,
+            stt,
+            user_agg,
+            gate,
+            llm,
+            guard,
+            injector,
+            tts,
+            transport.output(),
+        ]
+        if recorder:
+            processors.append(recorder.processor)
+        processors += [tracker, assistant_agg]
+
+        task = PipelineTask(
+            Pipeline(processors),
+            params=PipelineParams(
+                audio_in_sample_rate=PIPELINE_IN_SAMPLE_RATE,
+                audio_out_sample_rate=PIPELINE_OUT_SAMPLE_RATE,
+            ),
+        )
+        session.task = task
+
+        async def _hangup():
+            if state.hangup_started:
+                return
+            state.hangup_started = True
+            logger.info("📞 [Airtel] Hanging up (EndFrame queued).")
+            await task.queue_frame(EndFrame())
+
+        tools.hangup_func = _hangup
+
+        @transport.event_handler("on_client_disconnected")
+        async def _on_disconnect(_transport, _ws):
+            logger.info("🔌 Caller side closed the stream -> cancelling Airtel pipeline")
+            state.hangup_started = True
+            await task.cancel()
+
+        greeting = _build_greeting(state)
+
+        @task.event_handler("on_pipeline_started")
+        async def _on_started(_task, _frame):
+            session.start()
+            state.callee_connected = True
+            state.answered_at = time.time()
+            state.last_activity_time = time.time()
+            log_dialogue("assistant", greeting)
+            session.say(greeting, allow_interruptions=False)
+
+        async def _max_duration_watchdog():
             try:
-                logger.warning(f"📵 IVR / Voicemail detected ({kind}): \"{text.strip()[:120]}\". Dropping call immediately from agent side.")
-                state.is_completed = True
-                state.final_disposition = "Voicemail or IVR Detected"
-                state.customer_note = f"Voicemail or IVR Detected ({kind}): {text.strip()[:120]}"
-                state.transition_to(Step.TERMINATED)
-                _cancel_timers()
-                try:
-                    session.interrupt(force=True)
-                except Exception:
-                    pass
-                await clean_hangup(ctx, session, state)
+                await asyncio.sleep(MAX_CALL_SECONDS)
+                if state.closing_spoken or state.hangup_started:
+                    return
+                _w = 0.0
+                while tracker.speaking and _w < 10.0:
+                    await asyncio.sleep(0.5)
+                    _w += 0.5
+                logger.info(f"⏰ [Watchdog] Airtel Call {state.call_id} reached {MAX_CALL_SECONDS}s limit -> closing.")
+                tools._say(tools._closing())
+                await _hangup()
             except asyncio.CancelledError:
                 pass
-            except Exception as e:
-                logger.warning(f"Error in IVR drop task: {e}")
 
-        ivr_drop_task = asyncio.create_task(_do_drop())
-
-    # Transcripts & Metrics Hooks
-    @session.on("user_input_transcribed")
-    def on_user_transcribed(ev):
-        # In livekit-agents 1.8+, the transcript is in 'transcript', with fallback to 'text'
-        raw_text = getattr(ev, "transcript", None) or getattr(ev, "text", "")
-        is_final = getattr(ev, "is_final", True)
-        confidence = getattr(ev, "confidence", 1.0) or 1.0
-
-        # Automated carrier / IVR / voicemail announcements are NOT the customer.
-        # Once detected, drop the call immediately and set disposition to 'Voicemail or IVR Detected'.
-        carrier_kind = classify_carrier_message(raw_text)
-        if carrier_kind:
-            logger.warning(f"📵 Carrier IVR / Voicemail announcement ({carrier_kind}) detected: \"{raw_text.strip()[:120]}\"")
-            if is_final:
-                state.add_transcript("system", f"[carrier announcement: {carrier_kind}] {raw_text.strip()}")
-            _drop_ivr_immediately(carrier_kind, raw_text)
-            return
-
-        timing_tracker["last_activity_time"] = time.time()
-
-        if is_final:
-            # STT failure: empty text or very low confidence (< 0.3) — per spec, ask to repeat up to 2x
-            if not raw_text or not raw_text.strip() or confidence < 0.3:
-                state.stt_retry_count += 1
-                logger.warning(f"⚠️ STT failure (attempt {state.stt_retry_count}/2): empty or low-confidence transcript")
-                if state.stt_retry_count <= 2:
-                    asyncio.create_task(
-                        session.say(
-                            L(state, "माफ़ कीजिए, मैं समझ नहीं पाई। क्या आप दोबारा बोल सकते हैं?",
-                              "Sorry, I could not understand. Could you please say that again?"),
-                            allow_interruptions=True,
-                        )
-                    )
-                else:
-                    # After 2 retries, apologise and route to 121 per spec
-                    state.is_completed = True
-                    state.final_disposition = "FAILED"
-                    state.customer_note = "STT failed after 2 retries. Routed to Airtel 121."
-                    state.transition_to(Step.TERMINATED)
-                    logger.error("❌ STT failed after 2 retries. Closing call, routing to 121.")
-
-                    async def _stt_giveup():
-                        speech = None
-                        try:
-                            speech = session.say(
-                                L(state,
-                                  "माफ़ कीजिए, आपकी आवाज़ साफ़ नहीं आ रही है। कृपया एयरटेल 121 पर संपर्क करें। धन्यवाद।",
-                                  "Sorry, your voice is not clear. For any other help, please dial 121. Thank you."),
-                                allow_interruptions=False,
-                            )
-                        except Exception:
-                            pass
-                        await clean_hangup(ctx, session, state, speech=speech)
-
-                    asyncio.create_task(_stt_giveup())
-                return
-
-            clean_text = raw_text.strip()
-            romanized_text = romanize_hindi(clean_text)
-            timing_tracker["stt_final"] = time.time()
-            state.stt_retry_count = 0  # Reset on successful transcription
-            logger.info(f"🗣️ [Customer]: \"{romanized_text}\"")
-            print(f"\n\033[1;32m[{datetime.now().strftime('%H:%M:%S')}] 🗣️ [Customer]:\033[0m \033[1;37m{romanized_text}\033[0m\n", flush=True)
-            state.add_transcript("customer", romanized_text)
-            state.silence_count = 0
-
-            # Follow the customer's language as early as possible (before the LLM reply is generated)
-            if state.update_reply_lang(clean_text):
-                logger.info(f"🌐 Reply language -> {state.reply_lang}")
-                _set_tts_language(state.reply_lang)
-
-            # Provider timeout: start a 3-second filler timer (spec: LLM/TTS/STT > ~3s → "One moment please")
-            if not timing_tracker["provider_filler_pending"] and not state.is_completed:
-                timing_tracker["provider_filler_pending"] = True
-                timing_tracker["_provider_filler_retry"] = timing_tracker.get("_provider_filler_retry", 0)
-
-                async def _provider_timeout_filler():
-                    while (
-                        timing_tracker.get("provider_filler_pending")
-                        and not state.is_completed
-                        and not timing_tracker.get("session_closed")
-                    ):
-                        await asyncio.sleep(3.2)
-                        if (
-                            not timing_tracker.get("provider_filler_pending")
-                            or state.is_completed
-                            or timing_tracker.get("session_closed")
-                        ):
-                            return
-                        agent_st = getattr(session, "agent_state", "idle")
-                        if agent_st in ("speaking", "thinking") or state.is_terminal():
-                            timing_tracker["provider_filler_pending"] = False
-                            return
-
-                        retry = timing_tracker.get("_provider_filler_retry", 0) + 1
-                        timing_tracker["_provider_filler_retry"] = retry
-                        if retry == 1:
-                            filler = L(state, "एक पल रुकिए।", "One moment please.")
-                            logger.warning("⚠️ Provider timeout >3s. Playing 'One moment please' filler.")
-                            timing_tracker["last_activity_time"] = time.time()
-                            try:
-                                await session.say(filler, allow_interruptions=False)
-                                timing_tracker["last_activity_time"] = time.time()
-                            except Exception:
-                                pass
-                        else:
-                            # Second timeout → apologise and route to 121 per spec
-                            if timing_tracker.get("session_closed"):
-                                return  # customer already hung up: that is DISCONNECTED, not a provider failure
-                            logger.error("❌ Provider timeout after filler retry. Routing to 121.")
-                            state.is_completed = True
-                            state.final_disposition = "FAILED"
-                            state.customer_note = "Provider (LLM/TTS/STT) timed out twice. Routed to Airtel 121."
-                            state.transition_to(Step.TERMINATED)
-                            speech = None
-                            try:
-                                speech = session.say(
-                                    L(state,
-                                      "माफ़ करें, तकनीकी समस्या आ गई है। कृपया एयरटेल 121 पर संपर्क करें। धन्यवाद।",
-                                      "Sorry, there is a technical problem. For any other help, please dial 121. Thank you."),
-                                    allow_interruptions=False
-                                )
-                            except Exception:
-                                pass
-                            await clean_hangup(ctx, session, state, speech=speech)
-                            break
-
-                filler_task = asyncio.create_task(_provider_timeout_filler())
-                timing_tracker["provider_filler_task"] = filler_task
-
-    def is_raw_tool_json(text: str) -> bool:
-        s = text.strip()
-        if s.startswith("{") and any(k in s for k in ['"name"', '"function"', '"parameters"', '"arguments"', "'tool_name'"]):
-            return True
-        if s.startswith(('{"name":', '{"function":', '{"parameters":', "{'name':", "{'tool_name'")):
-            return True
-        return False
-
-    # Real response latency = customer's final transcript -> agent starts SPEAKING
-    # (conversation_item_added fires only after playout ends, so it includes the whole sentence)
-    @session.on("agent_state_changed")
-    def on_agent_state_changed(ev):
-        if getattr(ev, "new_state", None) == "speaking":
-            stt_time = timing_tracker.get("stt_final", 0)
-            if stt_time > 0:
-                latency_ms = (time.time() - stt_time) * 1000
-                state.add_latency(latency_ms)
-                timing_tracker["stt_final"] = 0.0
-                logger.info(f"⏱️ Response latency: {latency_ms:.0f} ms")
-
-    @session.on("conversation_item_added")
-    def on_conversation_item(ev):
-        item = getattr(ev, "item", None)
-        if item:
-            role = getattr(item, "role", "unknown")
-            raw_content = getattr(item, "content", "")
-
-            # Extract clean dialogue text (content can be str, list[str], or list[dict/chunk])
-            content_str = ""
-            if isinstance(raw_content, list):
-                text_parts = []
-                for part in raw_content:
-                    if isinstance(part, str):
-                        part_s = part.strip()
-                        if not is_raw_tool_json(part_s):
-                            text_parts.append(part_s)
-                    elif isinstance(part, dict):
-                        if "text" in part and isinstance(part["text"], str) and not is_raw_tool_json(part["text"]):
-                            text_parts.append(part["text"].strip())
-                    elif hasattr(part, "text") and isinstance(part.text, str) and not is_raw_tool_json(part.text):
-                        text_parts.append(part.text.strip())
-                content_str = " ".join([p for p in text_parts if p]).strip()
-            elif isinstance(raw_content, str):
-                part_s = raw_content.strip()
-                if not is_raw_tool_json(part_s):
-                    content_str = part_s
-            elif raw_content:
-                part_s = str(raw_content).strip()
-                if not is_raw_tool_json(part_s):
-                    content_str = part_s
-
-            if role == "assistant":
-                # Cancel provider filler as soon as assistant begins or adds an item
-                timing_tracker["provider_filler_pending"] = False
-                task = timing_tracker.get("provider_filler_task")
-                if task and not task.done():
-                    task.cancel()
-
-                if content_str and not is_raw_tool_json(content_str):
-                    timing_tracker["last_activity_time"] = time.time()
-                    logger.info(f"🤖 [Agent]: \"{content_str}\"")
-                    print(f"\n\033[1;36m[{datetime.now().strftime('%H:%M:%S')}] 🤖 [Agent ({PERSONA_NAME})]:\033[0m \033[1;37m{content_str}\033[0m\n", flush=True)
-                    state.add_transcript("assistant", content_str)
-
-                # Terminal state reached and the LLM (not a direct-speak tool) spoke the closing line:
-                # hang up now. (Direct-speak tools already started the hangup via on_terminal.)
-                if state.is_terminal() and not state.hangup_started:
-                    state.is_completed = True
-                    if watchdog_task and not watchdog_task.done():
-                        watchdog_task.cancel()
-                    logger.info(
-                        f"Conversation reached terminal state ({state.step.value}, "
-                        f"disposition={state.final_disposition}). Preparing clean disconnect..."
-                    )
-                    asyncio.create_task(clean_hangup(ctx, session, state))
-
-    # Session closed (customer hung up / participant disconnected / aclose).
-    # This is THE reliable "customer dropped" signal: the phone leg leaving does not disconnect the agent's room.
-    @session.on("close")
-    def on_session_close(ev):
-        timing_tracker["session_closed"] = True
-        _cancel_timers()  # a pending provider-timeout timer must never fire after the customer is gone
-        reason = getattr(getattr(ev, "reason", None), "value", getattr(ev, "reason", None))
-        logger.info(f"Session closed (reason={reason}).")
-        if state.is_completed:
-            return  # clean_hangup (or another terminal path) already owns the save
-        state.is_completed = True
-        if not state.is_terminal():
-            state.final_disposition = "DISCONNECTED"
-            state.customer_note = "Call dropped / customer hung up mid-conversation"
-        logger.info(f"Customer dropped. Saving {state.final_disposition} for the retry queue.")
-
-        async def _save_and_shutdown():
-            await _save_outcome(force=True)  # force: transcript/duration are newer than any earlier post
-            ctx.shutdown(reason="session closed")
-
-        asyncio.create_task(_save_and_shutdown())
-
-    # Customer disconnected / hung up phone
-    @ctx.room.on("participant_disconnected")
-    def on_participant_disconnected(participant):
-        # We ended the call ourselves (closing line spoken): nothing to save, clean_hangup owns it.
-        if state.hangup_started:
-            return
-        timing_tracker["session_closed"] = True
-        _cancel_timers()
-        part_ident = getattr(participant, "identity", "caller")
-        logger.info(f"Customer phone leg ({part_ident}) disconnected / hung up.")
-        if state.is_completed:
-            return
-        state.is_completed = True
-        if not state.is_terminal():
-            has_dialogue = any(t.get("role") in ("customer", "assistant") for t in state.transcript)
-            if has_dialogue:
-                state.final_disposition = "DISCONNECTED"
-                state.customer_note = "Call dropped / customer hung up mid-conversation"
-            else:
-                state.final_disposition = "NO_ANSWER"
-                state.customer_note = "Customer hung up before dialogue began"
-        logger.info(f"Caller cut call. Saving outcome {state.final_disposition} (duration={state.get_duration_seconds()}s)...")
-
-        async def _save_and_shutdown():
-            await _save_outcome(force=True)
+        async def _silence_watchdog():
+            prompts = 0
             try:
-                await session.aclose()
-            except Exception:
+                while True:
+                    await asyncio.sleep(1.0)
+                    if state.closing_spoken or state.hangup_started or tracker.speaking:
+                        continue
+                    now = time.time()
+                    if now < state.hold_until:
+                        continue
+                    ref = max(state.last_activity_time, state.last_agent_speech_end, state.answered_at or 0.0)
+                    if now - ref < SILENCE_PROMPT_SECONDS:
+                        continue
+                    prompts += 1
+                    state.silence_count = prompts
+                    if prompts > MAX_SILENCE_PROMPTS:
+                        logger.info("🔇 Persistent silence -> concluding Airtel call as NO_RESPONSE")
+                        state.final_disposition = "NO_RESPONSE"
+                        state.customer_note = "Call ended due to persistent customer silence (NO_RESPONSE)"
+                        state.transition_to(Step.TERMINATED)
+                        closing = L(
+                            state,
+                            "शायद आपकी आवाज़ नहीं आ पा रही है। हम आपसे बाद में संपर्क करेंगे। धन्यवाद।",
+                            "I think your voice is not reaching me. We will contact you later. Thank you.",
+                        )
+                        log_dialogue("assistant", closing)
+                        session.say(closing, allow_interruptions=False)
+                        await asyncio.sleep(3.0)
+                        await _hangup()
+                        return
+
+                    if prompts == 1:
+                        line = L(state, "नमस्ते, क्या आप मुझे सुन पा रहे हैं?", "Hello, can you hear me?")
+                    else:
+                        line = L(
+                            state,
+                            f"नमस्ते {state.customer_name} जी, क्या मेरी आवाज़ आप तक पहुँच रही है?",
+                            f"Hello {state.customer_name}, is my voice reaching you?",
+                        )
+                    log_dialogue("assistant", line)
+                    session.say(line)
+                    state.last_activity_time = now
+            except asyncio.CancelledError:
                 pass
-            ctx.shutdown(reason="participant disconnected")
 
-        asyncio.create_task(_save_and_shutdown())
+        watchdogs = [asyncio.create_task(_max_duration_watchdog()), asyncio.create_task(_silence_watchdog())]
 
-    # Room disconnect handler (agent lost its own connection): make sure the outcome still gets saved
-    @ctx.room.on("disconnected")
-    def on_room_disconnected():
-        if state.hangup_started:
-            return
-        timing_tracker["session_closed"] = True
-        _cancel_timers()
-        if not state.is_completed:
-            state.is_completed = True
-            if not state.is_terminal():
-                state.final_disposition = "DISCONNECTED"
-                state.customer_note = "Call abruptly dropped / hung up mid-conversation"
-            logger.info(f"Room disconnected abruptly. Saving {state.final_disposition} for retry queue.")
-            asyncio.create_task(_save_outcome(force=True))
+        runner = PipelineRunner(handle_sigint=False)
+        try:
+            logger.info(f"▶️ Running Pipecat Airtel Pipeline for call {state.call_id}...")
+            await runner.run(task)
+        finally:
+            for w in watchdogs:
+                w.cancel()
+            await session.close()
+            await asyncio.shield(_finish_call(state, recorder))
 
-    async def _final_save():
-        """Runs on job shutdown: last chance to save if nothing has been saved yet."""
-        await _save_outcome()
+    logger.info(f"🏁 Finished Airtel call {state.call_id}. Disposition: {state.final_disposition}")
 
-    ctx.add_shutdown_callback(_final_save)
 
-    # 5. Opening line (English or Hinglish based on initial selection). Built BEFORE session.start so nothing waits on it afterwards.
-    if direction == "inbound":
-        name_lower = (customer_name or "").lower().strip()
-        is_generic = not name_lower or any(t in name_lower for t in ["customer", "subscriber", "inbound", "caller"])
-        if state.reply_lang == "en":
-            if not is_generic:
-                opening_line = (
-                    f"Hello {customer_name}, welcome to Airtel. I am {PERSONA_NAME}. Have you called regarding your Wi-Fi router pickup or account?"
-                )
-            else:
-                opening_line = (
-                    f"Hello, welcome to Airtel. I am {PERSONA_NAME}. How may I assist you today?"
-                )
-        else:
-            if not is_generic:
-                opening_line = (
-                    f"नमस्ते {customer_name} जी, एयरटेल में आपका स्वागत है। मैं {PERSONA_NAME} बोल रही हूँ। क्या आपने अपने वाई-फाई राउटर पिकअप या अकाउंट के संबंध में कॉल किया है?"
-                )
-            else:
-                opening_line = (
-                    f"नमस्ते, एयरटेल में आपका स्वागत है। मैं {PERSONA_NAME} बोल रही हूँ। मैं आपकी क्या मदद कर सकती हूँ?"
-                )
-    else:
-        _n = (customer_name or "").lower().strip()
-        if state.reply_lang == "en":
-            who = "the registered Airtel Wi-Fi customer" if not _n or any(t in _n for t in ["customer", "subscriber", "user", "airtel", "client"]) else f"{customer_name}"
-            opening_line = (
-                f"Hello, I am {PERSONA_NAME} calling from Airtel. Am I speaking with {who}?"
-            )
-        else:
-            if not _n or any(t in _n for t in ["customer", "subscriber", "user", "airtel", "client"]):
-                who = "एयरटेल वाई-फाई कनेक्शन के रजिस्टर्ड ग्राहक"
-            else:
-                who = f"{customer_name} जी"
-            opening_line = (
-                f"नमस्ते, मैं {PERSONA_NAME} बोल रही हूँ, एयरटेल की तरफ से। क्या मैं {who} से बात कर रही हूँ?"
-            )
-
-    # 6. Start the session. The greeting is queued immediately, so the TTS request goes out the moment the audio
-    #    pipeline is ready (no extra await between start and say, no work left to do before the first word).
-    await session.start(room=ctx.room, agent=agent)
-    logger.info("Agent session active in room.")
+async def _finish_call(state: ConversationState, recorder: Optional[CallRecorder]):
     if recorder:
-        await recorder.start(ctx.room)
+        try:
+            state.recording_url = await recorder.finalize()
+        except Exception as e:
+            logger.warning(f"Recording finalize failed: {e}")
 
-    logger.info(f"Speaking opening line ({direction}): {opening_line}")
-    state.add_transcript("assistant", opening_line)
-    print(f"\n\033[1;36m[{datetime.now().strftime('%H:%M:%S')}] 🤖 [Agent ({PERSONA_NAME})]:\033[0m \033[1;37m{opening_line}\033[0m\n", flush=True)
-    # Uninterruptible: a hold/IVR announcement or early 'hello' must not cut the greeting off mid-sentence.
-    opening_speech = session.say(opening_line, allow_interruptions=False)
+    # Set disconnect disposition if needed
+    is_answered = getattr(state, "answered_at", None) is not None or getattr(state, "callee_connected", False)
+    has_customer_speech = any(t.get("role") in ("customer", "user") for t in state.transcript)
 
-    # 7. Silence watchdog starts right away; it ignores the agent while it is speaking, so it does not need to
-    #    wait for the greeting to finish.
-    timing_tracker["last_activity_time"] = time.time()
-    watchdog_task = asyncio.create_task(silence_watchdog(ctx, session, state, timing_tracker))
+    if not is_answered and not has_customer_speech:
+        state.final_disposition = "Not Connected (No Answer)"
+        state.customer_note = state.customer_note or "Call unanswered by recipient within timeout period"
+    elif getattr(state, "ivr_detected", False) or state.final_disposition == "Voicemail or IVR Detected":
+        state.final_disposition = "Voicemail or IVR Detected"
+    elif not state.is_terminal():
+        if state.step == Step.CLOSE and state.confirmed_date:
+            state.final_disposition = "CONFIRMED_FOR_PICKUP"
+        else:
+            state.final_disposition = "Abruptly Disconnected Call"
+            if not has_customer_speech:
+                state.customer_note = state.customer_note or "Customer answered the call but hung up during introduction"
+            else:
+                state.customer_note = state.customer_note or "Customer hung up abruptly during the call"
 
-    try:
-        await opening_speech.wait_for_playout()
-    except Exception:
-        pass
-    timing_tracker["last_activity_time"] = time.time()
+    if state.outcome_posted:
+        return
+    state.outcome_posted = True
+    await asyncio.to_thread(post_outcome_to_backend, state)
