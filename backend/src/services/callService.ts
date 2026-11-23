@@ -609,9 +609,9 @@ export class CallService {
     // 2. Also ensure call_outcomes records the turn incrementally
     await query(
       `INSERT INTO call_outcomes (
-         call_id, final_disposition, transcript
+         call_id, outcome, final_disposition, transcript
        )
-       VALUES ($1, 'In Progress', $2::jsonb)
+       VALUES ($1, 'no_response', 'In Progress', $2::jsonb)
        ON CONFLICT (call_id)
        DO UPDATE SET
          transcript = COALESCE(call_outcomes.transcript, '[]'::jsonb) || $2::jsonb`,
@@ -656,7 +656,8 @@ export class CallService {
       for (const turn of processedTranscript) {
         const isAgent = turn.role === 'assistant' || turn.role === 'agent';
         const speaker = isAgent ? '🤖 Priya   ' : '🗣️ Customer';
-        console.log(`  ${speaker}: ${turn.text}`);
+        const text = turn.text || turn.message || turn.content || '';
+        console.log(`  ${speaker}: ${text}`);
       }
       console.log(`======================================================================\n`);
     }
