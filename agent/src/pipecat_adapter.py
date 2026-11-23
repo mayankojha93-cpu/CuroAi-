@@ -93,8 +93,21 @@ def _soften_tts_phrase(s: str) -> str:
     return s.strip()
 
 
+def _normalize_phonetics(s: str) -> str:
+    """Ensure carrier shortcodes like 121 are spoken digit-by-digit ('one two one' / 'वन टू वन')
+
+    rather than 'one hundred twenty-one' or 'एक सौ इक्कीस'.
+    """
+    if re.search(r'[\u0900-\u097F]', s):
+        s = re.sub(r'\b121\b', 'वन टू वन', s)
+        s = re.sub(r'१२१', 'वन टू वन', s)
+    else:
+        s = re.sub(r'\b121\b', 'one two one', s)
+    return s
+
+
 def prep_for_tts(text: str) -> str:
-    return _soften_tts_phrase(_clean_leaks(text or "")).strip()
+    return _normalize_phonetics(_soften_tts_phrase(_clean_leaks(text or ""))).strip()
 
 
 def _estimate_speech_duration(text: str) -> float:
