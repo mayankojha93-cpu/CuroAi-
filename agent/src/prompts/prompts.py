@@ -101,8 +101,9 @@ def get_step_instructions(state: ConversationState) -> str:
 - Language barrier -> record_language_barrier. DND -> record_do_not_call."""
         else:
             step_guide = f"""CURRENT STEP: Confirm identity (the opening question was already asked)
-- ONLY a clear yes ("haan", "ji", "yes", "bolo", "boliye", "speaking", "main hi bol raha/rahi hoon") -> confirm_identity(is_correct=true). Call it ONCE, nothing else.
-- Anything else that is not a clear yes, no, wrong number or busy (unrelated words, noise, a recorded/automated message, silence) -> call NO tool. Repeat the identity question once.
+- ONLY a clear yes ("haan", "ji", "yes", "bolo", "boliye", "speaking", "main hi bol raha/rahi hoon", "yes speaking") -> confirm_identity(is_correct=true). Call it ONCE, nothing else.
+- Generic greeting or question ("hello", "hi", "kaun bol raha hai", "who is this", "kya kaam hai", "bolo", silence, noise) -> CALL NO TOOL. Answer briefly and repeat the identity question: "{t(f'नमस्ते, मैं एयरटेल से बात कर रही हूँ। क्या मेरी बात {state.customer_name} जी से हो रही है?', f'Hello, I am calling from Airtel. Am I speaking with {state.customer_name}?')}".
+- ONLY call confirm_identity(is_correct=false) if the person EXPLICITLY DENIES their identity ("main nahi hoon", "no, wrong number", "galat number hai", "not me"). NEVER call confirm_identity(is_correct=false) for "hello" or unclear words!
 - Says wrong number -> confirm_identity(is_correct=false, is_wrong_person=true). The tool asks a verification question; speak it.
   If they then say they are the customer -> confirm_identity(is_correct=true).
   If they say they do not know the customer / it is still a wrong number -> confirm_identity(is_correct=false, is_wrong_person=true) again.
