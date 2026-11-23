@@ -21,8 +21,8 @@ logger = logging.getLogger("agent-tools")
 GENERIC_NAME_TOKENS = ("customer", "subscriber", "user", "airtel", "client", "inbound", "caller")
 
 # Every call ends with this exact sentence (in the customer's language), then the call is disconnected.
-CLOSING_HI = "किसी भी अन्य जानकारी के लिए कृपया एयरटेल 121 पर संपर्क करें। धन्यवाद।"
-CLOSING_EN = "For any other help, dial 121. Thank you."
+CLOSING_HI = "किसी भी अन्य जानकारी के लिए कृपया एयरटेल वन टू वन पर संपर्क करें। धन्यवाद।"
+CLOSING_EN = "For any other help, dial one two one. Thank you."
 
 
 _YES_WORDS = {
@@ -189,7 +189,7 @@ class AgentTools:
     async def _go(self, step: Step):
         """Move to next step AND swap the LLM's instructions + tools for that step."""
         self.state.transition_to(step)
-        if self.agent is not None:
+        if self.agent is not None and hasattr(self.agent, "sync_step"):
             try:
                 await self.agent.sync_step()
             except Exception as e:  # noqa: BLE001
@@ -895,7 +895,7 @@ class AgentTools:
         return await self._finish(
             Step.ESCALATED, "NEEDS_AIRTEL_SUPPORT", f"Escalated to 121: {clean_reason}",
             self._t(
-                f"इसके लिए कृपया एयरटेल 121 पर या एयरटेल Thanks ऐप पर संपर्क करें। {CLOSING_HI}",
-                f"For this, please contact Airtel 121 or the Airtel Thanks app. {CLOSING_EN}",
+                f"इसके लिए कृपया एयरटेल वन टू वन पर या एयरटेल Thanks ऐप पर संपर्क करें। {CLOSING_HI}",
+                f"For this, please contact Airtel one two one or the Airtel Thanks app. {CLOSING_EN}",
             ),
         )
