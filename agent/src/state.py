@@ -102,6 +102,10 @@ class ConversationState:
         self.pending_preface: Optional[str] = None
         self.closing_spoken: bool = False
         self.ivr_detected: bool = False
+        self.agent_speaking: bool = False  # set by PlayoutTracker
+        self.carrier_weak_hits: int = 0    # consecutive weak carrier-pattern hits on long utterances
+        self.awaiting_detail: bool = False  # the agent just asked a free-text detail (address, phone, recharge date...):
+                                            # the next reply must NOT be read as a pickup date or a bare yes/no
 
     def update_reply_lang(self, text: Optional[str]) -> bool:
         """Follow the customer's language. Can switch only once:
@@ -160,3 +164,4 @@ class ConversationState:
             Step.ESCALATED,
             Step.TERMINATED,
         ]
+        
