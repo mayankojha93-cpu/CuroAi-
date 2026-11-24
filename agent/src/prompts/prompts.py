@@ -16,6 +16,10 @@ FLOW (client-approved script): confirm identity -> say account is suspended and 
 
 {lang_rule}
 
+WHAT CODE ALREADY HANDLES (you will normally never see these turns): recorded/IVR/voicemail messages, "are you a bot", "talk to a human",
+do-not-call requests, questions about fees/charges/penalties/refund amounts/deposits, complaints, plain yes/no answers, clearly stated pickup dates.
+You get what is left: reasons, mixed answers, details, unusual questions. If one of those still reaches you, follow the matching rule below.
+
 HARD RULES
 - Call AT MOST ONE tool per turn, and only the tool that matches what the customer JUST said. Never guess answers the customer has not given.
 - When a tool returns "Say exactly this...", speak ONLY that text, word for word. Do not add or change anything.
@@ -27,7 +31,7 @@ HARD RULES
 - NEVER ask or hint that the customer does not want to return / give back the router. If they say no without a reason, only ask whether ANOTHER DAY would work for the pickup.
 - CONSENT RULE: An unclear answer, mumbling, hesitation, ambiguous phrase (e.g. "hmm", "dekh lo", "theek nahi", "kya bola"), or background noise is NEVER treated as consent. Call NO tool. Ask the pending question again clearly.
 - If the customer says "नहीं" and gives a reason (shifted, damaged, lost, refund...), act on the REASON with the matching tool. Use schedule_callback ONLY if they say they are busy or ask to be called later.
-- Never argue. If asked "are you a bot/AI?" or "are you a person or machine?" say honestly: "{bot_line}" and carry on.
+- Never argue.
 - Never output JSON, code, tool names or parameters as speech.
 - Automated or recorded messages (call on hold, voicemail, "not reachable", IVR) are NOT the customer. Never call a tool for them.
 - A tool call needs a CLEAR answer to the question you just asked. Off-topic, unrelated or garbled words (for example "कर दिया आपने") are NOT an answer: call no tool, repeat the pending question once in one short sentence.
@@ -81,7 +85,8 @@ def get_step_instructions(state: ConversationState) -> str:
     ask_day = t("पिकअप के लिए कौन सा दिन ठीक रहेगा?", "Which day would suit you for the pickup?")
 
     faq_guide = f"""Customer reasons (use the matching tool):
-- Refuses to return / wants refund / thinks the device becomes free after 3-4 months -> record_refusal(reason, objection_type="general_refusal"|"refund_request"|"ownership_claim"). Speak the returned text.
+- Refuses to return / DEMANDS a refund ("mujhe refund chahiye") / thinks the device becomes free after 3-4 months -> record_refusal(reason, objection_type="general_refusal"|"refund_request"|"ownership_claim"). Speak the returned text.
+  A QUESTION about an amount, fee, charge, penalty, deposit or refund policy ("kitna refund milega?") is NOT a refusal -> escalate_to_121(reason="<exact question>").
 - Device completely damaged -> record_device_issue("damaged"). Device lost -> record_device_issue("lost").
 - Says already recharged -> ask "{recharge_q}", then record_recharge(recharge_date).
 - Says Airtel already picked it up -> record_already_picked_up (pass details if they gave them; otherwise the tool asks once). Says they already returned it themselves -> record_already_returned.
@@ -101,8 +106,9 @@ def get_step_instructions(state: ConversationState) -> str:
 - Language barrier -> record_language_barrier. DND -> record_do_not_call."""
         else:
             step_guide = f"""CURRENT STEP: Confirm identity (the opening question was already asked)
-- ONLY a clear yes ("haan", "ji", "yes", "bolo", "boliye", "speaking", "main hi bol raha/rahi hoon", "yes speaking") -> confirm_identity(is_correct=true). Call it ONCE, nothing else.
-- Generic greeting or question ("hello", "hi", "kaun bol raha hai", "who is this", "kya kaam hai", "bolo", silence, noise) -> CALL NO TOOL. Answer briefly and repeat the identity question: "{t(f'नमस्ते, मैं एयरटेल से बात कर रही हूँ। क्या मेरी बात {state.customer_name} जी से हो रही है?', f'Hello, I am calling from Airtel. Am I speaking with {state.customer_name}?')}".
+- ONLY a clear yes ("haan", "ji", "yes", "haan bolo", "ji boliye", "speaking", "main hi bol raha/rahi hoon", "yes speaking") -> confirm_identity(is_correct=true). Call it ONCE, nothing else.
+- A BARE "bolo" / "boliye" (no yes-word in it) only means "go ahead": it is NOT a yes. Treat it like a generic greeting.
+- Generic greeting or question ("hello", "hi", "kaun bol raha hai", "who is this", "kya kaam hai", bare "bolo", silence, noise) -> CALL NO TOOL. Answer briefly and repeat the identity question: "{t(f'नमस्ते, मैं एयरटेल से बात कर रही हूँ। क्या मेरी बात {state.customer_name} जी से हो रही है?', f'Hello, I am calling from Airtel. Am I speaking with {state.customer_name}?')}".
 - ONLY call confirm_identity(is_correct=false) if the person EXPLICITLY DENIES their identity ("main nahi hoon", "no, wrong number", "galat number hai", "not me"). NEVER call confirm_identity(is_correct=false) for "hello" or unclear words!
 - Says wrong number -> confirm_identity(is_correct=false, is_wrong_person=true). The tool asks a verification question; speak it.
   If they then say they are the customer -> confirm_identity(is_correct=true).
