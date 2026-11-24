@@ -363,7 +363,15 @@ async def run_airtel_pipeline(
                     await asyncio.sleep(0.5)
                     _w += 0.5
                 logger.info(f"⏰ [Watchdog] Airtel Call {state.call_id} reached {MAX_CALL_SECONDS}s limit -> closing.")
-                tools._say(tools._closing())
+                # tools._say() no longer speaks non-terminal lines by itself, and the old code queued the hangup
+                # right after it, cutting the closing line off. Speak it, wait for playout, then hang up.
+                closing = tools._closing()
+                state.closing_spoken = True
+                state.closing_line = closing
+                log_dialogue("assistant", closing)
+                handle = session.say(closing, allow_interruptions=False)
+                await handle.wait_for_playout()
+                await asyncio.sleep(0.8)
                 await _hangup()
             except asyncio.CancelledError:
                 pass
@@ -458,3 +466,4 @@ async def _finish_call(state: ConversationState, recorder: Optional[CallRecorder
         return
     state.outcome_posted = True
     await asyncio.to_thread(post_outcome_to_backend, state)
+    
