@@ -322,7 +322,8 @@ def post_re_outcome_sync(state: RealEstateState) -> bool:
             if res.status_code in (200, 201):
                 logger.info(f"✅ Real estate outcome saved for call {state.call_id} (Disp: {state.final_disposition})")
                 return True
-            if res.status_code in (400, 401, 403, 404):
+            logger.error(f"❌ Outcome POST attempt {attempt} -> HTTP {res.status_code}: {res.text[:200]}")
+            if res.status_code in (400, 401, 403) or (res.status_code == 404 and attempt >= 3):
                 break
         except Exception as e:
             logger.error(f"❌ Exception posting RE outcome (attempt {attempt}): {e}")
@@ -409,6 +410,31 @@ async def run_real_estate_pipeline(
     phone: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ):
+    """Safety wrapper: whatever goes wrong while the pipeline is being BUILT or run (bad API key, service init
+    error, ...), the outcome (disposition, transcript so far, duration, recording) is still posted to the backend.
+    Before this, an exception before runner.run() skipped _finish_call(), the backend never got an outcome and
+    showed its own default ("Completed" + "Abruptly Disconnected Call", no duration / recording / transcript)."""
+    holder: Dict[str, Any] = {}
+    try:
+        await _run_real_estate_pipeline(transport, call_id, phone, metadata, holder)
+    except Exception as e:
+        logger.error(f"Real-estate pipeline failed for call {call_id}: {e}", exc_info=True)
+        st = holder.get("state")
+        if st is not None and not st.outcome_posted:
+            # The stream was opened by Exotel, so the callee did pick up: don't report it as "No Answer".
+            st.callee_connected = True
+            st.agent_summary = st.agent_summary or f"System error during call ({type(e).__name__}: {str(e)[:120]})"
+            await asyncio.shield(_finish_call(st, holder.get("recorder")))
+        raise
+
+
+async def _run_real_estate_pipeline(
+    transport: BaseTransport,
+    call_id: Optional[str],
+    phone: Optional[str],
+    metadata: Optional[Dict[str, Any]],
+    holder: Dict[str, Any],
+):
     metadata = metadata or {}
     resolved_call_id = call_id or _resolve_call_id(metadata=metadata)
     resolved_phone = phone or metadata.get("phone", "")
@@ -471,10 +497,12 @@ async def run_real_estate_pipeline(
 
     tools = RealEstateTools(state, None, None)
     tools.log_dialogue_func = log_dialogue
+    holder["state"] = state
 
     recorder: Optional[CallRecorder] = None
     if RECORD_CALLS and resolved_call_id:
         recorder = CallRecorder(resolved_call_id, sample_rate=PIPELINE_IN_SAMPLE_RATE)
+    holder["recorder"] = recorder
 
     async with aiohttp.ClientSession() as aiohttp_session:
         vad = VADProcessor(
