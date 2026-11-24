@@ -33,7 +33,7 @@ AGENT_PERSONA_NAME = os.getenv("REAL_ESTATE_PERSONA_NAME", "Kavitha")
 
 # LLM Configuration
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-LLM_MODEL = os.getenv("LLM_MODEL", "meta-llama/llama-3.1-8b-instruct")
+LLM_MODEL = os.getenv("LLM_MODEL", "google/gemini-2.0-flash-001")
 
 # STT Configuration (Soniox)
 SONIOX_API_KEY = os.getenv("SONIOX_API_KEY")
@@ -75,14 +75,14 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 LLM_FALLBACK = os.getenv("LLM_FALLBACK", "1") == "1"
 LLM_ATTEMPT_TIMEOUT = float(os.getenv("LLM_ATTEMPT_TIMEOUT", "4.0"))
 
-# FASTPATH_ENABLED=1 : a reply that is ONLY a clean value for the open intake question ("3 BHK", "1200 sq ft",
-#                      "semi furnished", "407 4th floor", "50 lakh", "vacant") is read with regex and the LLM call
-#                      is skipped (turn = EOU + TTS only). If the sentence contains ANYTHING besides the value
-#                      (a negation, a question, an objection, a 2nd fact, an unknown word) the LLM handles it.
-#                      Regex reads values; the LLM decides meaning.
-FASTPATH_ENABLED = os.getenv("FASTPATH_ENABLED", "1") == "1"
-# Deterministic (no-LLM) shortcuts that act on the caller's MEANING (don't-know, market-rate, repeat, bare
-# yes/no ...) are only allowed for utterances up to this many words. Longer sentences always go to the LLM.
+# FASTPATH_ENABLED=0 : regex fastpath disabled; slot extraction and meaning decisions are handled by LLM.
+FASTPATH_ENABLED = os.getenv("FASTPATH_ENABLED", "0") == "1"
+
+# ENABLE_HUMAN_REGEX_SHORTCUTS=0 : keep regex ONLY for IVR/voicemail/carrier detection.
+# All human conversational turns go to the LLM to handle natural speech without rigid regex intercepts.
+ENABLE_HUMAN_REGEX_SHORTCUTS = os.getenv("ENABLE_HUMAN_REGEX_SHORTCUTS", "0") == "1"
+
+# Deterministic shortcuts max tokens
 SHORTCUT_MAX_TOKENS = int(os.getenv("SHORTCUT_MAX_TOKENS", "5"))
 # PRERENDER_GREETING=1 : while the phone is still ringing the opening line is synthesised in advance and
 #                        played from memory the moment the callee answers (no TTS wait on "Hello?").
