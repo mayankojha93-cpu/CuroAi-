@@ -45,43 +45,7 @@ services:
     depends_on:
       - backend
 
-  # 1st Voice Pipeline: Airtel Wi-Fi Router Return Pickup (Priya)
-  agent-telecom:
-    build:
-      context: ./agent
-      dockerfile: Dockerfile
-    command: ["python", "agent.py", "start"]
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      BACKEND_URL: http://backend:3000
-      RECORDING_STORAGE_DIR: /app/recordings
-    volumes:
-      - recordings_data:/app/recordings
-    depends_on:
-      backend:
-        condition: service_started
-
-  # 2nd Voice Pipeline: My Estate Finder Property Intake (Sagar)
-  agent-real-estate:
-    build:
-      context: ./agent
-      dockerfile: Dockerfile
-    command: ["python", "agent_real_estate.py", "start"]
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      BACKEND_URL: http://backend:3000
-      RECORDING_STORAGE_DIR: /app/recordings
-    volumes:
-      - recordings_data:/app/recordings
-    depends_on:
-      backend:
-        condition: service_started
-
-  # Exotel WSS Audio Bridge: runs Pipecat Voice AI agent over Exotel WebSocket media stream
+  # Exotel WSS Audio Bridge: runs Pipecat Voice AI agent over Exotel WebSocket media stream (handles both Airtel & Real Estate)
   exotel-bridge:
     build:
       context: ./agent
