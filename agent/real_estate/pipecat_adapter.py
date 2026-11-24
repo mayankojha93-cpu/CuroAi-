@@ -97,6 +97,34 @@ def _json_type(annotation: Any) -> str:
     return "string"
 
 
+_TOOL_PARAM_DESCRIPTIONS: Dict[str, str] = {
+    "category": "Property category: 'residential' or 'commercial'",
+    "intent": "Customer intent: 'sale' (to sell) or 'lease' (to rent or lease out)",
+    "project_or_society": "Name of the society, apartment complex, or project (e.g. 'Signature Global', 'DLF Phase 2')",
+    "sector_or_location": "Area, sector, or locality of the property (e.g. 'Sector 62', 'Indiranagar')",
+    "unit_number": "Flat, door, or unit number (e.g. '407', 'Flat 302', 'Standalone' if independent property)",
+    "floor_number": "Floor or storey (e.g. '4th', 'Ground', '2nd', 'Top')",
+    "bhk_config": "Bedroom configuration (e.g. '2 BHK', '3 BHK', '3.5 BHK', 'Studio'). Residential only.",
+    "commercial_type": "Commercial unit type: 'office space', 'retail shop', 'showroom', 'warehouse', etc. Commercial only.",
+    "approx_area_sqft": "Total super area in square feet as a number (e.g. 1800). Multiply gaj by 9 (200 gaj = 1800 sq ft).",
+    "furnishing_status": "Furnishing: 'unfurnished', 'semi-furnished', or 'fully-furnished'",
+    "expected_sale_price": "Expected sale price with unit (e.g. '50 Lakh', '1.5 Crore', 'Market Rate')",
+    "expected_monthly_rent": "Expected monthly rent with unit (e.g. '25 Thousand', '40,000', '1.5 Lakh', 'Market Rate')",
+    "is_currently_leased": "Whether commercial property is leased (true) or vacant (false)",
+    "current_rent_received": "Current monthly rent being received from tenant if leased",
+    "immediate_occupancy": "Whether property is ready for immediate occupancy (true) or notice period (false)",
+    "caller_words": "The exact words spoken by the caller justifying this action",
+    "field_id": "The ID of the field the caller cannot share or does not know",
+    "time_slot": "Preferred callback time slot (e.g. 'evening', 'morning', '2 PM')",
+    "preferred_day": "Preferred callback day (e.g. 'tomorrow', 'Monday')",
+    "reason": "Handoff reason (e.g. 'Price valuation requested', 'Customer requested human advisor')",
+    "location": "New property location or sector",
+    "has_other": "True if customer has another property to sell/rent, False if no other property",
+    "name": "Good name of the property owner for records",
+    "phone": "WhatsApp number to send details to",
+}
+
+
 def schema_for_tool(fn: Callable) -> FunctionSchema:
     """Build the LLM-facing schema straight from the tool method (signature + docstring), so the schema can
     never drift from the real parameters (the hand-written schemas did: bhk_type / super_area_sqft /
@@ -108,7 +136,10 @@ def schema_for_tool(fn: Callable) -> FunctionSchema:
     for name, p in sig.parameters.items():
         if name == "self":
             continue
-        props[name] = {"type": _json_type(hints.get(name, str))}
+        p_dict: Dict[str, Any] = {"type": _json_type(hints.get(name, str))}
+        if name in _TOOL_PARAM_DESCRIPTIONS:
+            p_dict["description"] = _TOOL_PARAM_DESCRIPTIONS[name]
+        props[name] = p_dict
         if p.default is inspect.Parameter.empty:
             required.append(name)
     return FunctionSchema(
