@@ -53,11 +53,11 @@ class CallRecorder:
         self._finalized = False
         self._final_result: Optional[str] = None
 
-        # buffer_size is in bytes of 16-bit mono PCM -> flush to disk roughly every 5 seconds.
+        # buffer_size is in bytes of 16-bit mono PCM -> flush to disk every 1 second so even short calls get saved.
         self.processor = AudioBufferProcessor(
             sample_rate=sample_rate,
             num_channels=1,
-            buffer_size=sample_rate * 2 * 5,
+            buffer_size=sample_rate * 2 * 1,
             auto_start_recording=True,
         )
 

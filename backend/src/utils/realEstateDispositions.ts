@@ -106,6 +106,19 @@ export function matchRealEstateDisposition(
     return 'Abruptly Disconnected Call';
   }
 
+  // If call duration is 0 and status indicates failed or no-answer, it cannot be a connected disposition
+  if (
+    duration === 0 && (
+      statusUpper === 'NO ANSWER' ||
+      statusUpper === 'NO_ANSWER' ||
+      statusUpper === 'FAILED' ||
+      statusUpper.includes('FAIL') ||
+      statusUpper.includes('REJECT')
+    )
+  ) {
+    return 'Not Connected (No Answer)';
+  }
+
   // Exact canonical match check
   const exact = REAL_ESTATE_CANONICAL_DISPOSITIONS.find(
     (c) => c.toLowerCase() === text.toLowerCase() || c.toUpperCase() === upper
