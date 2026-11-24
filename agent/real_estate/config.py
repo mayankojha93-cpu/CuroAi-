@@ -103,6 +103,10 @@ FAST_TOOL_REPLY = os.getenv("FAST_TOOL_REPLY", "1") == "1"
 LATENCY_LOG = os.getenv("LATENCY_LOG", "1") == "1"
 # VAD silence needed to end a speech segment (0.28s gives snappy turn transitions without premature cut-off).
 VAD_MIN_SILENCE = float(os.getenv("VAD_MIN_SILENCE", "0.45"))
+# Silero VAD speech confidence threshold (0.75-0.80 filters out background chatter, TV noise, and distant voices)
+VAD_CONFIDENCE = float(os.getenv("VAD_CONFIDENCE", "0.75"))
+# Real-time RNNoise filter for incoming caller audio stream (suppresses ambient noise, fans, traffic)
+ENABLE_NOISE_CANCELLATION = os.getenv("ENABLE_NOISE_CANCELLATION", "1") == "1"
 # OpenRouter provider ordering: routes through ultra-fast LPU/hardware providers (Groq/Cerebras) first
 # with automatic fallback, dropping TTFT from ~2.5s down to 300-500ms. Set "none" to disable.
 _prov_raw = os.getenv("OPENROUTER_PROVIDER_ORDER", "Groq,Cerebras,Together,DeepInfra")
