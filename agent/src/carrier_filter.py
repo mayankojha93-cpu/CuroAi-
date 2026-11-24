@@ -2,16 +2,32 @@
 that STT transcribes as if the CUSTOMER had spoken them.
 
 These must never reach the LLM: they trigger unwanted tool executions or confused replies.
-When detected, the call is dropped immediately and marked as 'Voicemail or IVR Detected' (completed).
 
-classify_carrier_message(text) -> "ivr" | "voicemail" | "answering_machine" | "automated_system" | "hold" | None
+Every pattern is either
+  STRONG  - only a machine says this. Safe to hang up on the first hit.
+  WEAK    - a machine says it, but a real customer or a relative who picked up could say it too
+            ("I'm not available at the moment", "the address is incorrect", "nobody is available at home").
+            Weak hits are only trusted on LONG utterances (announcements are long, customers are short),
+            and the caller (AirtelTurnHandler) needs two of them in a row before hanging up.
+  HOLD    - call-waiting / "has put you on hold". Never a reason to hang up: ignore the turn and wait.
+
+classify_carrier(text) -> CarrierHit(kind, strong, words) | None
+classify_carrier_message(text) -> kind | None   (legacy helper, strong OR weak)
+kind: "ivr" | "voicemail" | "answering_machine" | "automated_system" | "hold"
 """
 import re
-from typing import Optional
+from typing import List, NamedTuple, Optional
 
-# 1. IVR Detection Phrases (English)
-_IVR_ENGLISH_PATTERNS = [
-    r"thank you for calling\s+(our\s+customer\s+service|airtel|jio|vi|vodafone|bsnl|customer\s*care|,\s*goodbye\b)",
+
+class CarrierHit(NamedTuple):
+    kind: str
+    strong: bool
+    words: int
+
+
+# ───────────────────────── STRONG ─────────────────────────
+
+_IVR_STRONG = [
     r"welcome to (our|the)?\s*service",
     r"welcome to\s+(airtel|jio|vi|vodafone|bsnl|customer\s*care|our\s*(customer\s*)?service)\b",
     r"please listen carefully",
@@ -24,14 +40,10 @@ _IVR_ENGLISH_PATTERNS = [
     r"press\s*(0|zero)\s*to speak (to|with) (an?\s*)?(operator|representative|agent)?",
     r"press (the\s*)?star key",
     r"press (the\s*)?(hash|pound) key",
-    r"press\s*(star|hash|pound|zero|one|two|three|four|five|six|seven|eight|nine|\d)\b",
-    r"\bdial\s*(star|hash|pound|zero|\d)\b",
+    r"\bpress\s*(star|hash|pound|zero|one|two|three|four|five|six|seven|eight|nine|\d)\b",
     r"please enter your (10|ten)[ -]digit (mobile\s+)?number",
     r"please enter your customer (id|number)",
     r"please enter your pin\b",
-    r"please hold (while we connect|the line)",
-    r"please (stay|remain|hold) on the line",
-    r"stay on the line",
     r"your call is (being\s+)?(transferred|forwarded|connected)",
     r"your call is (very\s+)?important to us",
     r"(all\s+)?(our\s+)?(agents|executives|representatives|customer care|lines) are (currently\s+)?(busy|unavailable|engaged)",
@@ -44,18 +56,14 @@ _IVR_ENGLISH_PATTERNS = [
     r"to know more,?\s*press",
     r"(your\s+)?call may be recorded for (quality|training)",
     r"this call (may be|is being) (monitored|recorded)",
-    r"thank you for your patience",
-    r"please do not disconnect (the call)?",
     r"connecting you to the next available (representative|agent)",
 ]
 
-# 2. Voicemail Detection Phrases (English)
-_VOICEMAIL_ENGLISH_PATTERNS = [
+_VOICEMAIL_STRONG = [
     r"please leave a message after the (beep|tone)",
     r"leave (a\s+|your\s+)?message after the (tone|beep)",
     r"please record your message",
     r"at the tone,?\s*please record your message",
-    r"record your message",
     r"start recording after the beep",
     r"you may hang up after recording your message",
     r"when you (have\s+)?finished recording,?\s*(you may\s+)?hang up",
@@ -71,8 +79,6 @@ _VOICEMAIL_ENGLISH_PATTERNS = [
     r"you('ve| have) reached (the\s+)?(answering machine|mail\s*box)",
     r"nobody is available to take your call",
     r"the subscriber is (currently\s+)?(not available|busy)",
-    r"the person is currently unavailable",
-    r"please leave a message and (they|we) will get back",
     r"(the\s+|this\s+)?mail\s*box is full",
     r"this mail\s*box cannot accept any more messages",
     r"(the\s+)?voice\s*mail( box)? is not set up",
@@ -82,32 +88,47 @@ _VOICEMAIL_ENGLISH_PATTERNS = [
     r"(forwarded\s+to|reached|leave\s+a\s+message\s+in)\s+(the\s+)?mail\s*box",
 ]
 
-# 3. Answering Machine Detection Phrases (English)
-_ANSWERING_MACHINE_PATTERNS = [
+_ANSWERING_MACHINE_STRONG = [
     r"hello,?\s*you have reached",
     r"sorry i (can\s*not|can't) take your call",
-    r"i('m| am) not available at the moment",
-    r"i am (currently\s+)?unable to answer your call",
-    r"please leave a (detailed\s+)?message",
-    r"i('ll| will) get back to you as soon as possible",
-    r"leave your name and (contact\s+)?number",
-    r"please leave a detailed message",
-    r"i will return your call",
-    r"thank you for calling,?\s*goodbye",
     r"you have reached the answering machine",
-    r"nobody is available (right now|at the moment)",
     r"please speak after the beep",
+    r"thank you for calling,?\s*goodbye",
 ]
 
-# 4. Indian IVR Detection Phrases (Hindi / Hinglish – Roman Script & Devanagari)
-_INDIAN_IVR_PATTERNS = [
+_AUTOMATED_STRONG = [
+    r"this is an automated message",
+    r"this is a pre-recorded message",
+    r"you are receiving an automated call",
+    r"this is an auto-generated notification",
+    r"please respond using your keypad",
+    r"voice recognition is not available",
+    r"invalid selection",
+    r"incorrect input",
+    r"(?:invalid\s*selection|incorrect\s*input|call\s*cannot\s*be\s*completed).*(?:please\s+)?try\s+again",
+    r"your session has expired",
+    r"you have entered an invalid option",
+    # "The number you have dialed / are calling is currently switched off / not reachable / ..."
+    r"number you (?:have\s+)?(?:are\s+)?(?:dialed|dialled|called|calling)\s+(?:is|does|doesn't|does not|has)\s+"
+    r"(?:currently\s+|temporarily\s+)?(?:switched\s*off|not\s+reachable|unavailable|not\s+in\s+service|invalid|incorrect|out\s+of|busy|no\s+longer|not\s+exist|exist)",
+    r"number is temporarily unavailable",
+    r"subscriber is currently busy",
+    r"call cannot be completed as dialed",
+    r"please check the number and try again",
+    r"number\s+(?:is|has been)\s+(?:invalid|not in service|barred)",
+    r"pahunch se bahar",
+    r"पहुंच से बाहर",
+    r"पहुँच से बाहर",
+    r"yeh number (maujood|uplabdh)\s+nahi",
+    r"यह नंबर (मौजूद|उपलब्ध)\s+नहीं",
+]
+
+_INDIAN_IVR_STRONG = [
     r"kripya line par bane rahein",
     r"line par bane rahe",
     r"kripya line par",
     r"कृपया लाइन पर",
     r"लाइन पर बने रहें",
-    r"aapka swagat hai",
-    r"आपका स्वागत है",
     r"kripya (kuch der\s+)?(pratiksha|intezaar|intezar) karein?",
     r"कृपया (कुछ देर\s+)?प्रतीक्षा करें",
     r"aapka call transfer kiya ja raha hai",
@@ -124,8 +145,6 @@ _INDIAN_IVR_PATTERNS = [
     r"इंग्लिश के लिए\s*(2|दो|\b)\s*दबाएं",
     r"grahak seva ke liye\s*(\d|\b)\s*dabayein?",
     r"ग्राहक सेवा के लिए",
-    r"customer care se baat karne ke liye",
-    r"कस्टमर केयर से बात",
     r"kripya apna (mobile\s+)?number (darj|dalein|enter)",
     r"kripya apna (das|10)\s+ankon ka mobile number",
     r"apna customer id darj karein?",
@@ -146,8 +165,7 @@ _INDIAN_IVR_PATTERNS = [
     r"(?:ke\s*liye|options?|vikalp|\d)\s*(?:ko)?\s*(?:dabayein|dabaiye|दबाएं|दबाइए)",
 ]
 
-# 5. Indian Voicemail Detection Phrases (Hindi / Hinglish – Roman Script & Devanagari)
-_INDIAN_VOICEMAIL_PATTERNS = [
+_INDIAN_VOICEMAIL_STRONG = [
     r"kripya beep ke baad (apna\s+)?(message|sandesh)",
     r"beep ke baad (apna\s+)?(sandesh|message)",
     r"beep ke baad boliye",
@@ -158,59 +176,66 @@ _INDIAN_VOICEMAIL_PATTERNS = [
     r"kripya apna naam aur number chhod",
     r"aapka message record kiya ja raha hai",
     r"kripya tone ke baad bolna shuru karein",
-    r"tone ke baad",
+    r"\btone ke baad",
     r"vyakti abhi phone nahi utha sakta",
-    r"kripya baad mein dobara call karein",
     r"aap voice\s*mail par pahunch gaye hain",
     r"filhaal koi call receive karne ke liye uplabdh nahi hai",
     r"kripya apna sandesh chhod",
     r"aapka sandesh record hone ke baad",
+]
+
+# ───────────────────────── WEAK ─────────────────────────
+
+_IVR_WEAK = [
+    r"thank you for calling\s+(?:our\s+customer\s+service|airtel|jio|vi|vodafone|bsnl|customer\s*care)\b",
+    r"\bdial\s*(star|hash|pound|zero|\d)\b",
+    r"please hold (while we connect)",
+    r"please (stay|remain|hold) on the line",
+    r"stay on the line",
+    r"thank you for your patience",
+    r"please do not disconnect (the call)?",
+    r"aapka swagat hai",
+    r"आपका स्वागत है",
+    r"customer care se baat karne ke liye",
+    r"कस्टमर केयर से बात",
+    r"kripya baad mein dobara call karein",
+]
+
+_VOICEMAIL_WEAK = [
+    r"the person is currently unavailable",
+    r"please leave a message and (they|we) will get back",
+    r"kripya baad mein dobara call karein",
     r"sandesh chhod",
     r"संदेश छोड़",
     r"(?:subscriber|grahak|number|vyakti|customer|sewa|call\s*receive\s*karne)\s+.*(?:uplabdh\s*nahi|उपलब्ध\s*नहीं)",
     r"(?:uplabdh\s*nahi|उपलब्ध\s*नहीं)\s+(?:hai|hain|है|हैं)\s*(?:kripya|baad\s*mein|kuch\s*der)",
 ]
 
-# 6. Additional Automated System Phrases
-_AUTOMATED_SYSTEM_PATTERNS = [
-    r"this is an automated message",
-    r"this is a pre-recorded message",
-    r"you are receiving an automated call",
-    r"this is an auto-generated notification",
-    r"please respond using your keypad",
-    r"voice recognition is not available",
+_ANSWERING_MACHINE_WEAK = [
+    r"i('m| am) not available at the moment",
+    r"i am (currently\s+)?unable to answer your call",
+    r"please leave a (detailed\s+)?message",
+    r"i('ll| will) get back to you as soon as possible",
+    r"leave your name and (contact\s+)?number",
+    r"i will return your call",
+    r"nobody is available (right now|at the moment)",
+]
+
+_AUTOMATED_WEAK = [
     r"sorry,?\s*i didn't get that",
-    r"invalid selection",
-    r"incorrect input",
-    r"(?:invalid\s*selection|incorrect\s*input|call\s*cannot\s*be\s*completed).*(?:please\s+)?try\s+again",
-    r"your session has expired",
-    r"you have entered an invalid option",
-    r"number you have dialed is currently switched off",
-    r"number you are calling is not reachable",
-    r"number is temporarily unavailable",
-    r"subscriber is currently busy",
-    r"number you have dialed does not exist",
-    r"call cannot be completed as dialed",
-    r"please check the number and try again",
+    r"temporarily (unavailable|disconnected|out of service)",
+    r"(number|call)\s+(does not|doesn't)\s+exist",
     r"(?:number|phone|mobile|subscriber|grahak)\s+.*(?:is\s+)?(?:currently\s+)?(?:switched\s*off|स्विच(?:्ड)?\s*ऑफ)",
     r"(?:switched\s*off|स्विच(?:्ड)?\s*ऑफ)\s*(?:hai|aa\s*raha|bata\s*raha)",
     r"(number|subscriber|customer|phone|mobile|grahak)\b[^.]{0,50}\b(not\s+reachable|can\s*not\s+be\s+reached|cannot\s+be\s+reached)",
-    r"pahunch se bahar",
-    r"पहुंच से बाहर",
-    r"पहुँच से बाहर",
     r"network (kshetra|area)?\s*se bahar",
     r"नेटवर्क (क्षेत्र\s*)?से बाहर",
     r"out of (the\s+)?(network|coverage)",
-    r"temporarily (unavailable|disconnected|out of service)",
-    r"number you (have\s+)?(dialed|dialled|called)\s+(is|does|doesn't|does not)",
-    r"(number|call)\s+(does not|doesn't)\s+exist",
-    r"(is|has been)\s+(incorrect|invalid|not in service|barred)",
-    r"yeh number (maujood|uplabdh)\s+nahi",
-    r"यह नंबर (मौजूद|उपलब्ध)\s+नहीं",
 ]
 
-# Legacy hold announcements
-_HOLD_PATTERNS = [
+# ───────────────────────── HOLD (ignore the turn, keep the call) ─────────────────────────
+
+_HOLD = [
     r"put (your|you|the) call on hold",
     r"has put you on hold",
     r"call (has been )?(put )?on hold",
@@ -224,44 +249,56 @@ _HOLD_PATTERNS = [
     r"hold (pe|par) rakha",
 ]
 
-_IVR_ENGLISH_RE = re.compile("|".join(f"(?:{p})" for p in _IVR_ENGLISH_PATTERNS), re.IGNORECASE)
-_VOICEMAIL_ENGLISH_RE = re.compile("|".join(f"(?:{p})" for p in _VOICEMAIL_ENGLISH_PATTERNS), re.IGNORECASE)
-_ANSWERING_MACHINE_RE = re.compile("|".join(f"(?:{p})" for p in _ANSWERING_MACHINE_PATTERNS), re.IGNORECASE)
-_INDIAN_IVR_RE = re.compile("|".join(f"(?:{p})" for p in _INDIAN_IVR_PATTERNS), re.IGNORECASE)
-_INDIAN_VOICEMAIL_RE = re.compile("|".join(f"(?:{p})" for p in _INDIAN_VOICEMAIL_PATTERNS), re.IGNORECASE)
-_AUTOMATED_SYSTEM_RE = re.compile("|".join(f"(?:{p})" for p in _AUTOMATED_SYSTEM_PATTERNS), re.IGNORECASE)
-_HOLD_RE = re.compile("|".join(f"(?:{p})" for p in _HOLD_PATTERNS), re.IGNORECASE)
+
+def _compile(patterns: List[str]) -> "re.Pattern[str]":
+    return re.compile("|".join(f"(?:{p})" for p in patterns), re.IGNORECASE)
 
 
-def classify_carrier_message(text: Optional[str]) -> Optional[str]:
-    """Classifies incoming text against IVR, Voicemail, Answering Machine, and Automated System patterns.
-    Returns: 'ivr' | 'voicemail' | 'answering_machine' | 'automated_system' | 'hold' | None
-    """
+# Priority order matters: voicemail beats IVR beats automated.
+_STRONG_RES = [
+    ("voicemail", _compile(_VOICEMAIL_STRONG)),
+    ("voicemail", _compile(_INDIAN_VOICEMAIL_STRONG)),
+    ("answering_machine", _compile(_ANSWERING_MACHINE_STRONG)),
+    ("ivr", _compile(_IVR_STRONG)),
+    ("ivr", _compile(_INDIAN_IVR_STRONG)),
+    ("automated_system", _compile(_AUTOMATED_STRONG)),
+]
+_WEAK_RES = [
+    ("voicemail", _compile(_VOICEMAIL_WEAK)),
+    ("answering_machine", _compile(_ANSWERING_MACHINE_WEAK)),
+    ("ivr", _compile(_IVR_WEAK)),
+    ("automated_system", _compile(_AUTOMATED_WEAK)),
+]
+_HOLD_RE = _compile(_HOLD)
+
+
+def classify_carrier(text: Optional[str]) -> Optional[CarrierHit]:
+    """Returns a CarrierHit, or None when the text looks like a normal customer utterance."""
     if not text:
         return None
     t = " ".join(text.lower().split())
     if not t:
         return None
+    words = len(t.split())
 
-    if _VOICEMAIL_ENGLISH_RE.search(t):
-        return "voicemail"
-    if _INDIAN_VOICEMAIL_RE.search(t):
-        return "voicemail"
-    if _ANSWERING_MACHINE_RE.search(t):
-        return "answering_machine"
-    if _IVR_ENGLISH_RE.search(t):
-        return "ivr"
-    if _INDIAN_IVR_RE.search(t):
-        return "ivr"
-    if _AUTOMATED_SYSTEM_RE.search(t):
-        return "automated_system"
+    for kind, rx in _STRONG_RES:
+        if rx.search(t):
+            return CarrierHit(kind, True, words)
     if _HOLD_RE.search(t):
-        return "hold"
-
+        return CarrierHit("hold", True, words)
+    for kind, rx in _WEAK_RES:
+        if rx.search(t):
+            return CarrierHit(kind, False, words)
     return None
 
 
+def classify_carrier_message(text: Optional[str]) -> Optional[str]:
+    """Legacy helper: kind of ANY hit (strong, weak or hold), or None."""
+    hit = classify_carrier(text)
+    return hit.kind if hit else None
+
+
 def is_ivr_or_voicemail(text: Optional[str]) -> bool:
-    """Returns True if the text represents any IVR, Voicemail, Answering Machine, or Automated carrier message."""
-    return classify_carrier_message(text) is not None
-    
+    """True only for a STRONG machine announcement (hold and weak matches do not count)."""
+    hit = classify_carrier(text)
+    return bool(hit and hit.strong and hit.kind != "hold")

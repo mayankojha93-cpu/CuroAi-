@@ -37,6 +37,7 @@ from pipecat.serializers.exotel import ExotelFrameSerializer  # noqa: E402
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport  # noqa: E402
 
 from real_estate.worker import run_real_estate_pipeline  # noqa: E402
+from src.worker import run_airtel_pipeline  # noqa: E402
 
 BRIDGE_PORT = int(os.getenv("EXOTEL_BRIDGE_PORT", "8088"))
 BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:3000").rstrip("/")
@@ -200,9 +201,32 @@ async def media_stream(ws: WebSocket, path_call_id: Optional[str] = None):
         ),
     )
 
+    req_pipeline = (qs.get("pipeline") or qs.get("agent") or custom.get("pipeline") or custom.get("agent") or "").lower()
+
+    # Determine which pipeline to run
+    is_re = False
+    if req_pipeline in ("real_estate", "realestate", "estate", "estate_finder", "sagar"):
+        is_re = True
+    elif req_pipeline in ("telecom", "airtel", "priya", "habot"):
+        is_re = False
+    elif metadata:
+        call_obj = metadata.get("call") or {}
+        if call_obj.get("re_lead_id") or (metadata.get("leadId") and not metadata.get("customerId")):
+            is_re = True
+        elif call_obj.get("customer_id") or metadata.get("customerId"):
+            is_re = False
+        elif "real estate" in str(call_obj.get("script", "")).lower() or "estate" in str(call_obj.get("script", "")).lower():
+            is_re = True
+        else:
+            is_re = False
+
     try:
-        logger.info(f"🚀 Running Pipecat Real Estate Pipeline for call {call_id}...")
-        await run_real_estate_pipeline(transport=transport, call_id=call_id, phone=phone, metadata=metadata)
+        if is_re:
+            logger.info(f"🚀 Running Pipecat Real Estate Pipeline for call {call_id}...")
+            await run_real_estate_pipeline(transport=transport, call_id=call_id, phone=phone, metadata=metadata)
+        else:
+            logger.info(f"🚀 Running Pipecat Airtel Telecom Pipeline for call {call_id}...")
+            await run_airtel_pipeline(transport=transport, call_id=call_id, phone=phone, metadata=metadata)
     except Exception as e:
         logger.error(f"Pipeline crashed for call {call_id}: {e}", exc_info=True)
     finally:

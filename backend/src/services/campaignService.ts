@@ -1527,7 +1527,8 @@ export class CampaignService {
           c.recording_url,
           c.ended_at,
           COALESCE(co.final_disposition, c.call_status, c.status) as disposition,
-          co.final_disposition as outcome_disposition
+          co.final_disposition as outcome_disposition,
+          COALESCE(co.transcript, c.transcript) as transcript
         FROM calls c
         LEFT JOIN call_outcomes co ON c.id = co.call_id
         WHERE c.customer_id = $1
@@ -1537,6 +1538,46 @@ export class CampaignService {
       const calls = callsRes.rows;
 
       const attemptsCount = Math.max(lead.total_attempts || 0, calls.length);
+
+      // Extract and format transcript across call attempts
+      const callTranscripts: string[] = [];
+      for (let i = 0; i < calls.length; i++) {
+        const call = calls[i];
+        const rawTr = call.transcript;
+        let turns: any[] = [];
+        if (Array.isArray(rawTr)) {
+          turns = rawTr;
+        } else if (typeof rawTr === 'string' && rawTr.trim()) {
+          try {
+            const parsed = JSON.parse(rawTr);
+            if (Array.isArray(parsed)) turns = parsed;
+          } catch {
+            turns = [];
+          }
+        }
+        if (turns.length > 0) {
+          const formattedTurns = turns
+            .map((t: any) => {
+              const role = (t.role === 'customer' || t.role === 'user') ? 'Customer' : 'Agent';
+              const text = (t.text || '').trim();
+              return text ? `${role}: ${text}` : '';
+            })
+            .filter(Boolean)
+            .join('\n');
+
+          if (formattedTurns) {
+            if (calls.length > 1) {
+              const attNum = typeof call.attempt_number === 'number' && call.attempt_number >= 1
+                ? call.attempt_number
+                : (i + 1);
+              callTranscripts.push(`[Attempt ${attNum}]\n${formattedTurns}`);
+            } else {
+              callTranscripts.push(formattedTurns);
+            }
+          }
+        }
+      }
+      const fullTranscript = callTranscripts.join('\n\n');
 
       // Build attempt dispositions (up to 8)
       const attemptDispositions: (string | null)[] = Array(8).fill(null);
@@ -1631,6 +1672,7 @@ export class CampaignService {
         final_disposition: finalDisposition ? matchCanonicalDisposition(finalDisposition) : '',
         conclusion_date: conclusionDate ? formatDateTime(conclusionDate) : (lastCallTime ? formatDateTime(lastCallTime) : ''),
         recording: lastRecordingUrl || '',
+        transcript: fullTranscript || '',
       });
     }
 

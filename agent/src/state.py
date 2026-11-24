@@ -92,6 +92,21 @@ class ConversationState:
         self.hangup_started: bool = False  # clean_hangup runs at most once
         self.recording_url: Optional[str] = None
 
+        # Telephony & Pipecat runtime state
+        self.callee_connected: bool = False
+        self.answered_at: Optional[float] = None
+        self.last_activity_time: float = time.time()
+        self.last_agent_speech_end: float = time.time()
+        self.hold_until: float = 0.0
+        self.direct_reply: Optional[str] = None
+        self.pending_preface: Optional[str] = None
+        self.closing_spoken: bool = False
+        self.ivr_detected: bool = False
+        self.agent_speaking: bool = False  # set by PlayoutTracker
+        self.carrier_weak_hits: int = 0    # consecutive weak carrier-pattern hits on long utterances
+        self.awaiting_detail: bool = False  # the agent just asked a free-text detail (address, phone, recharge date...):
+                                            # the next reply must NOT be read as a pickup date or a bare yes/no
+
     def update_reply_lang(self, text: Optional[str]) -> bool:
         """Follow the customer's language. Can switch only once:
         - If initial is English ('en') and customer speaks Hinglish/Hindi, switch to Hinglish once.
@@ -115,6 +130,7 @@ class ConversationState:
         if message and message.strip():
             self.transcript.append({
                 "role": role,
+                "text": message.strip(),
                 "message": message.strip(),
                 "timestamp": time.time(),
             })
@@ -148,3 +164,4 @@ class ConversationState:
             Step.ESCALATED,
             Step.TERMINATED,
         ]
+        

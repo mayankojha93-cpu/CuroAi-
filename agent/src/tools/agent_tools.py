@@ -2,9 +2,15 @@ import re
 import time
 import asyncio
 import logging
-from livekit.agents import function_tool
 
-from src.config import DIRECT_SPEAK
+def function_tool(func=None, **kwargs):
+    if func is not None:
+        return func
+    def decorator(f):
+        return f
+    return decorator
+
+from src.intents import is_clear_yes, extract_phone, DETAIL_TOPIC_RE as _NOT_A_PICKUP_DATE, has_date_cue
 from src.state import Step, ConversationState
 from src.lang import L
 from src.utils.dates import resolve_relative_date, get_next_available_pickup_date, spoken_date
@@ -15,8 +21,8 @@ logger = logging.getLogger("agent-tools")
 GENERIC_NAME_TOKENS = ("customer", "subscriber", "user", "airtel", "client", "inbound", "caller")
 
 # Every call ends with this exact sentence (in the customer's language), then the call is disconnected.
-CLOSING_HI = "किसी भी अन्य जानकारी के लिए कृपया एयरटेल 121 पर संपर्क करें। धन्यवाद।"
-CLOSING_EN = "For any other help, dial 121. Thank you."
+CLOSING_HI = "किसी भी अन्य जानकारी के लिए कृपया एयरटेल वन टू वन पर संपर्क करें। धन्यवाद।"
+CLOSING_EN = "For any other help, dial one two one. Thank you."
 
 
 _YES_WORDS = {
@@ -31,38 +37,7 @@ def _is_yes(v) -> bool:
     return _clean(v).lower() in _YES_WORDS
 
 
-_CLEAR_YES_TOKENS = {
-    # Hindi / Devanagari
-    "हाँ", "हां", "हा", "हाँजी", "हांजी", "जी", "जीहां", "सही", "ठीक", "बिल्कुल", "बोलिए", "बोलिये", "बोलो",
-    "बोल", "बोलता", "बोलती", "हूँ", "हूं", "है", "हैं", "वाईफाई", "वाई", "कनेक्शन", "एयरटेल",
-    "यस", "येस", "स्पीकिंग", "करेक्ट", "राइट", "ओके",
-    # Romanised / English
-    "haan", "han", "ha", "haa", "ji", "yes", "yeah", "yep", "yup", "ok", "okay", "correct", "right", "sahi",
-    "theek", "thik", "bilkul", "boliye", "bolo", "bol", "speaking", "hoon", "hun", "hai", "wifi", "connection", "airtel",
-    "sure", "this", "me",
-}
-_NEGATION_TOKENS = {
-    "नहीं", "नही", "ना", "गलत", "मत", "nahi", "nahin", "no", "not", "wrong", "galat", "नो", "नॉट",
-}
-_SPLIT_RE = re.compile(r"[\s,.;:!?।|/()\-\"']+")
-
-# When the customer is answering a DETAIL question (when did you recharge, where is the router, ...),
-# a date in their reply is NOT a pickup date. These words mean "leave it to the LLM + the matching tool".
-_NOT_A_PICKUP_DATE = re.compile(
-    r"recharg|रिचार्ज|रीचार्ज|shift|शिफ्ट|शिफ़्ट|damage|damaged|टूट|खराब|ख़राब|lost|खो गया|खो गई|खोया|"
-    r"refund|रिफंड|वापस पैसे|picked|already|पहले ही|ले गए|ले लिया|return(ed)? it|जमा कर|"
-    r"complain|शिकायत|charge|penalt|जुर्माना|fee\b|dnd|do not call|मत करो कॉल|कॉल मत",
-    re.IGNORECASE,
-)
-
-
-def is_clear_yes(text) -> bool:
-    """True only if the customer's last utterance contains an affirmative word and no negation.
-    Used to stop the LLM confirming identity on off-topic text, noise or recorded announcements."""
-    tokens = [t for t in _SPLIT_RE.split(str(text or "").lower()) if t]
-    if not tokens or any(t in _NEGATION_TOKENS for t in tokens):
-        return False
-    return any(t in _CLEAR_YES_TOKENS for t in tokens)
+# is_clear_yes / _NOT_A_PICKUP_DATE (detail-topic regex) now live in src/intents.py (single source of truth).
 
 
 def _clean(v) -> str:
@@ -103,9 +78,11 @@ class AgentTools:
     def __init__(self, state: ConversationState, timing_tracker: dict = None):
         self.state = state
         self.timing_tracker = timing_tracker if timing_tracker is not None else {}
-        self.agent = None  # set in worker.py after AirtelAgent is created
+        self.agent = None  # set in worker.py after PipecatSession is created
         # Set in worker.py: on_terminal(speech_handle) -> starts the hangup once the closing line is spoken.
         self.on_terminal = None
+        self.hangup_func = None
+        self.log_dialogue_func = None
         self._force_direct = False
 
     # ───────────────────────── helpers ─────────────────────────
@@ -117,6 +94,7 @@ class AgentTools:
         return self._t(CLOSING_HI, CLOSING_EN)
 
     def _notify_tool_activity(self):
+        self.state.awaiting_detail = False  # a tool that needs a detail sets it again right before asking
         if self.timing_tracker:
             self.timing_tracker["provider_filler_pending"] = False
             self.timing_tracker["last_activity_time"] = time.time()
@@ -125,29 +103,79 @@ class AgentTools:
                 task.cancel()
 
     def _say(self, text: str):
-        """Tool return value for a FIXED line the customer must hear.
+        """Tool return value for a FIXED line the customer must hear. Code speaks it; the LLM never paraphrases it.
 
-        DIRECT_SPEAK on  : speak it right now through TTS and return None. LiveKit treats a None tool result as
-                           "no reply needed", so the LLM is NOT called a second time just to read the line back
-                           (that second call was ~2s of every tool turn). The line is added to the chat history,
-                           logged and transcribed like any other assistant message.
-                           If the call is at a terminal step, the hangup is started from here, tied to the
-                           speech handle, so the phone call ends right after the closing line.
-        DIRECT_SPEAK off : (or if speaking fails) the original behaviour: tell the LLM to say it word for word.
+        * terminal step                 -> spoken right here (not interruptible), logged, hangup armed.
+        * inside an LLM tool call       -> returns None; PipecatSession._dispatch speaks state.direct_reply
+                                           exactly ONCE (FAST_REPLY). Speaking here too made every mid-call
+                                           line play twice.
+        * outside an LLM tool call      -> (run_direct / date shortcut sets _force_direct) spoken right here.
         """
-        if (DIRECT_SPEAK or self._force_direct) and self.agent is not None:
+        s = self.state
+        s.direct_reply = text
+        if self.agent is None:
+            return f"Say exactly this to the customer, nothing else: {text}"
+        terminal = s.is_terminal()
+        if not terminal and not self._force_direct:
+            return None
+        try:
+            session = self.agent.session
+            if terminal:
+                s.closing_spoken = True
+                s.closing_line = text
+            s.direct_reply = None  # spoken below: _dispatch must not speak it again
+            if self.log_dialogue_func:
+                self.log_dialogue_func("assistant", text)
+            # closing lines must not be cut off by "ok / thank you" from the customer
+            handle = session.say(text, allow_interruptions=not terminal)
+            if terminal and self.on_terminal is not None:
+                self.on_terminal(handle)
+            elif terminal and self.hangup_func is not None:
+                asyncio.create_task(self._hangup_after_playout(handle))
+            return None
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Direct speak failed ({e}); falling back to LLM-spoken line")
+            s.direct_reply = text
+            return f"Say exactly this to the customer, nothing else: {text}"
+
+    async def run_direct(self, fn, *args, **kwargs) -> bool:
+        """Run a tool method from CODE (regex fast-path), not from the LLM, and speak its line immediately.
+        Returns True if the turn was fully handled (a line was spoken), False if the tool only produced an
+        instruction for the LLM (then the caller lets the LLM run the turn)."""
+        self._force_direct = True
+        try:
+            res = await fn(*args, **kwargs)
+        finally:
+            self._force_direct = False
+        if res is None:
+            return True
+        if isinstance(res, str) and res.startswith("Say exactly this") and self.agent is not None:
+            line = res.split(": ", 1)[-1]
             try:
-                session = self.agent.session
-                terminal = self.state.is_terminal()
-                # closing lines must not be cut off by "ok / thank you" from the customer
-                handle = session.say(text, allow_interruptions=not terminal, add_to_chat_ctx=True)
-                if terminal and self.on_terminal is not None:
-                    self.state.closing_line = text
-                    self.on_terminal(handle)
-                return None
+                self.agent.session.say(line, allow_interruptions=not self.state.is_terminal())
+                if self.log_dialogue_func:
+                    self.log_dialogue_func("assistant", line)
+                return True
             except Exception as e:  # noqa: BLE001
-                logger.warning(f"Direct speak failed ({e}); falling back to LLM-spoken line")
-        return f"Say exactly this to the customer, nothing else: {text}"
+                logger.error(f"Could not speak direct line: {e}")
+        return False
+
+    def _phone(self, value) -> str:
+        """Phone numbers come from the customer's OWN words (regex), not from digits the LLM typed."""
+        from_speech = extract_phone(self._last_customer_text())
+        if from_speech:
+            return from_speech
+        return extract_phone(_clean(value))
+
+    async def _hangup_after_playout(self, handle):
+        try:
+            if hasattr(handle, "wait_for_playout"):
+                await handle.wait_for_playout()
+        except Exception:
+            pass
+        await asyncio.sleep(0.8)
+        if self.hangup_func:
+            await self.hangup_func()
 
     async def _post_outcome(self):
         """Post outcome. Runs in a thread (requests is blocking and would freeze live audio).
@@ -169,7 +197,7 @@ class AgentTools:
     async def _go(self, step: Step):
         """Move to next step AND swap the LLM's instructions + tools for that step."""
         self.state.transition_to(step)
-        if self.agent is not None:
+        if self.agent is not None and hasattr(self.agent, "sync_step"):
             try:
                 await self.agent.sync_step()
             except Exception as e:  # noqa: BLE001
@@ -192,8 +220,8 @@ class AgentTools:
 
     def _last_customer_text(self) -> str:
         for item in reversed(self.state.transcript):
-            if item.get("role") == "customer":
-                return item.get("message", "")
+            if item.get("role") in ("customer", "user"):
+                return item.get("message") or item.get("text") or ""
         return ""
 
     def _identity_question(self) -> str:
@@ -296,6 +324,8 @@ class AgentTools:
         text = (text or "").strip()
         if not text or _NOT_A_PICKUP_DATE.search(text):
             return False
+        if not has_date_cue(text):  # an address like "flat 25, sector 14" can never be a pickup date
+            return False
         iso, spoken, err = resolve_relative_date(text, strict=True)
         if err or not iso or not spoken:
             return False  # no date, negated date, past date -> the LLM + tools handle it
@@ -312,7 +342,7 @@ class AgentTools:
         if isinstance(res, str) and self.agent is not None:  # direct speak failed: say it ourselves
             try:
                 line = res.split(": ", 1)[-1]
-                self.agent.session.say(line, allow_interruptions=not s.is_terminal(), add_to_chat_ctx=True)
+                self.agent.session.say(line, allow_interruptions=not s.is_terminal())
             except Exception as e:  # noqa: BLE001
                 logger.error(f"Could not speak date confirmation: {e}")
         return True
@@ -385,6 +415,7 @@ class AgentTools:
         if is_wrong_person or (not is_correct and not call_later):
             # FAQ: validate whether the registered customer details are known to this person
             if self._strike("wrong_number") == 1:
+                s.awaiting_detail = True  # the next "haan" answers THIS question, not the identity question
                 if self._is_generic_name():
                     return self._say(self._t(
                         "क्या आपके पास एयरटेल वाई-फाई का कनेक्शन है?",
@@ -478,6 +509,25 @@ class AgentTools:
                 if iso and spoken:
                     s.pickup_accepted = True
                     return await self._accept_date(iso, spoken)
+            if is_clear_yes(self._last_customer_text()) and self._strike("decision_mismatch") == 1:
+                when = self._offered_spoken()
+                return self._say(self._t(
+                    f"माफ़ कीजिए, क्या मैं {when} को पिकअप शेड्यूल कर दूँ?",
+                    f"Sorry, may I schedule the pickup for {when}?",
+                ))
+            return await self._decline_offer()
+
+        # An unclear answer is never treated as consent: ask again
+        last = self._last_customer_text()
+        if not date_text and not is_clear_yes(last):
+            n = self._strike("pickup_unclear")
+            logger.warning(f"[Tool] set_pickup REJECTED (unclear consent). strike={n}, last='{last}'")
+            if n <= 2:
+                when = self._offered_spoken()
+                return self._say(self._t(
+                    f"माफ़ कीजिए, आपकी बात स्पष्ट नहीं हो पाई। क्या मैं {when} को पिकअप शेड्यूल कर दूँ?",
+                    f"Sorry, that was not clear. May I schedule the pickup for {when}?",
+                ))
             return await self._decline_offer()
 
         s.pickup_accepted = True
@@ -543,15 +593,41 @@ class AgentTools:
         confirmed=false plus new_address (full address, spoken by the customer) if changed."""
         self._notify_tool_activity()
         s = self.state
-        new_address, alternate_phone = _clean(new_address), _clean(alternate_phone)
+        new_address, alternate_phone = _clean(new_address), self._phone(alternate_phone)
         logger.info(f"[Tool] confirm_address: confirmed={confirmed}, new='{new_address}'")
 
         if s.step != Step.ADDRESS_CONFIRMATION or not s.confirmed_date:
             return "Not allowed yet: pickup date is not confirmed. Continue the current step."
         if not confirmed and not new_address:
-            return self._say(self._t("कृपया अपना सही पता बताइए।", "Please tell me your correct address."))
+            if self._strike("address_ask") <= 3:
+                s.awaiting_detail = True
+                return self._say(self._t("कृपया अपना सही पता बताइए।", "Please tell me your correct address."))
+            # Asked three times and still no address: close the pickup, flag it for the team.
+            return await self._finish(
+                Step.CLOSE, "PICKUP_CONFIRMED",
+                "Pickup confirmed. Customer said the registered address is different but could not give the new address. Team to verify.",
+                self._t(f"पुष्टि के लिए धन्यवाद। हमारी टीम आपसे पते के लिए संपर्क करेगी। {CLOSING_HI}",
+                        f"Thank you for confirming. Our team will contact you about the address. {CLOSING_EN}"),
+            )
 
-        s.registered_address_confirmed = confirmed
+        # An unclear answer is never treated as consent. (The old code fell through after 2 strikes and
+        # recorded the address as CONFIRMED anyway.) The pickup itself is already agreed, so after 2 strikes we
+        # close the pickup but leave the address unconfirmed and say so in the note.
+        address_unclear = False
+        if confirmed:
+            last = self._last_customer_text()
+            if not is_clear_yes(last):
+                n = self._strike("address_unclear")
+                logger.warning(f"[Tool] confirm_address REJECTED (unclear consent). strike={n}, last='{last}'")
+                if n <= 2:
+                    return self._say(self._t(
+                        f"माफ़ कीजिए, क्या आपका रजिस्टर्ड पता '{s.address}' सही है?",
+                        f"Sorry, could you please confirm, is your registered address '{s.address}' correct?",
+                    ))
+                address_unclear = True
+
+        if not address_unclear:
+            s.registered_address_confirmed = confirmed
         if not confirmed:
             s.new_address = new_address
         if alternate_phone:
@@ -560,6 +636,8 @@ class AgentTools:
         changed = s.offered_date and s.confirmed_date != s.offered_date
         disposition = "PICKUP_CONFIRMED_NEW_DATE" if changed else "PICKUP_CONFIRMED"
         note = "Pickup confirmed"
+        if address_unclear:
+            note += ". Registered address NOT confirmed (customer replies were unclear)"
         if not confirmed:
             note += f". Address updated by customer: {new_address}"
         if s.alternate_phone:
@@ -604,6 +682,7 @@ class AgentTools:
         recharge_date = _clean(recharge_date)
         logger.info(f"[Tool] record_recharge: date='{recharge_date}'")
         if not recharge_date:
+            self.state.awaiting_detail = True
             return "Ask the customer when they recharged, then call this tool again with recharge_date."
         s = self.state
         return await self._finish(
@@ -624,6 +703,7 @@ class AgentTools:
         logger.info(f"[Tool] record_already_picked_up: details='{pickup_details}'")
         # FAQ: obtain basic pickup details wherever available (ask once)
         if not pickup_details and self._strike("picked_details") == 1:
+            self.state.awaiting_detail = True
             return self._say(self._t(
                 "क्या आप बता सकते हैं कि राउटर कब और किसने लिया था?",
                 "Can you tell me when and by whom the router was collected?",
@@ -668,6 +748,10 @@ class AgentTools:
         new_address, relative_phone, occupant_contact, alternate_phone = map(
             _clean, (new_address, relative_phone, occupant_contact, alternate_phone)
         )
+        rel_raw = relative_phone
+        relative_phone = self._phone(relative_phone)           # 10-digit number from the customer's own words
+        alternate_phone = self._phone(alternate_phone)
+        occupant_contact = self._phone(occupant_contact) or occupant_contact
         logger.info(
             f"[Tool] record_shifted: loc={device_location}, stated={customer_stated_location}, "
             f"new='{new_address}', rel='{relative_phone}', occ='{occupant_contact}'"
@@ -678,6 +762,7 @@ class AgentTools:
 
         # Never guess where the router is: ask once if the customer has not said it.
         if not customer_stated_location and self._strike("shift_location") == 1:
+            s.awaiting_detail = True
             return self._say(self._t(
                 "क्या राउटर अभी आपके साथ है, किसी रिश्तेदार के पास है, या पुराने पते पर रह गया है?",
                 "Is the router with you now, with a relative, or was it left at the old address?",
@@ -685,11 +770,14 @@ class AgentTools:
 
         # Scenario: device with a relative -> get relative's number, team validates before pickup
         if "relative" in loc:
-            if not relative_phone:
+            if not relative_phone and self._strike("relative_phone") <= 2:
+                s.awaiting_detail = True
                 return self._say(self._t(
-                    "क्या आप उन रिश्तेदार का कॉन्टैक्ट नंबर बता सकते हैं?",
-                    "Can you share that relative's contact number?",
+                    "क्या आप उन रिश्तेदार का दस अंकों का कॉन्टैक्ट नंबर बता सकते हैं?",
+                    "Can you share that relative's ten digit contact number?",
                 ))
+            # After two asks accept whatever the customer managed to give (never loop on a number STT can't catch).
+            relative_phone = relative_phone or rel_raw or "not provided"
             s.alternate_phone = relative_phone
             return await self._finish(
                 Step.CLOSE, "SHIFTED_DEVICE_WITH_RELATIVE",
@@ -703,6 +791,7 @@ class AgentTools:
         # Scenario: device left at previous address -> occupant contact if any; never arrange pickup blindly
         if "previous" in loc or "old" in loc or "left" in loc:
             if not occupant_contact and self._strike("occupant") == 1:
+                s.awaiting_detail = True
                 return self._say(self._t(
                     "क्या पुराने पते पर रहने वाले किसी व्यक्ति का नंबर आपके पास है?",
                     "Do you have the number of anyone living at the old address?",
@@ -726,6 +815,7 @@ class AgentTools:
 
         # Scenario: shifted but still has the device -> new address, then arrange pickup from there
         if not new_address:
+            s.awaiting_detail = True
             return self._say(self._t("कृपया अपना नया पता बताइए।", "Please tell me your new address."))
         s.new_address = new_address
         s.pickup_accepted = True
@@ -757,13 +847,14 @@ class AgentTools:
         """Customer is not available at the registered address right now.
         If the device is elsewhere, pass alternate_address and alternate_phone."""
         self._notify_tool_activity()
-        alternate_address, alternate_phone = _clean(alternate_address), _clean(alternate_phone)
+        alternate_address, alternate_phone = _clean(alternate_address), self._phone(alternate_phone)
         logger.info(f"[Tool] record_temporarily_unavailable: addr='{alternate_address}', phone='{alternate_phone}'")
         s = self.state
 
         if alternate_address:
             # FAQ: obtain the alternate address AND contact details
             if not alternate_phone and self._strike("unavail_phone") == 1:
+                s.awaiting_detail = True
                 return self._say(self._t(
                     "उस पते पर संपर्क के लिए कोई फ़ोन नंबर बता सकते हैं?",
                     "Can you give a phone number to contact at that address?",
@@ -782,6 +873,7 @@ class AgentTools:
                 ),
             )
         if self._strike("unavailable") == 1:
+            s.awaiting_detail = True
             return self._say(self._t(
                 "क्या राउटर किसी और पते पर उपलब्ध है, जहाँ से पिकअप हो सके?",
                 "Is the router available at another address from where we can pick it up?",
@@ -841,15 +933,16 @@ class AgentTools:
 
     @function_tool
     async def escalate_to_121(self, reason: str = "") -> str:
-        """Complaint, dispute, or any question outside the script (fees, policy, refunds).
-        Never answer these yourself."""
+        """Complaint, dispute, question about fees, penalties, charges, refunds, policies,
+        or customer requested to speak to a human representative. Never invent answers: record and route to 121."""
         self._notify_tool_activity()
-        logger.info(f"[Tool] escalate_to_121: reason='{reason}'")
+        clean_reason = _clean(reason) or "Query outside script / policy or fee question"
+        logger.info(f"[Tool] escalate_to_121: reason='{clean_reason}'")
         self.state.escalation_required = True
         return await self._finish(
-            Step.ESCALATED, "NEEDS_AIRTEL_SUPPORT", f"Escalated to 121: {reason}",
+            Step.ESCALATED, "NEEDS_AIRTEL_SUPPORT", f"Escalated to 121: {clean_reason}",
             self._t(
-                f"इसके लिए कृपया एयरटेल 121 पर या एयरटेल Thanks ऐप पर संपर्क करें। {CLOSING_HI}",
-                f"For this, please contact Airtel 121 or the Airtel Thanks app. {CLOSING_EN}",
+                f"इसके लिए कृपया एयरटेल वन टू वन पर या एयरटेल थैंक्स ऐप पर संपर्क करें। {CLOSING_HI}",
+                f"For this, please contact Airtel one two one or the Airtel Thanks app. {CLOSING_EN}",
             ),
         )

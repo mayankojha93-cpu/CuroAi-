@@ -113,9 +113,8 @@ internalRouter.post(
 );
 
 // POST /internal/real-estate/calls/:callId/turn - Incrementally save turn
-// Also aliased at /internal/calls/:callId/turn
 internalRouter.post(
-  ['/internal/real-estate/calls/:callId/turn', '/internal/calls/:callId/turn'],
+  '/internal/real-estate/calls/:callId/turn',
   requireInternalSecret,
   async (req: Request<{ callId: string }>, res: Response, next: NextFunction) => {
     try {
@@ -125,6 +124,30 @@ internalRouter.post(
         return res.status(400).json({ error: 'Turn text is required' });
       }
       await realEstateCallService.appendTurn(callId, { role, text, timestamp });
+      return res.status(200).json({ success: true, message: 'Turn appended' });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
+// POST /internal/calls/:callId/turn - Incrementally save turn (Airtel or RE)
+internalRouter.post(
+  '/internal/calls/:callId/turn',
+  requireInternalSecret,
+  async (req: Request<{ callId: string }>, res: Response, next: NextFunction) => {
+    try {
+      const { callId } = req.params;
+      const { role, text, timestamp } = req.body;
+      if (!text) {
+        return res.status(400).json({ error: 'Turn text is required' });
+      }
+      const callRes = await query('SELECT re_lead_id FROM calls WHERE id = $1', [callId]);
+      if (callRes.rows[0]?.re_lead_id) {
+        await realEstateCallService.appendTurn(callId, { role, text, timestamp });
+      } else {
+        await callService.appendTurn(callId, { role, text, timestamp });
+      }
       return res.status(200).json({ success: true, message: 'Turn appended' });
     } catch (err) {
       return next(err);
@@ -197,6 +220,10 @@ internalRouter.get(
         category: call.re_category || call.category || 'residential',
         propertyCategory: call.re_category || call.category || 'residential',
         direction: call.direction || 'outbound',
+        accountNo: call.account_no,
+        subsDelNo: call.subs_del_no,
+        serviceEndDate: call.service_end_date,
+        rDate: call.r_date,
       });
     } catch (err) {
       return next(err);

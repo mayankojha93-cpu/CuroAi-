@@ -24,9 +24,7 @@ interface TestCallViewProps {
 const SCRIPTS = [
   { id: 'my_estate_finder', label: 'My Estate Finder — Property Intake (Priya)', scriptKey: 'my_estate_finder', defaultOrg: 'My Estate Finder' },
   { id: 'trump_towers', label: 'Trump Towers India — Real Estate', scriptKey: 'Trump_towers_india', defaultOrg: 'Trump Towers India' },
-  { id: 'ratnafin', label: 'Ratnafin — Machinery Loan', scriptKey: 'Ratnafin_machinery_loan', defaultOrg: 'Ratnafin' },
   { id: 'airtel_return', label: 'Airtel Wi-Fi Router Return', scriptKey: 'airtel_router_return', defaultOrg: 'Airtel Telecom' },
-  { id: 'direct_outreach', label: 'Direct Voice Outreach', scriptKey: 'direct_voice_outreach', defaultOrg: 'Direct Voice' },
 ];
 
 const LANGUAGES = [
@@ -52,7 +50,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
     if (isRealEstate) {
       return s.id === 'my_estate_finder' || s.id === 'trump_towers';
     } else {
-      return s.id === 'airtel_return' || s.id === 'ratnafin' || s.id === 'direct_outreach';
+      return s.id === 'airtel_return';
     }
   });
 
@@ -527,28 +525,12 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                     ]
                   : [
                       {
-                        title: '📶 Airtel Wi-Fi Return',
+                        title: '📶 Airtel Wi-Fi Router',
                         name: 'Rajan Nayak',
                         phone: '+919811122233',
                         script: 'Airtel Wi-Fi Router Return',
                         pipeline: 'Sarvam AI (Priya - hi-IN)',
                         company: 'Airtel Telecom',
-                      },
-                      {
-                        title: '💳 Ratnafin Loan',
-                        name: 'Pooja Verma',
-                        phone: '+919876543210',
-                        script: 'Ratnafin — Machinery Loan',
-                        pipeline: 'Sarvam AI (Priya - hi-IN)',
-                        company: 'Ratnafin',
-                      },
-                      {
-                        title: '📞 Voice Outreach',
-                        name: 'Karan Mehra',
-                        phone: '+919988776655',
-                        script: 'Direct Voice Outreach',
-                        pipeline: 'Sarvam AI (Priya - hi-IN)',
-                        company: 'Direct Voice',
                       },
                     ]
                 ).map((p, idx) => (
@@ -646,29 +628,31 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                 />
               </div>
 
-              {/* Field: Property Location */}
-              <div>
-                <label style={{ display: 'block', fontSize: '0.82rem', color: isRealEstate ? '#38BDF8' : '#94A3B8', fontWeight: 600, marginBottom: 8 }}>
-                  Property Location / Sector
-                </label>
-                <input
-                  type="text"
-                  value={propertyLocation}
-                  onChange={(e) => setPropertyLocation(e.target.value)}
-                  placeholder={isRealEstate ? "e.g. DLF Phase 5, Sector 54, Gurgaon" : "e.g. Registered address / sector"}
-                  style={{
-                    width: '100%',
-                    background: '#070A12',
-                    border: isRealEstate ? '1px solid rgba(56, 189, 248, 0.35)' : '1px solid rgba(255, 255, 255, 0.08)',
-                    borderRadius: 8,
-                    color: '#FFFFFF',
-                    fontSize: '0.9rem',
-                    padding: '11px 14px',
-                    outline: 'none',
-                    boxSizing: 'border-box',
-                  }}
-                />
-              </div>
+              {/* Field: Property Location (Real Estate Pipeline) */}
+              {isRealEstate && (
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.82rem', color: '#38BDF8', fontWeight: 600, marginBottom: 8 }}>
+                    Property Location / Sector
+                  </label>
+                  <input
+                    type="text"
+                    value={propertyLocation}
+                    onChange={(e) => setPropertyLocation(e.target.value)}
+                    placeholder="e.g. DLF Phase 5, Sector 54, Gurgaon"
+                    style={{
+                      width: '100%',
+                      background: '#070A12',
+                      border: '1px solid rgba(56, 189, 248, 0.35)',
+                      borderRadius: 8,
+                      color: '#FFFFFF',
+                      fontSize: '0.9rem',
+                      padding: '11px 14px',
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                </div>
+              )}
 
               {/* Field: Property Category (Real Estate Pipeline) */}
               {isRealEstate && (

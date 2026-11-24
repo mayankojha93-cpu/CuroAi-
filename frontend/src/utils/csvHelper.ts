@@ -735,7 +735,7 @@ export function generateRealEstateCampaignReportCsv(reportData: any[]): string {
 export function generateCampaignAuditedReportCsv(reportData: any[], pipeline?: string): string {
   if (
     pipeline === 'real_estate' ||
-    (!pipeline && reportData.length > 0 && ('bhk_config' in reportData[0] || 'society' in reportData[0] || 'transcript' in reportData[0]))
+    (!pipeline && reportData.length > 0 && ('bhk_config' in reportData[0] || 'society' in reportData[0] || 'commercial_type' in reportData[0] || 'agent_summary' in reportData[0]))
   ) {
     return generateRealEstateCampaignReportCsv(reportData);
   }
@@ -744,7 +744,7 @@ export function generateCampaignAuditedReportCsv(reportData: any[], pipeline?: s
   const totalAttempts = reportData.reduce((sum, r) => sum + (Number(r.attempts_count) || 0), 0);
   const connectedCalls = reportData.reduce((sum, r) => sum + (Number(r.connected_attempts_count) || 0), 0);
 
-  // 28 columns matching spec exactly
+  // Columns matching audited report spec
   const headers = [
     'S.No.',
     'Lead Id',
@@ -774,6 +774,7 @@ export function generateCampaignAuditedReportCsv(reportData: any[], pipeline?: s
     'Final Disposition',
     'Conclusion Date',
     'Recording',
+    'Transcript',
   ];
 
   const escapeCsv = (val: any): string => {
@@ -828,6 +829,7 @@ export function generateCampaignAuditedReportCsv(reportData: any[], pipeline?: s
       escapeCsv(row.final_disposition),
       escapeCsv(row.conclusion_date),
       escapeCsv(row.recording),
+      escapeCsv(row.transcript || '-'),
     ].join(','));
   }
 
