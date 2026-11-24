@@ -264,12 +264,13 @@ export async function downloadPendingRecordings(): Promise<void> {
      FROM calls c
      LEFT JOIN customers cust ON c.customer_id = cust.id
      LEFT JOIN real_estate_leads rl ON c.re_lead_id = rl.id
-     WHERE c.recording_download_status IN ('pending', 'failed')
+     WHERE c.recording_download_status = 'pending'
+       AND c.status NOT IN ('failed')
        AND c.ended_at IS NOT NULL
        AND c.ended_at > NOW() - INTERVAL '24 hours'
        AND c.recording_url IS NULL
-     ORDER BY c.ended_at ASC
-     LIMIT 20`
+     ORDER BY c.ended_at DESC
+     LIMIT 50`
   );
 
   if (res.rows.length === 0) return;
@@ -277,7 +278,7 @@ export async function downloadPendingRecordings(): Promise<void> {
   logger.info({ count: res.rows.length }, 'Recording downloader: processing pending calls');
 
   for (const row of res.rows) {
-    const { id: callId, exotel_call_sid: exotelSid, phone } = row;
+    const { id: callId, exotel_call_sid: exotelSid, phone, ended_at } = row;
 
     try {
       await query(
@@ -298,10 +299,12 @@ export async function downloadPendingRecordings(): Promise<void> {
       }
 
       if (!exotelData || !exotelData.recordingUrl) {
-        // Not ready yet (Exotel takes 1-5 mins after call)
+        // If the call ended more than 20 minutes ago and Exotel still has no recording, mark as 'failed'
+        // so it stops blocking other calls in the queue. Recent calls (< 20 mins) stay 'pending'.
+        const isOld = ended_at && (Date.now() - new Date(ended_at).getTime() > 20 * 60 * 1000);
         await query(
-          `UPDATE calls SET recording_download_status = 'pending' WHERE id = $1`,
-          [callId]
+          `UPDATE calls SET recording_download_status = $1 WHERE id = $2`,
+          [isOld ? 'failed' : 'pending', callId]
         );
         continue;
       }
