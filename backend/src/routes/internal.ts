@@ -48,8 +48,19 @@ const inboundSchema = {
   }),
 };
 
-// GET /internal/calls/active-dialing
-internalRouter.get('/internal/calls/active-dialing', async (req: Request, res: Response) => {
+// Constant-time secret comparison
+const requireInternalSecret = (req: Request, _res: Response, next: NextFunction) => {
+  const secretHeader = req.get('X-Internal-Secret') || '';
+  const a = Buffer.from(secretHeader);
+  const b = Buffer.from(env.INTERNAL_SECRET || '');
+  if (!env.INTERNAL_SECRET || a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return next(new AppError('Unauthorized: Invalid or missing X-Internal-Secret header', 401));
+  }
+  next();
+};
+
+// GET /internal/calls/active-dialing  (was unauthenticated: exposed callee phone numbers)
+internalRouter.get('/internal/calls/active-dialing', requireInternalSecret, async (req: Request, res: Response) => {
   const result = await query(
     `SELECT c.id, c.room_name, c.exotel_call_sid, COALESCE(cust.phone, rl.phone) as phone
      FROM calls c
@@ -65,7 +76,7 @@ internalRouter.get('/internal/calls/active-dialing', async (req: Request, res: R
 });
 
 // GET /internal/calls/by-sid/:sid
-internalRouter.get('/internal/calls/by-sid/:sid', async (req: Request, res: Response) => {
+internalRouter.get('/internal/calls/by-sid/:sid', requireInternalSecret, async (req: Request, res: Response) => {
   const { sid } = req.params;
   const result = await query(
     `SELECT c.id, c.room_name, c.exotel_call_sid, COALESCE(cust.phone, rl.phone) as phone
@@ -81,17 +92,6 @@ internalRouter.get('/internal/calls/by-sid/:sid', async (req: Request, res: Resp
   }
   return res.json(result.rows[0]);
 });
-
-// Constant-time secret comparison
-const requireInternalSecret = (req: Request, _res: Response, next: NextFunction) => {
-  const secretHeader = req.get('X-Internal-Secret') || '';
-  const a = Buffer.from(secretHeader);
-  const b = Buffer.from(env.INTERNAL_SECRET || '');
-  if (!env.INTERNAL_SECRET || a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-    return next(new AppError('Unauthorized: Invalid or missing X-Internal-Secret header', 401));
-  }
-  next();
-};
 
 // POST /internal/calls/:callId/outcome - Idempotent outcome save
 // POST /internal/real-estate/calls/:callId/outcome - Save real estate call outcome
