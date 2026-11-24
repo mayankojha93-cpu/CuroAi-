@@ -93,6 +93,16 @@ RECORD_CALLS = os.getenv("RECORD_CALLS", "1") == "1"
 
 # Backend & Integration Configs
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:3000")
-INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "dev-secret-key-12345")
-if not INTERNAL_SECRET:
-    logger.warning("INTERNAL_SECRET is not set; backend calls will be rejected.")
+_INTERNAL_SECRET_ENV = os.getenv("INTERNAL_SECRET", "").strip()
+if not _INTERNAL_SECRET_ENV:
+    # The old code defaulted the value first, so its "not set" warning could never fire.
+    logger.warning("INTERNAL_SECRET is not set; falling back to the insecure dev default. Set it in production.")
+INTERNAL_SECRET = _INTERNAL_SECRET_ENV or "dev-secret-key-12345"
+
+# ── Deterministic turn handling (regex layer in front of the LLM) ─────────────
+# Plain yes/no answers are acted on by code, without an LLM round-trip (set to 0 to send everything to the LLM).
+FASTPATH_ENABLED = os.getenv("FASTPATH_ENABLED", "1") == "1"
+# A WEAK carrier pattern (one a real customer could also say) only counts on utterances at least this long.
+CARRIER_WEAK_MIN_WORDS = int(os.getenv("CARRIER_WEAK_MIN_WORDS", "7"))
+# After a "your call is on hold" announcement, stay silent this long before the silence watchdog speaks.
+HOLD_WAIT_SECONDS = float(os.getenv("HOLD_WAIT_SECONDS", "30"))
