@@ -25,7 +25,7 @@ except Exception:  # pragma: no cover - module is not part of this repo snapshot
 
 from .prompts import get_step_instructions
 from .state import RealEstateState, RealEstateStep, RealEstateStep as _Step
-from .config import CHAT_CTX_MAX_ITEMS, FAST_TOOL_REPLY, FASTPATH_ENABLED, SHORTCUT_MAX_TOKENS, BACKCHANNEL_IGNORE_WINDOW, TTS_SPEAKABLE
+from .config import CHAT_CTX_MAX_ITEMS, FAST_TOOL_REPLY, FASTPATH_ENABLED, SHORTCUT_MAX_TOKENS, BACKCHANNEL_IGNORE_WINDOW, TTS_SPEAKABLE, ENABLE_HUMAN_REGEX_SHORTCUTS
 from .fastpath import extract as _fastpath_extract
 from .tools import (
     classify_category,
@@ -63,7 +63,8 @@ _IVR_EXTRA = re.compile(
 _STRONG_VM_RE = re.compile(
     r"(after\s+the\s+(tone|beep)|at\s+the\s+tone|leave\s+(a\s+|your\s+)*(message|voicemail)|record\s+your\s+message|"
     r"voice\s*mail|mail\s*box|press\s+(star|hash|pound|\d)|please\s+(stay|hold)\s+on\s+the\s+line|"
-    r"(not\s+reachable|switched\s+off|out\s+of\s+coverage)|(beep|tone)\s+ke\s+baad)",
+    r"(not\s+reachable|switched\s+off|out\s+of\s+coverage)|(beep|tone)\s+ke\s+baad|"
+    r"(?:dial|dialled)\s+kiya\s+(?:gaya|hua)|uplabdh\s+nahi\s+hai|sampark\s+nahi\s+ho\s+pa\s*raha)",
     re.I,
 )
 
@@ -995,6 +996,30 @@ class RealEstateTurnHandler:
             state.last_activity_time = time.time()
         else:
             state.hold_until = 0.0
+
+        if not ENABLE_HUMAN_REGEX_SHORTCUTS:
+            # PURE LLM PIPELINE (regex used strictly for IVR / carrier announcement detection above).
+            # All human conversational turns proceed directly to the LLM to understand natural speech.
+            lang_switched = False if _is_neutral_utterance(text) else state.update_reply_lang(text)
+            if lang_switched:
+                lang = state.reply_lang
+                logger.info(f"🌐 Customer switched language -> {lang}")
+                if self.on_language_change:
+                    try:
+                        self.on_language_change(lang)
+                    except Exception as e:
+                        logger.warning(f"Language switch callback failed: {e}")
+
+            # Ensure session instructions and tools match the current step before LLM generates
+            if self.session:
+                try:
+                    await self.session.update_instructions(get_step_instructions(state))
+                    await self.session.update_tools(self._re_tools.tools_for_step(state.step))
+                except Exception as e:
+                    logger.warning(f"Failed to refresh instructions/tools: {e}")
+
+            # Hand turn over to the LLM (no StopResponse raised)
+            return
 
         # NOTE: there is deliberately NO keyword check for "price / rate / market rate" here any more.
         # The word "price" appears in plain ANSWERS too ("price 50 lakh expect kar raha hoon"); flagging it set
