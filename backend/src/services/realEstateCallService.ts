@@ -102,8 +102,9 @@ export class RealEstateCallService {
       throw new AppError('A valid 10-digit phone number is required to place a call', 400);
     }
 
-    // In manual test call mode: auto-clear any previous test suppression so testing is never blocked
-    try {
+    // In manual test call mode: auto-clear any previous test suppression so testing is never blocked.
+    // NEVER in production: this also deleted genuine Do-Not-Call records for that number.
+    if (env.NODE_ENV !== 'production') try {
       await query(`
         UPDATE real_estate_leads 
         SET lead_status = 'PENDING', current_disposition = 'Pending Outreach'
@@ -658,6 +659,12 @@ ${dialogueText.slice(0, 4000)}`;
     const call = callRes.rows[0];
     const leadId = data.lead_id || call.re_lead_id;
 
+    // appendTurn() creates a placeholder outcome row ('In Progress'); only a REAL disposition means this call was
+    // already finalized (agent retry, or reconciler racing the agent). Used to avoid double-counting in campaigns.
+    const prevOutcomeRes = await query('SELECT final_disposition FROM real_estate_outcomes WHERE call_id = $1', [callId]);
+    const prevDisp = prevOutcomeRes.rows[0]?.final_disposition;
+    const alreadyFinalized = Boolean(prevDisp) && String(prevDisp).trim().toLowerCase() !== 'in progress';
+
     if (!call.campaign_id && leadId) {
       const leadCampRes = await query('SELECT campaign_id FROM real_estate_leads WHERE id = $1', [leadId]);
       if (leadCampRes.rows[0]?.campaign_id) {
@@ -906,6 +913,13 @@ ${dialogueText.slice(0, 4000)}`;
       data.agent_summary
     );
 
+    // A call with no measured duration never really connected: showing "Completed + Abruptly Disconnected" with
+    // no duration/recording/transcript was misleading and hid failures. Report it as not connected (retriable).
+    if (canonicalDisp === 'Abruptly Disconnected Call' && (Number(data.duration_seconds) || 0) <= 0) {
+      canonicalDisp = 'Not Connected (No Answer)';
+      data.failure_reason = data.failure_reason || 'Call ended before the agent connected (no audio or duration captured)';
+    }
+
     // 3. Save real_estate_outcomes (ensure customer dialogue is saved in clean Romanized Hindi)
     const processedTranscript = data.transcript ? romanizeTranscript(data.transcript) : null;
     const transcriptJson = processedTranscript ? JSON.stringify(processedTranscript) : null;
@@ -1060,7 +1074,9 @@ ${dialogueText.slice(0, 4000)}`;
     // 6. Update campaign counters and trigger next queued call if part of a campaign
     if (call.campaign_id) {
       const campId = call.campaign_id;
-      if (mappedStatus === 'completed') {
+      if (alreadyFinalized) {
+        // counters were already applied by the first finalization of this call
+      } else if (mappedStatus === 'completed') {
         await query(
           `UPDATE campaigns
            SET successful_calls = successful_calls + 1,
