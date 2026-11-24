@@ -606,6 +606,7 @@ async def _run_real_estate_pipeline(
             state.answered_at = time.time()
             state.last_activity_time = time.time()
             log_dialogue("assistant", greeting)
+            context.add_message({"role": "assistant", "content": greeting})
             # Non-interruptible so pickup noise / "hello?" cannot cancel the opening line.
             session.say(greeting, allow_interruptions=False)
 
