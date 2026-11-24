@@ -157,6 +157,31 @@ def schema_for_tool(fn: Callable) -> FunctionSchema:
     )
 
 
+def _coerce_tool_args(fn: Callable, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """Llama-class models often send booleans as strings ("false") or empty args as null.
+    bool("false") is True in Python, which would silently turn a denial into a confirmation."""
+    try:
+        hints = typing.get_type_hints(fn)
+    except Exception:
+        return kwargs
+    out: Dict[str, Any] = {}
+    for k, v in kwargs.items():
+        want = hints.get(k)
+        if v is None:
+            if want is bool:
+                continue  # let the tool's default apply
+            out[k] = "" if want in (str, None) else v
+        elif want is bool and isinstance(v, str):
+            out[k] = v.strip().lower() in ("true", "1", "yes", "y", "haan", "ha", "ji")
+        elif want is bool and isinstance(v, (int, float)):
+            out[k] = bool(v)
+        elif want is str and not isinstance(v, str):
+            out[k] = str(v)
+        else:
+            out[k] = v
+    return out
+
+
 class SpeechHandle:
     def __init__(self, tracker: "PlayoutTracker", text: str):
         self._tracker = tracker
@@ -180,11 +205,13 @@ class PlayoutTracker(FrameProcessor):
         await super().process_frame(frame, direction)
         if isinstance(frame, BotStartedSpeakingFrame):
             self.speaking = True
+            self.state.agent_speaking = True
             self._started_at = time.monotonic()
             async with self._cond:
                 self._cond.notify_all()
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self.speaking = False
+            self.state.agent_speaking = False
             self._stopped_at = time.monotonic()
             self.state.last_agent_speech_end = time.time()
             async with self._cond:
@@ -295,7 +322,12 @@ class TurnGate(FrameProcessor):
         self.handler = handler
         self.context = context
         self.log_dialogue = log_dialogue
-        self._seen_user_msgs = 0
+        # The old code counted user messages in the context. _trim_context() deletes old messages, so after a few
+        # turns the count stopped growing: new customer turns were no longer detected, so the regex layer
+        # (carrier / DND / fast-path) was skipped and the customer's words were never logged.
+        # A message is "new" when it is a different dict object, or the same one with different text.
+        self._last_user_msg: Any = None
+        self._last_user_text: Optional[str] = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -309,10 +341,11 @@ class TurnGate(FrameProcessor):
             last = msgs[-1] if msgs else None
             role = last.get("role") if isinstance(last, dict) else getattr(last, "role", None)
             if role == "user":
-                n_user = sum(1 for m in msgs if (m.get("role") if isinstance(m, dict) else getattr(m, "role", None)) == "user")
-                if n_user > self._seen_user_msgs:
-                    self._seen_user_msgs = n_user
-                    text = _message_text(last).strip()
+                cur_text = _message_text(last).strip()
+                if last is not self._last_user_msg or cur_text != self._last_user_text:
+                    self._last_user_msg = last
+                    self._last_user_text = cur_text
+                    text = cur_text
                     if text:
                         self.state.last_activity_time = time.time()
                         self.log_dialogue("customer", text)
@@ -425,7 +458,7 @@ class PipecatSession:
         voice = TTS_SPEAKER_EN if lang == "en" else TTS_SPEAKER_HI
         language = Language.EN_IN if lang == "en" else Language.HI_IN
         try:
-            await self.injector.inject(
+            self._speak_q.put_nowait(
                 TTSUpdateSettingsFrame(delta=SarvamHttpTTSService.Settings(voice=voice, language=language))
             )
             logger.info(f"🌐 Airtel TTS switched to {lang} ({voice})")
@@ -453,6 +486,7 @@ class PipecatSession:
         sig = inspect.signature(fn)
         accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
         kwargs = args if accepts_kwargs else {k: v for k, v in args.items() if k in sig.parameters}
+        kwargs = _coerce_tool_args(fn, kwargs)
         logger.info(f"🔧 Tool call: {name}({kwargs})")
         try:
             result = await fn(**kwargs)
@@ -485,3 +519,4 @@ class PipecatSession:
             return
 
         await params.result_callback(result)
+        
