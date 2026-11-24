@@ -45,6 +45,10 @@ INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "")
 if not INTERNAL_SECRET:
     logger.warning("INTERNAL_SECRET is not set; backend /internal calls will be rejected.")
 
+# Pipeline used when neither the URL/custom parameters nor the backend metadata say which agent this call is for.
+# It used to fall through to the Airtel pipeline, so one failed metadata fetch ran the wrong agent.
+DEFAULT_PIPELINE = os.getenv("EXOTEL_DEFAULT_PIPELINE", "real_estate").strip().lower()
+
 HANDSHAKE_TIMEOUT = float(os.getenv("EXOTEL_HANDSHAKE_TIMEOUT", "10"))
 # Last-resort callId lookup ("newest call in DIALING state"). It can attach the WRONG call when several calls dial
 # at the same time, so it is OFF unless explicitly enabled. Prefer passing callId as a query/custom parameter.
@@ -62,13 +66,17 @@ def _auth() -> Dict[str, str]:
     return {"X-Internal-Secret": INTERNAL_SECRET}
 
 
-async def _get_json(url: str) -> Optional[Dict[str, Any]]:
-    try:
-        status, body = await asyncio.to_thread(_http_sync, url, "GET", _auth(), 2.5)
-        if status in (200, 201):
-            return json.loads(body)
-    except Exception as e:
-        logger.debug(f"GET {url} failed: {e}")
+async def _get_json(url: str, attempts: int = 3) -> Optional[Dict[str, Any]]:
+    for i in range(1, attempts + 1):
+        try:
+            status, body = await asyncio.to_thread(_http_sync, url, "GET", _auth(), 3.0)
+            if status in (200, 201):
+                return json.loads(body)
+        except Exception as e:
+            # was logger.debug: a failed metadata lookup silently sent the call to the WRONG pipeline
+            logger.warning(f"GET {url} failed (attempt {i}/{attempts}): {e}")
+        if i < attempts:
+            await asyncio.sleep(0.3 * i)
     return None
 
 
@@ -129,13 +137,14 @@ async def media_stream(ws: WebSocket, path_call_id: Optional[str] = None):
     try:
         start = await _read_start_event(ws)
     except asyncio.TimeoutError:
-        logger.warning("No 'start' event from Exotel within handshake timeout; closing")
+        logger.warning(f"No 'start' event from Exotel within handshake timeout (callId={call_id}); no outcome will be posted by the agent")
         await _safe_close(ws)
         return
     except WebSocketDisconnect:
-        logger.info("Exotel disconnected during handshake")
+        logger.warning(f"Exotel disconnected during handshake (callId={call_id}); no pipeline ran, no outcome will be posted by the agent")
         return
     if not start:
+        logger.warning(f"Exotel sent 'stop' before 'start' (callId={call_id}); no pipeline ran, no outcome will be posted by the agent")
         await _safe_close(ws)
         return
 
@@ -218,7 +227,10 @@ async def media_stream(ws: WebSocket, path_call_id: Optional[str] = None):
         elif "real estate" in str(call_obj.get("script", "")).lower() or "estate" in str(call_obj.get("script", "")).lower():
             is_re = True
         else:
-            is_re = False
+            is_re = DEFAULT_PIPELINE in ("real_estate", "realestate", "estate")
+    else:
+        is_re = DEFAULT_PIPELINE in ("real_estate", "realestate", "estate")
+        logger.warning(f"⚠️ No pipeline hint and no metadata for call {call_id}; using default '{DEFAULT_PIPELINE}'")
 
     try:
         if is_re:

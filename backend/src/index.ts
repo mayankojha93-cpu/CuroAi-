@@ -102,6 +102,28 @@ let sweeperInterval: NodeJS.Timeout | null = null;
 let recordingInterval: NodeJS.Timeout | null = null;
 let campaignInterval: NodeJS.Timeout | null = null;
 
+// A slow run (e.g. many Exotel lookups) must not overlap the next tick: overlapping reconciler runs finalized the
+// same call twice (duplicate outcomes / campaign counters).
+const running = { sweeper: false, recording: false };
+async function runGuarded(key: keyof typeof running, label: string, fn: () => Promise<unknown>) {
+  if (running[key]) {
+    logger.warn(`${label} still running from the previous tick; skipping this tick`);
+    return;
+  }
+  running[key] = true;
+  try {
+    await fn();
+  } catch (err: any) {
+    logger.error({ err }, `Error running ${label}`);
+  } finally {
+    running[key] = false;
+  }
+}
+
+process.on('unhandledRejection', (reason) => {
+  logger.error({ reason }, 'Unhandled promise rejection');
+});
+
 // Start server if not imported as module in tests
 if (process.env.NODE_ENV !== 'test') {
   const server = app.listen(env.PORT, () => {
@@ -121,9 +143,7 @@ if (process.env.NODE_ENV !== 'test') {
 
     // Start stuck calls reconciler every 30 seconds
     sweeperInterval = setInterval(() => {
-      callService.reconcileStuckCalls().catch((err: any) => {
-        logger.error({ err }, 'Error running stuck calls reconciler');
-      });
+      void runGuarded('sweeper', 'stuck calls reconciler', () => callService.reconcileStuckCalls());
     }, 30000);
 
     // Start continuous campaign auto-dialer processor every 10 seconds
@@ -138,12 +158,10 @@ if (process.env.NODE_ENV !== 'test') {
     // Start recording downloader every 5 minutes
     // Per spec: Exotel recording appears 1–15 min after call, valid for 24 h
     recordingInterval = setInterval(() => {
-      downloadPendingRecordings().catch((err: any) => {
-        logger.error({ err }, 'Error running recording downloader');
-      });
+      void runGuarded('recording', 'recording downloader', () => downloadPendingRecordings());
     }, 5 * 60 * 1000);
     // Run once on startup to catch any recordings missed during downtime
-    downloadPendingRecordings().catch(() => {});
+    void runGuarded('recording', 'recording downloader', () => downloadPendingRecordings());
 
     // Sync any local recordings to AWS S3 on startup
     if (s3Service.isConfigured()) {
@@ -204,6 +222,19 @@ if (process.env.NODE_ENV !== 'test') {
         socket.on('close', () => {
           if (!proxySocket.destroyed) proxySocket.destroy();
         });
+      });
+
+      proxyReq.on('response', (proxyRes) => {
+        // Bridge refused the upgrade (wrong path, crashed handler...). Without this the Exotel socket just hung.
+        logger.error({ status: proxyRes.statusCode, url: req.url }, 'Python bridge did not accept the WebSocket upgrade');
+        proxyRes.resume();
+        socket.write(`HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n`);
+        socket.destroy();
+      });
+
+      proxyReq.setTimeout(8000, () => {
+        logger.error({ url: req.url }, 'Python bridge upgrade timed out');
+        proxyReq.destroy();
       });
 
       proxyReq.on('error', (err) => {
