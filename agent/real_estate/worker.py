@@ -171,7 +171,7 @@ def _apply_disconnect_disposition(state: RealEstateState):
         return
 
     is_answered = getattr(state, "answered_at", None) is not None or getattr(state, "callee_connected", False)
-    has_customer_speech = any(t.get("role") == "customer" for t in state.transcript)
+    has_customer_speech = any(t.get("role") in ("customer", "user") for t in state.transcript)
 
     if not is_answered and not has_customer_speech:
         state.final_disposition = "Not Connected (No Answer)"
@@ -266,12 +266,12 @@ def post_re_outcome_sync(state: RealEstateState) -> bool:
         "X-Internal-Secret": INTERNAL_SECRET,
         "Content-Type": "application/json",
     }
-    has_customer = any(t.get("role") == "customer" for t in state.transcript)
+    has_customer = any(t.get("role") in ("customer", "user") for t in state.transcript)
 
     if getattr(state, "answered_at", None):
         duration = max(1, int(time.time() - state.answered_at))
-    elif has_customer:
-        duration = max(5, int(time.time() - state.start_time))
+    elif has_customer or getattr(state, "callee_connected", False):
+        duration = max(1, int(time.time() - state.start_time))
     else:
         duration = 0
 
