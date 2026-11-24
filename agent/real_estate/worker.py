@@ -69,6 +69,7 @@ from .config import (
     TTS_SPEAKER_HI,
     TTS_TEMPERATURE,
     USER_SPEECH_TIMEOUT,
+    VAD_CONFIDENCE,
     VAD_MIN_SILENCE,
     logger,
 )
@@ -506,7 +507,9 @@ async def _run_real_estate_pipeline(
 
     async with aiohttp.ClientSession() as aiohttp_session:
         vad = VADProcessor(
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=VAD_MIN_SILENCE))
+            vad_analyzer=SileroVADAnalyzer(
+                params=VADParams(stop_secs=VAD_MIN_SILENCE, confidence=VAD_CONFIDENCE)
+            )
         )
         stt = SonioxSTTService(
             api_key=SONIOX_API_KEY,
