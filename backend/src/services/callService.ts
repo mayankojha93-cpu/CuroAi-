@@ -131,6 +131,10 @@ function extractPhone(value?: string | null): string {
   return value.replace(/^(phone-|sip_|sip:)/i, '').trim();
 }
 
+/** appendTurn() inserts a placeholder outcome ('In Progress'); that is NOT a real outcome. */
+const hasFinalOutcome = (d?: string | null): boolean =>
+  Boolean(d) && String(d).trim().toLowerCase() !== 'in progress';
+
 export class CallService {
   constructor() {}
 
@@ -1149,7 +1153,7 @@ export class CallService {
             `UPDATE calls SET status = 'busy', call_status = 'busy', ended_at = NOW() WHERE id = $1`,
             [call.id]
           );
-          if (call.pipeline === 'real_estate' && !call.re_disposition) {
+          if (call.pipeline === 'real_estate' && !hasFinalOutcome(call.re_disposition)) {
             await realEstateCallService.saveOutcome(call.id, {
               final_disposition: 'Line Busy',
               duration_seconds: 0,
@@ -1167,7 +1171,7 @@ export class CallService {
             `UPDATE calls SET status = 'failed', call_status = 'failed', ended_at = NOW() WHERE id = $1`,
             [call.id]
           );
-          if (call.pipeline === 'real_estate' && !call.re_disposition) {
+          if (call.pipeline === 'real_estate' && !hasFinalOutcome(call.re_disposition)) {
             await realEstateCallService.saveOutcome(call.id, {
               final_disposition: 'Call Failed (Carrier Disconnect)',
               duration_seconds: 0,
@@ -1181,7 +1185,7 @@ export class CallService {
         }
 
         // Callee did not answer or carrier says no-answer, or ringing timed out (>65s)
-        if (carrierStatus === 'no-answer' || ageSeconds >= 65) {
+        if (carrierStatus !== 'completed' && (carrierStatus === 'no-answer' || ageSeconds >= 65)) {
           await query(
             `UPDATE calls
              SET status = 'no_answer',
@@ -1192,7 +1196,7 @@ export class CallService {
             [call.id]
           );
 
-          if (call.pipeline === 'real_estate' && !call.re_disposition) {
+          if (call.pipeline === 'real_estate' && !hasFinalOutcome(call.re_disposition)) {
             try {
               await realEstateCallService.saveOutcome(call.id, {
                 final_disposition: 'Not Connected (No Answer)',
@@ -1215,7 +1219,8 @@ export class CallService {
       // If call is in 'answered' (or carrier reports completed):
       const isCarrierCompleted = carrierStatus === 'completed' || Boolean(exotelDetails.recordingUrl);
       const answeredAge = call.answered_at ? Math.round((Date.now() - new Date(call.answered_at).getTime()) / 1000) : ageSeconds;
-      const isDurationTimeout = answeredAge > (env.CALL_MAX_DURATION_SECONDS || 200) + 30;
+      // The agent allows MAX_CALL_SECONDS (300) + 40s extension; finalizing earlier would end a LIVE call's record.
+      const isDurationTimeout = answeredAge > Math.max(env.CALL_MAX_DURATION_SECONDS || 200, 340) + 60;
 
       if (!isCarrierCompleted && !isDurationTimeout) {
         // Call is actively in progress
@@ -1264,7 +1269,8 @@ export class CallService {
       }
 
       const hasCustomerTurns = Array.isArray(transcript) && transcript.some((t: any) => t.role === 'customer' || t.role === 'user');
-      const wasAnswered = Boolean(call.answered_at) || hasCustomerTurns || call.status === 'answered';
+      const carrierTalkSeconds = carrierStatus === 'completed' ? (exotelDetails.duration || 0) : 0;
+      const wasAnswered = Boolean(call.answered_at) || hasCustomerTurns || call.status === 'answered' || carrierTalkSeconds > 0;
 
       if (wasAnswered) {
         const startTime = call.answered_at ? new Date(call.answered_at).getTime() : new Date(call.created_at).getTime();
@@ -1282,7 +1288,7 @@ export class CallService {
           [durationSec, call.id, recoveredRecordingUrl]
         );
 
-        if (call.pipeline === 'real_estate' && !call.re_disposition) {
+        if (call.pipeline === 'real_estate' && !hasFinalOutcome(call.re_disposition)) {
           try {
             const hasDialogue = Array.isArray(transcript) && transcript.length > 0;
             const disp = hasDialogue ? 'Abruptly Disconnected Call' : 'Agent Not Connected (No Audio)';
@@ -1297,6 +1303,26 @@ export class CallService {
           } catch (e: any) {
             logger.warn({ callId: call.id, err: e?.message }, 'Reconciler saveOutcome warning');
           }
+        }
+      } else if (isCarrierCompleted) {
+        // Carrier finished the call with no talk time and the agent never connected: resolve it, don't leave it stuck.
+        await query(
+          `UPDATE calls
+           SET status = 'no_answer', call_status = 'no_answer',
+               failure_reason = COALESCE(failure_reason, 'Carrier reported call ended with no connected audio'),
+               ended_at = NOW()
+           WHERE id = $1`,
+          [call.id]
+        );
+        if (call.pipeline === 'real_estate' && !hasFinalOutcome(call.re_disposition)) {
+          await realEstateCallService.saveOutcome(call.id, {
+            final_disposition: 'Not Connected (No Answer)',
+            duration_seconds: 0,
+            transcript: [],
+          }).catch((e: any) => logger.warn({ callId: call.id, err: e?.message }, 'Reconciler saveOutcome (carrier completed, no audio) warning'));
+        }
+        if (call.customer_id) {
+          await this.evaluateRetry(call.customer_id, 'NO_ANSWER', null);
         }
       }
     }
