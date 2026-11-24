@@ -49,7 +49,11 @@ export async function initiateExotelWssCall(params: ExotelWssCallParams): Promis
   if (!streamBase) {
     if (env.PUBLIC_WEBHOOK_URL) {
       streamBase = env.PUBLIC_WEBHOOK_URL.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
+    } else if (env.NODE_ENV === 'production') {
+      // A stale hard-coded tunnel meant Exotel answered the callee and then could not reach the agent.
+      throw new Error('EXOTEL_STREAM_URL or PUBLIC_WEBHOOK_URL must be set in production');
     } else {
+      logger.warn('No EXOTEL_STREAM_URL / PUBLIC_WEBHOOK_URL set; falling back to the dev tunnel URL');
       streamBase = 'wss://zoo-gig-voluntary-marina.trycloudflare.com';
     }
   }
@@ -157,4 +161,3 @@ export async function fetchExotelCallDetails(
     return {};
   }
 }
-
