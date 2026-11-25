@@ -33,7 +33,7 @@ AGENT_PERSONA_NAME = os.getenv("REAL_ESTATE_PERSONA_NAME", "Kavitha")
 
 # LLM Configuration
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-LLM_MODEL = os.getenv("LLM_MODEL", "google/gemini-2.0-flash-001")
+LLM_MODEL = os.getenv("LLM_MODEL", "google/gemini-2.5-flash-lite")
 
 # STT Configuration (Soniox)
 SONIOX_API_KEY = os.getenv("SONIOX_API_KEY")
@@ -101,8 +101,8 @@ PREEMPTIVE_GENERATION = os.getenv("PREEMPTIVE_GENERATION", "1") == "1"
 FAST_TOOL_REPLY = os.getenv("FAST_TOOL_REPLY", "1") == "1"
 # LATENCY_LOG=1 : per-turn EOU / LLM TTFT / TTS TTFB breakdown in the logs.
 LATENCY_LOG = os.getenv("LATENCY_LOG", "1") == "1"
-# VAD silence needed to end a speech segment (0.28s gives snappy turn transitions without premature cut-off).
-VAD_MIN_SILENCE = float(os.getenv("VAD_MIN_SILENCE", "0.45"))
+# VAD silence needed to end a speech segment (0.25s gives snappy turn transitions without premature cut-off).
+VAD_MIN_SILENCE = float(os.getenv("VAD_MIN_SILENCE", "0.25"))
 # Silero VAD speech confidence threshold (0.75-0.80 filters out background chatter, TV noise, and distant voices)
 VAD_CONFIDENCE = float(os.getenv("VAD_CONFIDENCE", "0.75"))
 # Real-time RNNoise filter for incoming caller audio stream (suppresses ambient noise, fans, traffic)
@@ -163,4 +163,4 @@ SILENCE_PROMPT_SECONDS = float(os.getenv("SILENCE_PROMPT_SECONDS", "8"))
 MAX_SILENCE_PROMPTS = int(os.getenv("MAX_SILENCE_PROMPTS", "3"))
 RECORD_CALLS = os.getenv("RECORD_CALLS", "1") == "1"
 # Extra wait after VAD reports silence before the caller's turn is considered finished (collects late STT words).
-USER_SPEECH_TIMEOUT = float(os.getenv("USER_SPEECH_TIMEOUT", "0.6"))
+USER_SPEECH_TIMEOUT = float(os.getenv("USER_SPEECH_TIMEOUT", "0.15"))
