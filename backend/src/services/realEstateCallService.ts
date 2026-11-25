@@ -913,9 +913,14 @@ ${dialogueText.slice(0, 4000)}`;
       data.agent_summary
     );
 
-    // A call with no measured duration never really connected: showing "Completed + Abruptly Disconnected" with
-    // no duration/recording/transcript was misleading and hid failures. Report it as not connected (retriable).
-    if (canonicalDisp === 'Abruptly Disconnected Call' && (Number(data.duration_seconds) || 0) <= 0) {
+    // A call with no measured duration and no transcript never really connected: showing "Completed + Abruptly Disconnected"
+    // or "Completed + Schedule Callback" (e.g., from a carrier "Line Busy") was misleading. Report it as Not Connected.
+    const hasTranscript = Array.isArray(data.transcript) && data.transcript.length > 0;
+    if (
+      (Number(data.duration_seconds) || 0) <= 0 &&
+      !hasTranscript &&
+      (canonicalDisp === 'Abruptly Disconnected Call' || canonicalDisp === 'Schedule Callback')
+    ) {
       canonicalDisp = 'Not Connected (No Answer)';
       data.failure_reason = data.failure_reason || 'Call ended before the agent connected (no audio or duration captured)';
     }
