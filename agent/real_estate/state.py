@@ -152,6 +152,9 @@ class RealEstateState:
         self.ivr_detected: bool = False
         self.recording_url: Optional[str] = None
         self.silence_count: int = 0
+        # Live-activity flags used by the silence watchdog (set by TurnGate / LLMOutputGuard).
+        self.user_speaking: bool = False      # caller is talking right now (VAD start..stop)
+        self.llm_busy_since: float = 0.0      # time a turn was handed to the LLM; 0 = LLM idle
         # Same-question loop guard: how many times in a row the SAME open question was re-asked
         self.reask_key: str = ""
         self.reask_count: int = 0
@@ -550,3 +553,44 @@ class RealEstateState:
             return len(self.get_missing_fields()) == 0
         return False
         
+
+
+class SilenceGuard:
+    """Dead-air policy for the silence watchdog (pure logic, unit-testable).
+
+    * Never fires while the bot or the caller is speaking, during a hold, or while the LLM is still working on a
+      turn (bounded by `llm_busy_grace`, so a hung LLM cannot mute the watchdog forever).
+    * The prompt counter RESETS as soon as the caller does anything after our last prompt, so MAX_SILENCE_PROMPTS
+      means "that many unanswered prompts in a row", not "that many pauses in the whole call".
+    """
+
+    def __init__(self, prompt_seconds: float, max_prompts: int, llm_busy_grace: float = 15.0):
+        self.prompt_seconds = prompt_seconds
+        self.max_prompts = max_prompts
+        self.llm_busy_grace = llm_busy_grace
+        self.prompts = 0
+        self.last_prompt_at = 0.0
+
+    def tick(self, now: float, *, bot_speaking: bool, hold_until: float, caller_activity_at: float,
+             agent_speech_end_at: float, answered_at: float, user_speaking: bool = False,
+             llm_busy_since: float = 0.0):
+        """Returns None (do nothing), "prompt" (say the next 'are you there?' line) or "hangup"."""
+        if bot_speaking:
+            return None
+        # a stale flag (missed STOP frame) must not silence the watchdog for the whole call
+        if user_speaking and now - caller_activity_at < 30.0:
+            return None
+        if now < hold_until:
+            return None
+        if llm_busy_since and now - llm_busy_since < self.llm_busy_grace:
+            return None
+        if self.prompts and caller_activity_at > self.last_prompt_at:
+            self.prompts = 0                      # caller answered -> start counting from zero again
+        ref = max(caller_activity_at, agent_speech_end_at, answered_at or 0.0, self.last_prompt_at)
+        if now - ref < self.prompt_seconds:
+            return None
+        self.prompts += 1
+        self.last_prompt_at = now
+        if self.prompts > self.max_prompts:
+            return "hangup"
+        return "prompt"
