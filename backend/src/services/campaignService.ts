@@ -1686,6 +1686,7 @@ export class CampaignService {
     expected: string[];
     dispositions: { name: string; count: number; percentage: number }[];
     totalCalls: number;
+    totalUniqueContacts?: number;
   }> {
     const campaign = await this.getCampaign(campaignId);
     if (!campaign) {
@@ -1694,14 +1695,16 @@ export class CampaignService {
 
     const isRealEstate = campaign.pipeline === 'real_estate';
 
-    // Query all actual calls made in this campaign
+    // Query latest call outcome for each UNIQUE contact called in this campaign
     const query = `
-      SELECT 
-        c.id,
+      SELECT DISTINCT ON (COALESCE(c.re_lead_id::text, c.customer_id::text, c.phone, c.id::text))
+        COALESCE(c.re_lead_id::text, c.customer_id::text, c.phone, c.id::text) as contact_ref,
         COALESCE(
           NULLIF(TRIM(ro.final_disposition), ''),
           NULLIF(TRIM(co.final_disposition), ''),
           NULLIF(TRIM(c.call_status), ''),
+          NULLIF(TRIM(rl.current_disposition), ''),
+          NULLIF(TRIM(cu.current_disposition), ''),
           NULLIF(TRIM(c.status), '')
         ) as raw_disposition,
         c.duration_seconds,
@@ -1715,11 +1718,21 @@ export class CampaignService {
       LEFT JOIN customers cu ON c.customer_id = cu.id
       WHERE c.campaign_id = $1
          OR (c.campaign_id IS NULL AND (rl.campaign_id = $1 OR cu.campaign_id = $1))
-      ORDER BY c.created_at ASC
+      ORDER BY COALESCE(c.re_lead_id::text, c.customer_id::text, c.phone, c.id::text), c.created_at DESC
     `;
 
     const res = await pool.query(query, [campaignId]);
-    const totalCalls = res.rows.length;
+    const totalUniqueContacts = res.rows.length;
+
+    // Also get total calls count
+    const totalCallsRes = await pool.query(
+      `SELECT COUNT(*)::int as total FROM calls c
+       LEFT JOIN real_estate_leads rl ON c.re_lead_id = rl.id
+       LEFT JOIN customers cu ON c.customer_id = cu.id
+       WHERE c.campaign_id = $1 OR (c.campaign_id IS NULL AND (rl.campaign_id = $1 OR cu.campaign_id = $1))`,
+      [campaignId]
+    );
+    const totalCalls = totalCallsRes.rows[0]?.total || totalUniqueContacts;
 
     const targetList = isRealEstate ? REAL_ESTATE_CANONICAL_DISPOSITIONS : CANONICAL_DISPOSITIONS;
     const matcher = isRealEstate ? matchRealEstateDisposition : matchCanonicalDisposition;
@@ -1733,7 +1746,7 @@ export class CampaignService {
     // Seed all target canonical dispositions with 0
     targetList.forEach((d) => dispMap.set(d, 0));
 
-    // Fill with actual call counts mapped to target canonical dispositions using full context
+    // Fill with latest disposition of each unique contact using full context
     res.rows.forEach((row) => {
       const canonicalName = isRealEstate
         ? matchRealEstateDisposition(
@@ -1755,7 +1768,7 @@ export class CampaignService {
       .map(([name, count]) => ({
         name,
         count,
-        percentage: totalCalls > 0 ? Math.round((count / totalCalls) * 100) : 0,
+        percentage: totalUniqueContacts > 0 ? Math.round((count / totalUniqueContacts) * 100) : 0,
       }))
       .sort((a, b) => {
         if (b.count !== a.count) return b.count - a.count;
@@ -1766,6 +1779,7 @@ export class CampaignService {
       expected,
       dispositions,
       totalCalls,
+      totalUniqueContacts,
     };
   }
 }
