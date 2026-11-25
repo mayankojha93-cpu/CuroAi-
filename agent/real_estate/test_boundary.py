@@ -97,3 +97,105 @@ def test_ai_questions_are_detected():
         assert A._asks_if_ai_or_automated(q), q
     for q in ["3 BHK", "nahi bechna", "price kitna milega"]:
         assert not A._asks_if_ai_or_automated(q), q
+
+# ---- 6. Regression tests for the fixes ---------------------------------------------------------------
+def test_refusing_brokers_is_not_refusing_the_call():
+    for t in ["broker nahi chahiye", "flat 12 floor 3 but broker nahi chahiye", "no brokers please", "dalal nahi chahiye"]:
+        assert not T.explicit_refusal(t), t
+        assert not A._DIRECT_NOT_INTERESTED.search(t), t
+    # a real refusal that also mentions brokers is still a refusal
+    assert T.explicit_refusal("not interested, no brokers")
+    assert T.explicit_refusal("nahi bechna, broker nahi chahiye")
+
+def test_polite_not_at_all_is_not_a_refusal():
+    assert not T.explicit_refusal("not at all")
+    assert not T.explicit_refusal("not at all, go ahead")
+    assert T.explicit_refusal("not at all interested")
+
+def test_not_planning_right_now_is_soft():
+    for t in ["not planning right now", "not selling at the moment", "not looking to sell right now", "not planning currently"]:
+        assert not T.explicit_refusal(t), ("must not close the call", t)
+        assert A._is_soft_refusal(t), ("must be offered a callback", t)
+    # hard versions stay hard
+    for t in ["not planning", "not selling", "not interested right now"]:
+        assert T.explicit_refusal(t), t
+
+def test_machine_announcements_with_human_words_are_caught():
+    machine = [
+        "The subscriber you are calling is not available, please try again later",
+        "the number you have dialed is switched off",
+        "jis vyakti se aap baat karna chahte hain woh abhi available nahi hai kripya baad mein try karein",
+        "Please leave a message after the beep",
+    ]
+    for t in machine:
+        assert A._MACHINE_ANNOUNCE_RE.search(t) or A._STRONG_VM_RE.search(t), t
+
+def test_humans_are_not_flagged_as_voicemail():
+    human = ["mera phone switched off tha isliye call nahi uthaya", "leave a message with my son", "please try later sir, I am busy",
+             "my phone was not reachable yesterday", "main later baat karta hoon"]
+    for t in human:
+        assert not A._STRONG_VM_RE.search(t), ("strong-vm", t)
+        assert not A._MACHINE_ANNOUNCE_RE.search(t), ("machine-announce", t)
+
+# ---- 7. Silence policy -------------------------------------------------------------------------------
+from .state import SilenceGuard
+
+def _tick(g, now, **kw):
+    base = dict(bot_speaking=False, hold_until=0.0, caller_activity_at=0.0, agent_speech_end_at=0.0, answered_at=0.0)
+    base.update(kw)
+    return g.tick(now, **base)
+
+def test_silence_counter_resets_when_caller_answers():
+    g = SilenceGuard(8, 3)
+    assert _tick(g, 10) == "prompt" and g.prompts == 1
+    assert _tick(g, 20) == "prompt" and g.prompts == 2
+    # caller speaks at t=22 -> counter must restart, so 3 more pauses do NOT hang up
+    assert _tick(g, 31, caller_activity_at=22) == "prompt" and g.prompts == 1
+    assert _tick(g, 40, caller_activity_at=22) == "prompt" and g.prompts == 2
+    assert _tick(g, 49, caller_activity_at=22) == "prompt" and g.prompts == 3
+
+def test_silence_hangs_up_after_unanswered_prompts():
+    g = SilenceGuard(8, 3)
+    out = [_tick(g, t) for t in (10, 20, 30, 40)]
+    assert out == ["prompt", "prompt", "prompt", "hangup"]
+
+def test_silence_quiet_while_someone_is_busy():
+    g = SilenceGuard(8, 3)
+    assert _tick(g, 50, bot_speaking=True) is None
+    assert _tick(g, 50, user_speaking=True, caller_activity_at=45) is None      # long caller answer
+    assert _tick(g, 50, hold_until=90) is None                                  # "ek minute"
+    assert _tick(g, 50, llm_busy_since=45) is None                              # LLM still generating
+    assert _tick(g, 70, llm_busy_since=45) == "prompt"                          # ...but a hung LLM is capped
+    assert _tick(SilenceGuard(8, 3), 100, user_speaking=True, caller_activity_at=10) == "prompt"  # stale flag ignored
+
+# ---- 8. TurnGate must keep recognising NEW caller turns after the context is trimmed ------------------
+class _Ctx:
+    def __init__(self, msgs): self.msgs = msgs
+    def get_messages(self): return list(self.msgs)
+    def set_messages(self, m): self.msgs = list(m)
+
+def test_turn_counter_survives_context_trim():
+    try:
+        import pytest
+        pytest.importorskip("pipecat")
+    except ImportError:
+        pass
+    from . import pipecat_adapter as PA
+    gate = PA.TurnGate.__new__(PA.TurnGate)
+    gate._seen_user_msgs = 0
+    gate._dropped_users = 0
+    gate.context = _Ctx([{"role": "system", "content": "s"}])
+    PA.CHAT_CTX_MAX_ITEMS = 8
+    new_turns = 0
+    for i in range(30):
+        gate.context.msgs.append({"role": "user", "content": f"u{i}"})
+        msgs = gate.context.get_messages()
+        n_user = gate._count_users(msgs) + gate._dropped_users
+        if n_user > gate._seen_user_msgs:       # exact check TurnGate.process_frame performs
+            gate._seen_user_msgs = n_user
+            new_turns += 1
+        gate._trim_context()
+        gate.context.msgs.append({"role": "assistant", "content": "a"})
+        gate.context.msgs.append({"role": "assistant", "content": "tool-call"})
+        gate.context.msgs.append({"role": "tool", "content": "r"})
+    assert new_turns == 30
