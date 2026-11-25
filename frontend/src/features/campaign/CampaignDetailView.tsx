@@ -511,6 +511,7 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
     expected: string[];
     dispositions: DispositionBreakdownItem[];
     totalCalls: number;
+    totalUniqueContacts?: number;
   } | null>(null);
 
   // Action states
@@ -780,8 +781,9 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
     }
 
     const totalOccurrences = Array.from(counts.values()).reduce((sum, val) => sum + val, 0);
-    const totalCalls = dispositionData?.totalCalls ?? (calls.length || totalOccurrences);
-    const denominator = totalCalls > 0 ? totalCalls : (totalOccurrences > 0 ? totalOccurrences : 1);
+    const denominator = uniqueCalled > 0
+      ? uniqueCalled
+      : (dispositionData?.totalUniqueContacts || dispositionData?.totalCalls || (totalOccurrences > 0 ? totalOccurrences : 1));
 
     return Array.from(counts.entries())
       .map(([name, count]) => ({
@@ -1820,7 +1822,7 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
                   Call Dispositions
                 </h2>
                 <p style={{ fontSize: '0.78rem', color: '#94A3B8', margin: 0 }}>
-                  Categorized call results captured by Priya Voice AI agent across {dispositionData?.totalCalls || calls.length || (computedStats.successful + computedStats.failed) || 0} call{(dispositionData?.totalCalls || calls.length || (computedStats.successful + computedStats.failed) || 0) === 1 ? '' : 's'}.
+                  Categorized call results captured by Priya Voice AI agent across {uniqueCalled.toLocaleString()} unique contact{uniqueCalled === 1 ? '' : 's'} called.
                 </p>
               </div>
 
