@@ -1399,10 +1399,45 @@ class RealEstateTools:
         reason: str,
         preferred_time: Optional[str] = None,
     ) -> str:
-        """Call when customer sounds impatient, asks for pricing/market valuation, or requests a human advisor."""
+        """Call ONLY when customer sounds impatient, explicitly asks to speak to a human advisor right now, or refuses to answer more questions."""
         self.state.impatient_detected = "impatient" in reason.lower()
-        if re.search(r"price|pricing|valuation|rate|market", reason or "", re.I):
+        is_pricing = bool(re.search(r"price|pricing|valuation|rate|market|cost", reason or "", re.I))
+        if is_pricing:
             self.state.valuation_requested = True
+        is_human_or_impatient = self.state.impatient_detected or bool(
+            re.search(r"human|advisor|impatient|hurry|busy|refus|stop|end", reason or "", re.I)
+        )
+        # If caller only asked for pricing/valuation and intake is not finished yet, do NOT hang up;
+        # note valuation_requested + Market Rate and continue collecting remaining property details.
+        if is_pricing and not is_human_or_impatient and self.state.step != RealEstateStep.CLOSING:
+            if self.state.intent == "lease" and not self.state.expected_monthly_rent:
+                self.state.expected_monthly_rent = "Market Rate"
+            elif self.state.intent == "sale" and not self.state.expected_sale_price:
+                self.state.expected_sale_price = "Market Rate"
+            missing = self.state.get_missing_fields()
+            if missing or self.state.step in (
+                RealEstateStep.INTRODUCTION,
+                RealEstateStep.CATEGORY_SELECT,
+                RealEstateStep.CHECK_OTHER_PROPERTY,
+                RealEstateStep.ASK_NEW_LOCATION,
+            ):
+                if missing:
+                    next_q = missing[0]["question_en"] if self.state.reply_lang == "en" else missing[0]["question_hi"]
+                elif self.state.step == RealEstateStep.INTRODUCTION:
+                    next_q = (
+                        "Were you looking to sell or rent it out?"
+                        if self.state.reply_lang == "en"
+                        else "Kya aap ise sell karne ka plan kar rahe hain ya rent out?"
+                    )
+                else:
+                    next_q = "Continue with the current step question."
+                logger.info(f"💰 Pricing question at {self.state.step.value} -> continuing intake instead of closing: {next_q}")
+                return (
+                    "Do NOT end the call. Tell the customer in one short sentence that our senior advisor "
+                    "will share the exact market rate when they connect, and immediately ask: "
+                    f"{next_q}"
+                )
+
         self.state.advisor_handoff_reason = reason.strip()
         self.state.callback_time_slot = preferred_time
         self.state.final_disposition = "Advisor Callback Booked"

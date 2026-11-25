@@ -32,6 +32,7 @@ RELATIVE_WORDS = {
     "kal": 1, "tomorrow": 1, "कल": 1,
     "parso": 2, "parson": 2, "परसों": 2, "परसो": 2, "parsoon": 2,
     "tarso": 3, "tarson": 3, "narso": 3, "narson": 3, "तरसों": 3, "तरसो": 3, "नरसों": 3, "नरसो": 3,
+    "weekend": "weekend", "वीकेंड": "weekend",
 }
 
 MONTH_MAP = {
@@ -218,7 +219,15 @@ def resolve_relative_date(
 
         if tok in RELATIVE_WORDS:
             if not negated(i, 2):
-                candidates.append((i, today + timedelta(days=RELATIVE_WORDS[tok])))
+                val = RELATIVE_WORDS[tok]
+                if val == "weekend":
+                    # Upcoming Saturday (weekday 5) - Sunday is non-working for Airtel
+                    days_ahead = (5 - today.weekday()) % 7
+                    if days_ahead == 0:
+                        days_ahead = 7
+                    candidates.append((i, today + timedelta(days=days_ahead)))
+                else:
+                    candidates.append((i, today + timedelta(days=val)))
             continue
 
         if tok in WEEKDAY_MAP:

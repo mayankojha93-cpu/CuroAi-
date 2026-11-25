@@ -4,7 +4,13 @@ import logging
 from typing import Optional
 
 from src.carrier_filter import classify_carrier
-from src.config import CARRIER_WEAK_MIN_WORDS, FASTPATH_ENABLED, HOLD_WAIT_SECONDS, PERSONA_NAME
+from src.config import (
+    CARRIER_WEAK_MIN_WORDS,
+    ENABLE_HUMAN_REGEX_SHORTCUTS,
+    FASTPATH_ENABLED,
+    HOLD_WAIT_SECONDS,
+    PERSONA_NAME,
+)
 from src.intents import (
     DETAIL_TOPIC_RE,
     is_dnd,
@@ -259,6 +265,11 @@ class AirtelTurnHandler:
             logger.info(f"💸 Fee / policy / complaint question: '{text}' -> routing to 121")
             if await self._tools.run_direct(self._tools.escalate_to_121, text[:200]):
                 return True
+
+        if not ENABLE_HUMAN_REGEX_SHORTCUTS:
+            # PURE LLM PIPELINE (regex used strictly for IVR / carrier announcement detection above).
+            # All human conversational turns proceed directly to the LLM (google/gemini-2.5-flash-lite).
+            return False
 
         # 4 + 5. Step-scoped shortcuts. Skipped when the agent has just asked for a free-text detail
         # (address, phone, recharge date ...): that reply is not a date and not a bare yes/no.

@@ -437,6 +437,12 @@ class PipecatSession:
         self._current_tool_names = {s.name for s in schemas}
         self.context.set_tools(ToolsSchema(standard_tools=schemas) if schemas else ToolsSchema(standard_tools=[]))
 
+    async def sync_step(self):
+        """Called by AgentTools._go() after every step change to sync LLM prompt & tools."""
+        from src.prompts import get_step_instructions
+        await self.update_instructions(get_step_instructions(self.state))
+        await self.update_tools(self.tools.tools_for_step(self.state.step))
+
     def say(self, text: str, allow_interruptions: bool = True, **kwargs) -> SpeechHandle:
         spoken = prep_for_tts(text)
         handle = SpeechHandle(self.tracker, spoken)

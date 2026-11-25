@@ -35,7 +35,7 @@ PERSONA_NAME = os.getenv("PERSONA_NAME", "Kavitha")
 
 # LLM — OpenRouter / Groq
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-LLM_MODEL = os.getenv("LLM_MODEL", "meta-llama/llama-3.3-70b-instruct")
+LLM_MODEL = os.getenv("LLM_MODEL", "google/gemini-2.5-flash-lite")
 
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto").strip().lower() or "auto"
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
@@ -106,3 +106,7 @@ FASTPATH_ENABLED = os.getenv("FASTPATH_ENABLED", "1") == "1"
 CARRIER_WEAK_MIN_WORDS = int(os.getenv("CARRIER_WEAK_MIN_WORDS", "7"))
 # After a "your call is on hold" announcement, stay silent this long before the silence watchdog speaks.
 HOLD_WAIT_SECONDS = float(os.getenv("HOLD_WAIT_SECONDS", "30"))
+
+# ENABLE_HUMAN_REGEX_SHORTCUTS=0 : keep regex strictly for IVR/voicemail/carrier detection and compliance (DND, bot disclosure).
+# All human conversational turns proceed to the LLM (google/gemini-2.5-flash-lite) to understand natural speech without rigid regex intercepts.
+ENABLE_HUMAN_REGEX_SHORTCUTS = os.getenv("ENABLE_HUMAN_REGEX_SHORTCUTS", "0") == "1"
