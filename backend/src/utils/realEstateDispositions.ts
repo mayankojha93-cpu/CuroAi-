@@ -106,14 +106,18 @@ export function matchRealEstateDisposition(
     return 'Abruptly Disconnected Call';
   }
 
-  // If call duration is 0 and status indicates failed or no-answer, it cannot be a connected disposition
+  // If call duration is 0 and status indicates failed, busy, cancelled, or no-answer, it cannot be a connected disposition
   if (
     duration === 0 && (
       statusUpper === 'NO ANSWER' ||
       statusUpper === 'NO_ANSWER' ||
+      statusUpper === 'BUSY' ||
       statusUpper === 'FAILED' ||
+      statusUpper === 'CANCELED' ||
+      statusUpper === 'CANCELLED' ||
       statusUpper.includes('FAIL') ||
-      statusUpper.includes('REJECT')
+      statusUpper.includes('REJECT') ||
+      upper.includes('LINE BUSY')
     )
   ) {
     return 'Not Connected (No Answer)';
