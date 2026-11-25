@@ -270,6 +270,20 @@ export async function deleteCampaign(id: string): Promise<boolean> {
 }
 
 /**
+ * Fetches a single campaign by ID
+ */
+export async function fetchCampaignById(campaignId: string): Promise<CampaignItem | null> {
+  try {
+    const res = await authFetch(`${API_BASE}/api/campaigns/${campaignId}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.campaign || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fetches call records for a specific campaign
  */
 export async function fetchCampaignCalls(campaignId: string): Promise<CallRecord[]> {

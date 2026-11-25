@@ -25,7 +25,7 @@ except Exception:  # pragma: no cover - module is not part of this repo snapshot
 
 from .prompts import get_step_instructions
 from .state import RealEstateState, RealEstateStep, RealEstateStep as _Step
-from .config import CHAT_CTX_MAX_ITEMS, FAST_TOOL_REPLY, FASTPATH_ENABLED, SHORTCUT_MAX_TOKENS, BACKCHANNEL_IGNORE_WINDOW, TTS_SPEAKABLE
+from .config import CHAT_CTX_MAX_ITEMS, FAST_TOOL_REPLY, FASTPATH_ENABLED, SHORTCUT_MAX_TOKENS, BACKCHANNEL_IGNORE_WINDOW, TTS_SPEAKABLE, ENABLE_HUMAN_REGEX_SHORTCUTS
 from .fastpath import extract as _fastpath_extract
 from .tools import (
     classify_category,
@@ -33,6 +33,7 @@ from .tools import (
     is_standalone_from_speech,
     commercial_type_from_speech,
     explicit_refusal,
+    strip_broker_negation,
     _DONT_KNOW_RE,
     _DONT_KNOW_DEV,
     extract_question,
@@ -45,10 +46,10 @@ from .tools import (
 # Extra IVR / voicemail phrases (English + Hinglish + Devanagari). Used IN ADDITION to src.carrier_filter so that
 # menus / voicemail prompts the carrier filter misses are still caught instead of being answered by the LLM.
 _IVR_EXTRA = re.compile(
-    r"(after\s+the\s+(tone|beep)|at\s+the\s+tone|leave\s+(a\s+|your\s+)*(message|voicemail)|record\s+your\s+message|"
+    r"(after\s+the\s+(tone|beep)|at\s+the\s+tone|leave\s+(a\s+|your\s+)*(message|voicemail)(?!\s+(?:with|for|to|at)\b)|record\s+your\s+message|"
     r"(?:forwarded\s+to|reached|leave\s+a\s+message\s+in)\s+(?:the\s+)?(?:voice\s*mail|mail\s*box)|to\s+(repeat|go\s+back)\s+press|"
     r"(for\s+[a-z]+|men[uu])\s*press\s+(star|hash|pound|\d)|"
-    r"the\s+(number|person|subscriber|customer)\s+(you\s+are\s+calling|you\s+have\s+dialed)?\s+is\s+(currently\s+)?(not\s+available|busy|unavailable|switched\s+off|reachable)|"
+    r"the\s+(number|person|subscriber|customer)\s+(you\s+are\s+calling|you\s+have\s+dialed)?\s+is\s+(currently\s+)?(not\s+available|busy|unavailable|switched\s+off|not\s+reachable)|"
     r"(number|phone)\s+is\s+(switched\s+off|not\s+reachable|out\s+of\s+coverage)|"
     r"(jis\s+vyakti\s+ko\s+aap\s+call\s+kar\s+rahe\s+hain|dial\s+kiya\s+hua\s+number)\s+.*(vyast|switched\s*off|uplabdh\s*nahi)|"
     r"please\s+(stay|hold|wait)\s+on\s+the\s+line|(beep|tone)\s+ke\s+baad\s+(sandesh|message)|"
@@ -61,9 +62,25 @@ _IVR_EXTRA = re.compile(
 # Markers that ONLY a machine says. They win even when the same sentence also has human-sounding words
 # ("Hi, I'm not available right now, please leave a message after the beep" contains "I'm" and "my").
 _STRONG_VM_RE = re.compile(
-    r"(after\s+the\s+(tone|beep)|at\s+the\s+tone|leave\s+(a\s+|your\s+)*(message|voicemail)|record\s+your\s+message|"
+    r"(after\s+the\s+(tone|beep)|at\s+the\s+tone|leave\s+(a\s+|your\s+)*(message|voicemail)(?!\s+(?:with|for|to|at)\b)|record\s+your\s+message|"
     r"voice\s*mail|mail\s*box|press\s+(star|hash|pound|\d)|please\s+(stay|hold)\s+on\s+the\s+line|"
-    r"(not\s+reachable|switched\s+off|out\s+of\s+coverage)|(beep|tone)\s+ke\s+baad)",
+    r"(?:the|this)\s+(?:number|subscriber|customer|mobile|person)\b[^.]{0,80}(?:not\s+reachable|switched\s+off|out\s+of\s+coverage)|(beep|tone)\s+ke\s+baad|"
+    r"(?:dial|dialled)\s+kiya\s+(?:gaya|hua)|uplabdh\s+nahi\s+hai|sampark\s+nahi\s+ho\s+pa\s*raha)",
+    re.I,
+)
+
+# Carrier / network announcements that ALSO contain a word from _HUMAN_CALLBACK_RE ("later", "main", "my"...). Each
+# alternative needs machine-only wording ("the subscriber you are calling", "jis vyakti ...") so a person saying
+# "try later" or "mera phone switched off tha" is NOT matched.
+_MACHINE_ANNOUNCE_RE = re.compile(
+    r"((?:person|subscriber|number|customer|mobile)\s+(?:that\s+)?you\s+(?:are|have|were)\s+(?:calling|dialed|dialled|trying|called)"
+    r"|you(?:\s+ha)?ve\s+(?:dialed|dialled)"
+    r"|(?:number|subscriber|customer)\b.{0,80}\b(?:try\s+(?:again\s+)?later|try\s+after\s+some\s+time)"
+    r"|(?:jis|aapne\s+jis)\s+(?:vyakti|number|subscriber|grahak)"
+    r"|(?:aapka|aapke)\s+dwara\s+(?:dial|call)"
+    r"|(?:kripya|please)\s+(?:kuch\s+der\s+baad|baad\s+mein)\s+(?:punah\s+)?(?:try|prayas|sampark)"
+    r"|available\s+nahi\s+hai\b.{0,60}\b(?:kripya|try\s+karein|baad\s+mein\s+(?:try|sampark))"
+    r"|जिस\s+(?:व्यक्ति|नंबर)|कृपया\s+बाद\s+में\s+(?:प्रयास|संपर्क))",
     re.I,
 )
 
@@ -404,6 +421,26 @@ _DIRECT_NOT_INTERESTED = re.compile(
     re.I,
 )
 
+
+class _BrokerAwareRegex:
+    """Same .search/.match API as a compiled regex, but 'broker nahi chahiye' style phrases are removed first,
+    so refusing brokers never reads as refusing the property conversation."""
+
+    def __init__(self, rx):
+        self._rx = rx
+
+    def search(self, text, *a, **k):
+        return self._rx.search(strip_broker_negation(text), *a, **k)
+
+    def match(self, text, *a, **k):
+        return self._rx.match(strip_broker_negation(text), *a, **k)
+
+    def __getattr__(self, name):
+        return getattr(self._rx, name)
+
+
+_DIRECT_NOT_INTERESTED = _BrokerAwareRegex(_DIRECT_NOT_INTERESTED)
+
 # SOFT refusals are NOT refusals: "nothing", "no plans right now", "not right now", "kuch nahi", "abhi nahi" ...
 # The caller may still be reachable later, so the prompt's objection guide says: offer ONE callback, and only close
 # if they decline that too. That is a decision about meaning -> LLM. These phrases are therefore kept OUT of every
@@ -413,6 +450,7 @@ _SOFT_REFUSAL = re.compile(
     r"\b("
     r"nothing(?:\s+(?:at\s+the\s+moment|right\s+now|as\s+of\s+now|currently))?|"
     r"no\s+plans?(?:\s+(?:right\s+now|at\s+the\s+moment|as\s+of\s+now|currently))?|"
+    r"not\s+(?:planning|looking|selling|renting|leasing)(?:\s+\w+){0,3}?\s+(?:right\s+now|at\s+the\s+moment|at\s+present|currently|as\s+of\s+now|for\s+now)|"
     r"not\s+(?:right\s+now|at\s+the\s+moment|at\s+present|currently)|"
     r"abhi\s+(?:kuch|kuchh)\s+nahi|kuch\s+nahi|kuchh\s+nahi|abhi\s+nahi|abhi\s+koi\s+plan\s+nahi"
     r")\b"
@@ -947,7 +985,7 @@ class RealEstateTurnHandler:
         text_x = _augment_devanagari(text)   # Latin hints for Devanagari speech (regex checks below)
         kind = None
         # Strong machine-only markers win even if the greeting also has human-sounding words.
-        if text and not self._re_state.is_interested and _STRONG_VM_RE.search(text):
+        if text and not self._re_state.is_interested and (_STRONG_VM_RE.search(text) or _MACHINE_ANNOUNCE_RE.search(text_x)):
             kind = "voicemail"
         # Safety override: carrier detection runs before property qualification or human engagement
         if kind is None and not _HUMAN_CALLBACK_RE.search(text_x) and not self._re_state.is_interested:
@@ -995,6 +1033,30 @@ class RealEstateTurnHandler:
             state.last_activity_time = time.time()
         else:
             state.hold_until = 0.0
+
+        if not ENABLE_HUMAN_REGEX_SHORTCUTS:
+            # PURE LLM PIPELINE (regex used strictly for IVR / carrier announcement detection above).
+            # All human conversational turns proceed directly to the LLM to understand natural speech.
+            lang_switched = False if _is_neutral_utterance(text) else state.update_reply_lang(text)
+            if lang_switched:
+                lang = state.reply_lang
+                logger.info(f"🌐 Customer switched language -> {lang}")
+                if self.on_language_change:
+                    try:
+                        self.on_language_change(lang)
+                    except Exception as e:
+                        logger.warning(f"Language switch callback failed: {e}")
+
+            # Ensure session instructions and tools match the current step before LLM generates
+            if self.session:
+                try:
+                    await self.session.update_instructions(get_step_instructions(state))
+                    await self.session.update_tools(self._re_tools.tools_for_step(state.step))
+                except Exception as e:
+                    logger.warning(f"Failed to refresh instructions/tools: {e}")
+
+            # Hand turn over to the LLM (no StopResponse raised)
+            return
 
         # NOTE: there is deliberately NO keyword check for "price / rate / market rate" here any more.
         # The word "price" appears in plain ANSWERS too ("price 50 lakh expect kar raha hoon"); flagging it set

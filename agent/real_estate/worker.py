@@ -69,6 +69,7 @@ from .config import (
     TTS_SPEAKER_HI,
     TTS_TEMPERATURE,
     USER_SPEECH_TIMEOUT,
+    VAD_CONFIDENCE,
     VAD_MIN_SILENCE,
     logger,
 )
@@ -81,7 +82,7 @@ from .pipecat_adapter import (
     schema_for_tool,
 )
 from .prompts import _owner_call_name, get_step_instructions
-from .state import RealEstateState, RealEstateStep
+from .state import RealEstateState, RealEstateStep, SilenceGuard
 from .tools import RealEstateTools, explicit_refusal
 
 _UUID_RE = re.compile(
@@ -506,7 +507,9 @@ async def _run_real_estate_pipeline(
 
     async with aiohttp.ClientSession() as aiohttp_session:
         vad = VADProcessor(
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=VAD_MIN_SILENCE))
+            vad_analyzer=SileroVADAnalyzer(
+                params=VADParams(stop_secs=VAD_MIN_SILENCE, confidence=VAD_CONFIDENCE)
+            )
         )
         stt = SonioxSTTService(
             api_key=SONIOX_API_KEY,
@@ -606,6 +609,7 @@ async def _run_real_estate_pipeline(
             state.answered_at = time.time()
             state.last_activity_time = time.time()
             log_dialogue("assistant", greeting)
+            context.add_message({"role": "assistant", "content": greeting})
             # Non-interruptible so pickup noise / "hello?" cannot cancel the opening line.
             session.say(greeting, allow_interruptions=False)
 
@@ -637,34 +641,39 @@ async def _run_real_estate_pipeline(
                 pass
 
         async def _silence_watchdog():
-            """Dead-air handling (the old pipeline just sat silent forever)."""
-            prompts = 0
+            """Dead-air handling. Policy lives in state.SilenceGuard (unit-tested): counter resets when the caller
+            responds, and it stays quiet while anyone is speaking or the LLM is still working on a turn."""
+            silence = SilenceGuard(SILENCE_PROMPT_SECONDS, MAX_SILENCE_PROMPTS)
             try:
                 while True:
                     await asyncio.sleep(1.0)
-                    if state.closing_spoken or state.hangup_started or tracker.speaking:
+                    if state.closing_spoken or state.hangup_started:
                         continue
-                    now = time.time()
-                    if now < state.hold_until:          # caller asked us to wait ("ek minute")
+                    action = silence.tick(
+                        time.time(),
+                        bot_speaking=tracker.speaking,
+                        hold_until=state.hold_until,                 # caller asked us to wait ("ek minute")
+                        caller_activity_at=state.last_activity_time,
+                        agent_speech_end_at=state.last_agent_speech_end,
+                        answered_at=state.answered_at or 0.0,
+                        user_speaking=getattr(state, "user_speaking", False),
+                        llm_busy_since=getattr(state, "llm_busy_since", 0.0),
+                    )
+                    if action is None:
                         continue
-                    ref = max(state.last_activity_time, state.last_agent_speech_end, state.answered_at or 0.0)
-                    if now - ref < SILENCE_PROMPT_SECONDS:
-                        continue
-                    prompts += 1
-                    state.silence_count = prompts
-                    if prompts > MAX_SILENCE_PROMPTS:
+                    state.silence_count = silence.prompts
+                    if action == "hangup":
                         logger.info("🔇 No response after repeated prompts -> ending call")
                         await _hangup()
                         return
                     en = state.reply_lang == "en"
-                    if prompts == 1:
+                    if silence.prompts == 1:
                         line = "Hello Sir, are you still there?" if en else "Hello Sir, kya aap line par hain?"
                     else:
                         line = ("Sir, if this is a bad time, I can call you back later." if en
                                 else "Sir, agar abhi busy hain toh main baad mein call kar sakti hoon.")
                     log_dialogue("assistant", line)
                     session.say(line)
-                    state.last_activity_time = now
             except asyncio.CancelledError:
                 pass
 

@@ -35,6 +35,11 @@ import uvicorn  # noqa: E402
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect  # noqa: E402
 from pipecat.serializers.exotel import ExotelFrameSerializer  # noqa: E402
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport  # noqa: E402
+try:
+    from pipecat.audio.filters.rnnoise_filter import RNNoiseFilter
+except Exception as _filter_err:
+    RNNoiseFilter = None
+    logger.warning(f"Could not import RNNoiseFilter: {_filter_err}")
 
 from real_estate.worker import run_real_estate_pipeline  # noqa: E402
 from src.worker import run_airtel_pipeline  # noqa: E402
@@ -48,6 +53,9 @@ if not INTERNAL_SECRET:
 # Pipeline used when neither the URL/custom parameters nor the backend metadata say which agent this call is for.
 # It used to fall through to the Airtel pipeline, so one failed metadata fetch ran the wrong agent.
 DEFAULT_PIPELINE = os.getenv("EXOTEL_DEFAULT_PIPELINE", "real_estate").strip().lower()
+
+# Real-time RNNoise filter for incoming caller audio stream (suppresses ambient noise, fans, traffic)
+ENABLE_NOISE_CANCELLATION = os.getenv("ENABLE_NOISE_CANCELLATION", "1") == "1"
 
 HANDSHAKE_TIMEOUT = float(os.getenv("EXOTEL_HANDSHAKE_TIMEOUT", "10"))
 # Last-resort callId lookup ("newest call in DIALING state"). It can attach the WRONG call when several calls dial
@@ -200,12 +208,21 @@ async def media_stream(ws: WebSocket, path_call_id: Optional[str] = None):
     else:
         logger.warning("No callId could be resolved: the call will run but its outcome cannot be saved.")
 
+    audio_in_filter = None
+    if ENABLE_NOISE_CANCELLATION and RNNoiseFilter is not None:
+        try:
+            audio_in_filter = RNNoiseFilter()
+            logger.info("🛡️ RNNoise noise suppression filter enabled for incoming audio stream")
+        except Exception as _filter_err:
+            logger.warning(f"Failed to instantiate RNNoiseFilter: {_filter_err}")
+
     transport = FastAPIWebsocketTransport(
         websocket=ws,
         params=FastAPIWebsocketParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
             add_wav_header=False,
+            audio_in_filter=audio_in_filter,
             serializer=ExotelFrameSerializer(stream_sid=str(stream_sid), call_sid=call_sid),
         ),
     )

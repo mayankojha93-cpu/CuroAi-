@@ -156,7 +156,10 @@ _POSITIVE_OR_ANSWER_RE = re.compile(
 #    here: they mean "maybe later", the LLM offers one callback before anything ends the call (see prompts.py).
 _EXPLICIT_REFUSAL_PHRASES = re.compile(
     r"\b("
-    r"not\s+(?:interested|looking|selling|renting|leasing|wanting|planning|for\s+sale|at\s+all)"
+    r"not\s+(?:interested|for\s+sale|at\s+all\s+(?:interested|selling|looking|renting|leasing|planning))"
+    # "not planning / selling ... right now" is a SOFT refusal (callback offer by the LLM), not a hard one
+    r"|not\s+(?:looking|selling|renting|leasing|wanting|planning)"
+    r"(?!(?:\s+\w+){0,3}\s+(?:right\s+now|at\s+the\s+moment|at\s+present|currently|as\s+of\s+now|for\s+now))"
     r"|(?:un|not\s+)interested"
     r"|don'?t\s+want\s+to\s+(?:sell|rent|lease|talk|proceed)"
     r"|no\s+thanks?|no\s+thank\s+you"
@@ -166,7 +169,7 @@ _EXPLICIT_REFUSAL_PHRASES = re.compile(
     r"|(?:bech|de)\s*(?:diya|di|chuke|chuki|hain)|bik\s*gay[aei]"
     r"|koi\s*(?:bhi\s*)?property\s*(?:nahi|nhi)"
     r"|(?:nahi|nhi|nahin|na)\s+(?:bechn[aei]|den[aei]|karn[aei]|chahiye|hoga|bataunga|batana|lena)"
-    r"|(?:bechn[aei]|den[aei]|sell\s*karn[aei]|rent\s*pe\s*den[aei])\s*(?:bhi\s*)?(?:nahi|nhi|nahin)"
+    r"|(?:bechn[aei]|den[aei]|sell\s*karn[aei]|rent\s*pe\s*den[aei])\s*(?:hi\s*|bhi\s*|toh\s*)?(?:nahi|nhi|nahin)"
     r"|(?:interested|intrested|interest)\s*(?:nahi|nhi|nahin)"
     r"|(?:nahi|nhi|nahin)\s*(?:interested|intrested)"
     r"|kuch\s*(?:bhi\s*)?(?:nahi|nhi)\s*(?:bechn[aei]|den[aei]|karn[aei])"
@@ -184,6 +187,20 @@ _EXPLICIT_REFUSAL_PHRASES = re.compile(
 _EXPLICIT_REFUSAL_DEV = re.compile(
     r"(नहीं\s*(बेचना|देना|करना|चाहिए|बताना)|(बेचना|देना)\s*नहीं|इंटरेस्टेड\s*नहीं|रुचि\s*नहीं|कॉल\s*मत\s*करो|फोन\s*मत|कॉल\s*काटो|काट\s*दो)"
 )
+
+# "Broker nahi chahiye" / "no agents" = the caller refuses BROKERS, not the call. Stripped before refusal matching.
+_BROKER_NEG_RE = re.compile(
+    r"\b(?:broker(?:age)?s?|dalal|dealers?|agents?|commission|middle\s*man|property\s+dealers?)\s*(?:wal[aei]\s*)?(?:log\s*)?(?:ko\s*)?"
+    r"(?:nahi|nhi|nahin|no|mat)\s*(?:chahiye|chahie|chahta|chahte|karna|aana|bhejna|call)\b"
+    r"|\b(?:no|don'?t\s+want|do\s+not\s+want)\s+(?:any\s+)?(?:brokers?|brokerage|dealers?|agents?|commission|middle\s*man)\b"
+    r"|(?:ब्रोकर|दलाल|डीलर|एजेंट|कमीशन)\s*(?:वाले\s*)?(?:को\s*)?(?:नहीं|नही|मत)\s*(?:चाहिए|चाहिये|चाहता|चाहते|करना|आना)",
+    re.IGNORECASE,
+)
+
+
+def strip_broker_negation(text: Any) -> str:
+    return _BROKER_NEG_RE.sub(" ", str(text or ""))
+
 
 # 3. Clean bare refusal tokens: when the entire utterance is just "no", "nahi ji", "no thanks"
 _BARE_REFUSAL_WORDS = {
@@ -203,7 +220,7 @@ def explicit_dnc_request(text: Any) -> bool:
 
 
 def explicit_refusal(text: Any) -> bool:
-    t = str(text or "").strip()
+    t = strip_broker_negation(text).strip()
     if not t:
         return False
 
@@ -467,38 +484,34 @@ def _is_bare_ack(text: str) -> bool:
 
 
 def _grounded(category: Optional[str], intent: Optional[str], heard: Any) -> Tuple[Optional[str], Optional[str]]:
-    """Category / intent validation.
-    Prevents hallucinating category/intent when customer only gave a bare acknowledgement ('haan ji').
-    When the customer spoke substantive natural speech, trusts the LLM's contextual comprehension."""
+    """Resolve category and intent, prioritizing the LLM's classification while accepting
+    direct spoken indications."""
     if isinstance(heard, (list, tuple)):
         heard_text = " ".join(str(t) for t in heard if t).strip()
     else:
         heard_text = str(heard or "").strip()
 
-    c = classify_category(heard_text) if heard_text else None
-    i = classify_intent(heard_text) if heard_text else None
-    is_bare = _is_bare_ack(heard_text)
-
     cat_out = None
-    if c:
-        cat_out = c
-    elif category:
-        cand_c = classify_category(category) or (category.lower().strip() if category.lower().strip() in ("residential", "commercial") else None)
-        if cand_c and not is_bare:
-            cat_out = cand_c
+    if category:
+        c_clean = str(category).lower().strip()
+        if c_clean in ("residential", "commercial"):
+            cat_out = c_clean
+        else:
+            cat_out = classify_category(category)
+    if not cat_out and heard_text:
+        cat_out = classify_category(heard_text)
 
     int_out = None
-    if i:
-        int_out = i
-    elif intent:
-        cand_i = classify_intent(intent) or (intent.lower().strip() if intent.lower().strip() in ("sale", "lease") else None)
-        if cand_i and not is_bare:
-            int_out = cand_i
-
-    # Fallback if no transcript is available
-    if not heard_text:
-        cat_out = classify_category(category) or (category.lower().strip() if category and category.lower().strip() in ("residential", "commercial") else None)
-        int_out = classify_intent(intent) or (intent.lower().strip() if intent and intent.lower().strip() in ("sale", "lease") else None)
+    if intent:
+        i_clean = str(intent).lower().strip()
+        if i_clean in ("sale", "sell"):
+            int_out = "sale"
+        elif i_clean in ("lease", "rent"):
+            int_out = "lease"
+        else:
+            int_out = classify_intent(intent)
+    if not int_out and heard_text:
+        int_out = classify_intent(heard_text)
 
     return cat_out, int_out
 
@@ -1086,7 +1099,7 @@ class RealEstateTools:
                 said = commercial_type_from_speech(heard)
                 if said:
                     clean_comm = said
-                elif clean_comm.lower() in heard.lower():
+                elif clean_comm.lower() in heard.lower() or any(w in heard.lower() for w in clean_comm.lower().split()):
                     # Caller explicitly mentioned this commercial type in natural speech
                     pass
                 else:
@@ -1177,11 +1190,33 @@ class RealEstateTools:
 
         clean_price = _clean_str(expected_sale_price)
         if clean_price:
-            self.state.expected_sale_price = clean_price
+            # Auto-normalize bare numbers for sale price (e.g. '1.5' -> '1.5 Crore', '50' -> '50 Lakh')
+            p_str = clean_price.strip()
+            if re.fullmatch(r"\d+(?:\.\d+)?", p_str):
+                try:
+                    p_val = float(p_str)
+                    if 0.25 <= p_val < 15:
+                        p_str = f"{p_val:g} Crore"
+                    elif 15 <= p_val <= 999:
+                        p_str = f"{int(p_val)} Lakh"
+                except Exception:
+                    pass
+            self.state.expected_sale_price = p_str
 
         clean_rent = _clean_str(expected_monthly_rent)
         if clean_rent:
-            self.state.expected_monthly_rent = clean_rent
+            # Auto-normalize bare numbers for rent (e.g. '25' -> '25 Thousand', '40' -> '40 Thousand')
+            r_str = clean_rent.strip()
+            if re.fullmatch(r"\d+(?:\.\d+)?", r_str):
+                try:
+                    r_val = float(r_str)
+                    if 1 <= r_val < 100:
+                        r_str = f"{int(r_val)} Thousand"
+                    elif r_val >= 1000:
+                        r_str = f"{int(r_val):,}"
+                except Exception:
+                    pass
+            self.state.expected_monthly_rent = r_str
 
         if is_currently_leased is not None:
             if isinstance(is_currently_leased, bool):
@@ -1323,11 +1358,18 @@ class RealEstateTools:
                     "Do NOT end the call. Clarify property details or confirm if the property is residential."
                 )
         if heard and not (explicit_refusal(heard) or grounded):
-            logger.warning(f"🛑 mark_not_interested rejected (no explicit refusal in caller words): '{heard}'")
-            return (
-                "REJECTED: the caller did NOT clearly refuse. Do NOT end the call. "
-                "Re-ask the current open question in simple words."
-            )
+            # At INTRODUCTION or CHECK_OTHER_PROPERTY, a negative token is a refusal to sell/rent
+            if self.state.step in (RealEstateStep.INTRODUCTION, RealEstateStep.CHECK_OTHER_PROPERTY):
+                _bare_ref = any(tok in _BARE_REFUSAL_WORDS for tok in re.split(r"[\s,]+", heard.lower()))
+                if not _bare_ref:
+                    logger.warning(f"🛑 mark_not_interested rejected (no refusal words): '{heard}'")
+                    return "REJECTED: the caller did NOT clearly refuse. Re-ask the current open question in simple words."
+            else:
+                logger.warning(f"🛑 mark_not_interested rejected (no explicit refusal in caller words): '{heard}'")
+                return (
+                    "REJECTED: the caller did NOT clearly refuse. Do NOT end the call. "
+                    "Re-ask the current open question in simple words."
+                )
         self.state.is_interested = False
         self.state.final_disposition = "Not Interested"
         if not self.state.agent_summary:

@@ -113,7 +113,9 @@ class CallRecorder:
         if os.path.exists(self.wav_path) and os.path.getsize(self.wav_path) > 44:
             ffmpeg_bin = shutil.which("ffmpeg")
             if ffmpeg_bin:
+                converted = False
                 try:
+                    self._remove_quiet(self.mp3_path)   # never start from a stale/partial MP3
                     base = [ffmpeg_bin, "-y", "-i", self.wav_path]
                     tail = ["-codec:a", "libmp3lame", "-b:a", "64k", self.mp3_path]
                     proc = await asyncio.to_thread(
@@ -121,18 +123,22 @@ class CallRecorder:
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60.0,
                     )
                     if proc.returncode != 0:
+                        self._remove_quiet(self.mp3_path)
                         proc = await asyncio.to_thread(
                             subprocess.run, base + tail,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60.0,
                         )
-                    if proc.returncode == 0 and os.path.exists(self.mp3_path) and os.path.getsize(self.mp3_path) > 44:
-                        logger.info(f"✅ Converted recording to MP3: {self.mp3_path} ({os.path.getsize(self.mp3_path)} bytes)")
-                        try:
-                            os.remove(self.wav_path)
-                        except OSError:
-                            pass
+                    converted = (proc.returncode == 0 and os.path.exists(self.mp3_path)
+                                 and os.path.getsize(self.mp3_path) > 44)
                 except Exception as e:
                     logger.warning(f"ffmpeg conversion failed (keeping WAV): {e}")
+                if converted:
+                    logger.info(f"✅ Converted recording to MP3: {self.mp3_path} ({os.path.getsize(self.mp3_path)} bytes)")
+                    self._remove_quiet(self.wav_path)
+                else:
+                    # A failed / timed-out ffmpeg can leave a truncated MP3 behind; final_file below would pick it
+                    # over the good WAV and upload a corrupt file.
+                    self._remove_quiet(self.mp3_path)
             else:
                 logger.warning("ffmpeg not found on PATH; keeping WAV recording")
 
@@ -160,6 +166,14 @@ class CallRecorder:
             logger.warning(f"No usable audio was captured for call {self.call_id} ({self._bytes} bytes)")
             self._final_result = None
         return self._final_result
+
+    @staticmethod
+    def _remove_quiet(path: str):
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
 
     async def _upload_to_s3(self, file_path: str) -> Optional[str]:
         bucket = os.environ.get("S3_BUCKET")

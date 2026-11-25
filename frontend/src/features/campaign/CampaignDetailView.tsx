@@ -23,6 +23,7 @@ import {
 import type { CampaignItem, CallRecord } from '../../types';
 import { parseAudienceCsv, generateCampaignAuditedReportCsv, downloadCampaignAudienceSampleCsv } from '../../utils/csvHelper';
 import { 
+  fetchCampaignById,
   fetchCampaignCalls, 
   startCampaignCalls, 
   uploadCampaignContacts, 
@@ -536,11 +537,15 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
   const loadData = async () => {
     setLoadingContacts(true);
     try {
-      const [callsData, dispData, contactsData] = await Promise.all([
+      const [freshCampaign, callsData, dispData, contactsData] = await Promise.all([
+        fetchCampaignById(currentCampaign.id).catch(() => null),
         fetchCampaignCalls(currentCampaign.id),
         fetchCampaignDispositions(currentCampaign.id).catch(() => null),
         fetchCampaignContacts(currentCampaign.id).catch(() => []),
       ]);
+      if (freshCampaign) {
+        setCurrentCampaign(freshCampaign);
+      }
       setCalls(callsData || []);
       setContacts(contactsData || []);
       if (dispData) {
@@ -847,6 +852,10 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
       const sCalls = Math.max(currentCampaign.successful_calls || 0, succCount);
       const fCalls = Math.max(currentCampaign.failed_calls || 0, failCount);
       const remCalls = Math.max(0, totContacts - uCalled);
+      const dbTalkTime = Number((currentCampaign as any).total_talk_time_seconds) || 0;
+      const dbAvgDuration = Number((currentCampaign as any).avg_duration_seconds) || 0;
+      const finalTalkTime = Math.max(dbTalkTime, totalDuration);
+      const finalAvgDuration = dbAvgDuration > 0 ? dbAvgDuration : (connectedCount > 0 ? Math.round(totalDuration / connectedCount) : 0);
 
       return {
         totalContacts: totContacts,
@@ -854,8 +863,8 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
         successful: sCalls,
         failed: fCalls,
         remaining: remCalls,
-        totalTalkTimeSeconds: totalDuration,
-        avgDurationSeconds: connectedCount > 0 ? Math.round(totalDuration / connectedCount) : 0,
+        totalTalkTimeSeconds: finalTalkTime,
+        avgDurationSeconds: finalAvgDuration,
       };
     }
 
