@@ -156,7 +156,10 @@ _POSITIVE_OR_ANSWER_RE = re.compile(
 #    here: they mean "maybe later", the LLM offers one callback before anything ends the call (see prompts.py).
 _EXPLICIT_REFUSAL_PHRASES = re.compile(
     r"\b("
-    r"not\s+(?:interested|looking|selling|renting|leasing|wanting|planning|for\s+sale|at\s+all)"
+    r"not\s+(?:interested|for\s+sale|at\s+all\s+(?:interested|selling|looking|renting|leasing|planning))"
+    # "not planning / selling ... right now" is a SOFT refusal (callback offer by the LLM), not a hard one
+    r"|not\s+(?:looking|selling|renting|leasing|wanting|planning)"
+    r"(?!(?:\s+\w+){0,3}\s+(?:right\s+now|at\s+the\s+moment|at\s+present|currently|as\s+of\s+now|for\s+now))"
     r"|(?:un|not\s+)interested"
     r"|don'?t\s+want\s+to\s+(?:sell|rent|lease|talk|proceed)"
     r"|no\s+thanks?|no\s+thank\s+you"
@@ -185,6 +188,20 @@ _EXPLICIT_REFUSAL_DEV = re.compile(
     r"(नहीं\s*(बेचना|देना|करना|चाहिए|बताना)|(बेचना|देना)\s*नहीं|इंटरेस्टेड\s*नहीं|रुचि\s*नहीं|कॉल\s*मत\s*करो|फोन\s*मत|कॉल\s*काटो|काट\s*दो)"
 )
 
+# "Broker nahi chahiye" / "no agents" = the caller refuses BROKERS, not the call. Stripped before refusal matching.
+_BROKER_NEG_RE = re.compile(
+    r"\b(?:broker(?:age)?s?|dalal|dealers?|agents?|commission|middle\s*man|property\s+dealers?)\s*(?:wal[aei]\s*)?(?:log\s*)?(?:ko\s*)?"
+    r"(?:nahi|nhi|nahin|no|mat)\s*(?:chahiye|chahie|chahta|chahte|karna|aana|bhejna|call)\b"
+    r"|\b(?:no|don'?t\s+want|do\s+not\s+want)\s+(?:any\s+)?(?:brokers?|brokerage|dealers?|agents?|commission|middle\s*man)\b"
+    r"|(?:ब्रोकर|दलाल|डीलर|एजेंट|कमीशन)\s*(?:वाले\s*)?(?:को\s*)?(?:नहीं|नही|मत)\s*(?:चाहिए|चाहिये|चाहता|चाहते|करना|आना)",
+    re.IGNORECASE,
+)
+
+
+def strip_broker_negation(text: Any) -> str:
+    return _BROKER_NEG_RE.sub(" ", str(text or ""))
+
+
 # 3. Clean bare refusal tokens: when the entire utterance is just "no", "nahi ji", "no thanks"
 _BARE_REFUSAL_WORDS = {
     "no", "nope", "nah", "nahi", "nahin", "nhi", "nahii", "nai", "na",
@@ -203,7 +220,7 @@ def explicit_dnc_request(text: Any) -> bool:
 
 
 def explicit_refusal(text: Any) -> bool:
-    t = str(text or "").strip()
+    t = strip_broker_negation(text).strip()
     if not t:
         return False
 
