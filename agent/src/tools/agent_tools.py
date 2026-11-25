@@ -205,6 +205,10 @@ class AgentTools:
 
     async def _finish(self, step: Step, disposition: str, note: str, line: str) -> str:
         s = self.state
+        if s.identity_confirmed is None and disposition not in (
+            "WRONG_NUMBER_OR_IDENTITY_NOT_CONFIRMED", "NO_RESPONSE", "LANGUAGE_BARRIER", "NOT_CONNECTED_NO_ANSWER"
+        ):
+            s.identity_confirmed = True
         s.final_disposition = disposition
         s.customer_note = note
         s.closing_line = line  # fallback if the LLM never speaks it (see watchdog)
@@ -393,7 +397,7 @@ class AgentTools:
             t.record_still_using_device, t.record_do_not_call, t.record_language_barrier,
         ]
         return {
-            Step.IDENTITY: [t.confirm_identity, t.record_do_not_call, t.record_language_barrier],
+            Step.IDENTITY: [t.confirm_identity, t.schedule_callback] + faq,
             Step.PICKUP_DECISION: [t.set_pickup, t.set_pickup_date, t.record_willing_no_date, t.schedule_callback] + faq,
             Step.DATE_RESOLUTION: [t.set_pickup, t.set_pickup_date, t.record_willing_no_date, t.schedule_callback] + faq,
             Step.ADDRESS_CONFIRMATION: [t.confirm_address, t.set_pickup_date, t.schedule_callback] + faq,
@@ -601,7 +605,7 @@ class AgentTools:
         if not confirmed and not new_address:
             if self._strike("address_ask") <= 3:
                 s.awaiting_detail = True
-                return self._say(self._t("कृपया अपना सही पता बताइए।", "Please tell me your correct address."))
+                return self._say(self._t("कृपया अपना मकान नंबर और पूरा पता बताइए।", "Please tell me your house number and full address."))
             # Asked three times and still no address: close the pickup, flag it for the team.
             return await self._finish(
                 Step.CLOSE, "PICKUP_CONFIRMED",
