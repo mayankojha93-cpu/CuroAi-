@@ -1694,68 +1694,32 @@ export class CampaignService {
 
     const isRealEstate = campaign.pipeline === 'real_estate';
 
+    // Query all actual calls made in this campaign
     const query = `
-      WITH call_disps AS (
-        SELECT 
-          COALESCE(
-            NULLIF(TRIM(ro.final_disposition), ''),
-            NULLIF(TRIM(co.final_disposition), ''),
-            NULLIF(TRIM(c.call_status), ''),
-            NULLIF(TRIM(rl.current_disposition), ''),
-            NULLIF(TRIM(cu.current_disposition), ''),
-            NULLIF(TRIM(c.status), '')
-          ) as disposition
-        FROM calls c
-        LEFT JOIN customers cu ON c.customer_id = cu.id
-        LEFT JOIN real_estate_leads rl ON c.re_lead_id = rl.id
-        LEFT JOIN call_outcomes co ON c.id = co.call_id
-        LEFT JOIN real_estate_outcomes ro ON c.id = ro.call_id
-        WHERE c.campaign_id = $1 OR cu.campaign_id = $1 OR rl.campaign_id = $1
-      ),
-      cust_disps AS (
-        SELECT 
-          NULLIF(TRIM(cu.current_disposition), '') as disposition
-        FROM customers cu
-        WHERE cu.campaign_id = $1
-          AND cu.current_disposition IS NOT NULL
-          AND cu.id NOT IN (
-            SELECT DISTINCT customer_id FROM calls WHERE customer_id IS NOT NULL AND (campaign_id = $1 OR customer_id IN (SELECT id FROM customers WHERE campaign_id = $1))
-          )
-      ),
-      lead_disps AS (
-        SELECT 
-          NULLIF(TRIM(rl.current_disposition), '') as disposition
-        FROM real_estate_leads rl
-        WHERE rl.campaign_id = $1
-          AND rl.current_disposition IS NOT NULL
-          AND rl.id NOT IN (
-            SELECT DISTINCT re_lead_id FROM calls WHERE re_lead_id IS NOT NULL AND (campaign_id = $1 OR re_lead_id IN (SELECT id FROM real_estate_leads WHERE campaign_id = $1))
-          )
-      ),
-      all_disps AS (
-        SELECT disposition FROM call_disps WHERE disposition IS NOT NULL
-        UNION ALL
-        SELECT disposition FROM cust_disps WHERE disposition IS NOT NULL
-        UNION ALL
-        SELECT disposition FROM lead_disps WHERE disposition IS NOT NULL
-      )
-      SELECT disposition, COUNT(*)::int as count
-      FROM all_disps
-      GROUP BY 1
-      ORDER BY count DESC
+      SELECT 
+        c.id,
+        COALESCE(
+          NULLIF(TRIM(ro.final_disposition), ''),
+          NULLIF(TRIM(co.final_disposition), ''),
+          NULLIF(TRIM(c.call_status), ''),
+          NULLIF(TRIM(c.status), '')
+        ) as raw_disposition,
+        c.duration_seconds,
+        c.call_status,
+        c.status,
+        COALESCE(ro.agent_summary, co.agent_summary) as agent_summary
+      FROM calls c
+      LEFT JOIN call_outcomes co ON c.id = co.call_id
+      LEFT JOIN real_estate_outcomes ro ON c.id = ro.call_id
+      LEFT JOIN real_estate_leads rl ON c.re_lead_id = rl.id
+      LEFT JOIN customers cu ON c.customer_id = cu.id
+      WHERE c.campaign_id = $1
+         OR (c.campaign_id IS NULL AND (rl.campaign_id = $1 OR cu.campaign_id = $1))
+      ORDER BY c.created_at ASC
     `;
 
     const res = await pool.query(query, [campaignId]);
-
-    const totalRes = await pool.query(
-      `SELECT COUNT(*)::int as total 
-       FROM calls c
-       LEFT JOIN customers cu ON c.customer_id = cu.id
-       LEFT JOIN real_estate_leads rl ON c.re_lead_id = rl.id
-       WHERE c.campaign_id = $1 OR cu.campaign_id = $1 OR rl.campaign_id = $1`,
-      [campaignId]
-    );
-    let totalCalls = totalRes.rows[0]?.total || 0;
+    const totalCalls = res.rows.length;
 
     const targetList = isRealEstate ? REAL_ESTATE_CANONICAL_DISPOSITIONS : CANONICAL_DISPOSITIONS;
     const matcher = isRealEstate ? matchRealEstateDisposition : matchCanonicalDisposition;
@@ -1769,20 +1733,29 @@ export class CampaignService {
     // Seed all target canonical dispositions with 0
     targetList.forEach((d) => dispMap.set(d, 0));
 
-    // Fill with actual call counts mapped to target canonical dispositions
+    // Fill with actual call counts mapped to target canonical dispositions using full context
     res.rows.forEach((row) => {
-      const canonicalName = matcher(row.disposition);
-      dispMap.set(canonicalName, (dispMap.get(canonicalName) || 0) + Number(row.count));
+      const canonicalName = isRealEstate
+        ? matchRealEstateDisposition(
+            row.raw_disposition,
+            row.duration_seconds,
+            row.call_status || row.status,
+            null,
+            row.agent_summary
+          )
+        : matchCanonicalDisposition(
+            row.raw_disposition,
+            row.duration_seconds,
+            row.call_status || row.status
+          );
+      dispMap.set(canonicalName, (dispMap.get(canonicalName) || 0) + 1);
     });
-
-    const totalDispositionsCount = Array.from(dispMap.values()).reduce((sum, c) => sum + c, 0);
-    const denominator = totalCalls > 0 ? totalCalls : totalDispositionsCount;
 
     const dispositions = Array.from(dispMap.entries())
       .map(([name, count]) => ({
         name,
         count,
-        percentage: denominator > 0 ? Math.round((count / denominator) * 100) : 0,
+        percentage: totalCalls > 0 ? Math.round((count / totalCalls) * 100) : 0,
       }))
       .sort((a, b) => {
         if (b.count !== a.count) return b.count - a.count;
@@ -1792,7 +1765,7 @@ export class CampaignService {
     return {
       expected,
       dispositions,
-      totalCalls: Math.max(totalCalls, totalDispositionsCount),
+      totalCalls,
     };
   }
 }
