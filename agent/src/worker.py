@@ -146,7 +146,8 @@ def _build_llm_services() -> list:
             )
         )
     if use_or:
-        if OPENROUTER_PROVIDER_ORDER:
+        is_lpu_model = any(k in LLM_MODEL.lower() for k in ("llama", "mistral", "mixtral", "qwen"))
+        if OPENROUTER_PROVIDER_ORDER and is_lpu_model:
             prov: Any = {"order": OPENROUTER_PROVIDER_ORDER, "allow_fallbacks": True}
         elif OPENROUTER_PROVIDER_SORT and OPENROUTER_PROVIDER_SORT.lower() != "none":
             prov = {"sort": OPENROUTER_PROVIDER_SORT}
@@ -351,6 +352,7 @@ async def run_airtel_pipeline(
             state.answered_at = time.time()
             state.last_activity_time = time.time()
             log_dialogue("assistant", greeting)
+            context.add_message({"role": "assistant", "content": greeting})
             session.say(greeting, allow_interruptions=False)
 
         async def _max_duration_watchdog():
