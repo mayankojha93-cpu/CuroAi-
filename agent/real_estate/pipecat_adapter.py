@@ -41,6 +41,8 @@ from pipecat.frames.frames import (
     LLMTextFrame,
     TTSSpeakFrame,
     TTSUpdateSettingsFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.llm_service import FunctionCallParams
@@ -265,10 +267,12 @@ class LLMOutputGuard(FrameProcessor):
         if isinstance(frame, InterruptionFrame):
             self._buf.clear()
             self._end_evt.set()
+            self.state.llm_busy_since = 0.0
             await self.push_frame(frame, direction)
             return
 
         if isinstance(frame, LLMFullResponseEndFrame):
+            self.state.llm_busy_since = 0.0
             full = "".join(self._buf)
             self._buf.clear()
             out = await self._finalize(full)
@@ -335,9 +339,29 @@ class TurnGate(FrameProcessor):
         self.context = context
         self.log_dialogue = log_dialogue
         self._seen_user_msgs = 0
+        # _trim_context() drops old messages, so the number of user messages left in the context is NOT a running
+        # turn counter. Every user message trimmed away is added here so (count in context + dropped) keeps growing
+        # by exactly one per real caller turn. Without it, after the first trim every later turn looked "old" and the
+        # whole deterministic layer (IVR check, hold, language switch, push_user_text, step refresh) was skipped.
+        self._dropped_users = 0
+
+    @staticmethod
+    def _role_of(m) -> Optional[str]:
+        return m.get("role") if isinstance(m, dict) else getattr(m, "role", None)
+
+    def _count_users(self, msgs) -> int:
+        return sum(1 for m in msgs if self._role_of(m) == "user")
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+
+        # Live caller-activity tracking for the silence watchdog (a long answer must not trigger "are you there?").
+        if isinstance(frame, UserStartedSpeakingFrame):
+            self.state.user_speaking = True
+            self.state.last_activity_time = time.time()
+        elif isinstance(frame, UserStoppedSpeakingFrame):
+            self.state.user_speaking = False
+            self.state.last_activity_time = time.time()
 
         if (
             isinstance(frame, LLMContextFrame)
@@ -348,7 +372,7 @@ class TurnGate(FrameProcessor):
             last = msgs[-1] if msgs else None
             role = last.get("role") if isinstance(last, dict) else getattr(last, "role", None)
             if role == "user":
-                n_user = sum(1 for m in msgs if (m.get("role") if isinstance(m, dict) else getattr(m, "role", None)) == "user")
+                n_user = self._count_users(msgs) + self._dropped_users
                 if n_user > self._seen_user_msgs:  # a NEW caller turn (not a tool-result re-run)
                     self._seen_user_msgs = n_user
                     text = _message_text(last).strip()
@@ -366,6 +390,7 @@ class TurnGate(FrameProcessor):
                     else:
                         return  # empty transcript: nothing to answer
             self._trim_context()
+            self.state.llm_busy_since = time.time()   # LLM is now working on this turn (cleared in LLMOutputGuard)
 
         await self.push_frame(frame, direction)
 
@@ -382,7 +407,9 @@ class TurnGate(FrameProcessor):
         while rest and rest[0].get("role") != "user":
             rest.pop(0)
         if rest:
-            self.context.set_messages(system + rest)
+            new_msgs = system + rest
+            self._dropped_users += max(0, self._count_users(msgs) - self._count_users(new_msgs))
+            self.context.set_messages(new_msgs)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
