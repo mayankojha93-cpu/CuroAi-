@@ -743,60 +743,6 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
     });
   }, [contacts, contactSearchTerm, contactFilter]);
 
-  // Compute dispositions breakdown for display (Pipeline-aware canonical dispositions)
-  const computedDispositions = useMemo(() => {
-    const counts = new Map<string, number>();
-
-    const isRealEstateCampaign =
-      (currentCampaign as any)?.pipeline === 'real_estate' ||
-      (currentCampaign as any)?.name?.toLowerCase()?.includes('estate');
-    const targetCanonicalDispositions = isRealEstateCampaign
-      ? REAL_ESTATE_CANONICAL_DISPOSITIONS
-      : CANONICAL_DISPOSITIONS;
-
-    // Seed canonical dispositions with 0
-    targetCanonicalDispositions.forEach((name) => counts.set(name, 0));
-
-    // Populate from dispositionData if loaded (authoritative backend breakdown)
-    if (dispositionData && Array.isArray(dispositionData.dispositions) && dispositionData.dispositions.length > 0) {
-      dispositionData.dispositions.forEach((d) => {
-        const canonical = d.name;
-        counts.set(canonical, (counts.get(canonical) || 0) + (d.count || 0));
-      });
-    } else {
-      // Fallback: scan calls in state to catch any freshly placed or updated calls
-      calls.forEach((c) => {
-        const raw =
-          (c as any).final_disposition ||
-          (c as any).call_result ||
-          (c as any).disposition ||
-          (c as any).call_status ||
-          c.status ||
-          '';
-        if (raw && raw !== 'INITIATED' && raw !== 'IN_PROGRESS' && raw !== 'RINGING') {
-          const canonical = matchCanonicalDisposition(raw, c.duration_seconds, c.status);
-          counts.set(canonical, (counts.get(canonical) || 0) + 1);
-        }
-      });
-    }
-
-    const totalOccurrences = Array.from(counts.values()).reduce((sum, val) => sum + val, 0);
-    const denominator = uniqueCalled > 0
-      ? uniqueCalled
-      : (dispositionData?.totalUniqueContacts || dispositionData?.totalCalls || (totalOccurrences > 0 ? totalOccurrences : 1));
-
-    return Array.from(counts.entries())
-      .map(([name, count]) => ({
-        name,
-        count,
-        percentage: denominator > 0 ? Math.round((count / denominator) * 100) : 0,
-      }))
-      .sort((a, b) => {
-        if (b.count !== a.count) return b.count - a.count;
-        return a.name.localeCompare(b.name);
-      });
-  }, [dispositionData, calls, (currentCampaign as any)?.pipeline, (currentCampaign as any)?.name]);
-
   // Compute real metrics from calls data and campaign DB values
   const computedStats = useMemo(() => {
     if (calls && calls.length > 0) {
@@ -883,6 +829,60 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({
   const avgDurationSeconds = computedStats.avgDurationSeconds;
 
   const progressPercent = currentCampaign.progress_percent ?? (totalContacts > 0 ? Math.min(100, Math.round(((successful + failed) / totalContacts) * 100)) : 0);
+
+  // Compute dispositions breakdown for display (Pipeline-aware canonical dispositions)
+  const computedDispositions = useMemo(() => {
+    const counts = new Map<string, number>();
+
+    const isRealEstateCampaign =
+      (currentCampaign as any)?.pipeline === 'real_estate' ||
+      (currentCampaign as any)?.name?.toLowerCase()?.includes('estate');
+    const targetCanonicalDispositions = isRealEstateCampaign
+      ? REAL_ESTATE_CANONICAL_DISPOSITIONS
+      : CANONICAL_DISPOSITIONS;
+
+    // Seed canonical dispositions with 0
+    targetCanonicalDispositions.forEach((name) => counts.set(name, 0));
+
+    // Populate from dispositionData if loaded (authoritative backend breakdown)
+    if (dispositionData && Array.isArray(dispositionData.dispositions) && dispositionData.dispositions.length > 0) {
+      dispositionData.dispositions.forEach((d) => {
+        const canonical = d.name;
+        counts.set(canonical, (counts.get(canonical) || 0) + (d.count || 0));
+      });
+    } else {
+      // Fallback: scan calls in state to catch any freshly placed or updated calls
+      calls.forEach((c) => {
+        const raw =
+          (c as any).final_disposition ||
+          (c as any).call_result ||
+          (c as any).disposition ||
+          (c as any).call_status ||
+          c.status ||
+          '';
+        if (raw && raw !== 'INITIATED' && raw !== 'IN_PROGRESS' && raw !== 'RINGING') {
+          const canonical = matchCanonicalDisposition(raw, c.duration_seconds, c.status);
+          counts.set(canonical, (counts.get(canonical) || 0) + 1);
+        }
+      });
+    }
+
+    const totalOccurrences = Array.from(counts.values()).reduce((sum, val) => sum + val, 0);
+    const denominator = uniqueCalled > 0
+      ? uniqueCalled
+      : (dispositionData?.totalUniqueContacts || dispositionData?.totalCalls || (totalOccurrences > 0 ? totalOccurrences : 1));
+
+    return Array.from(counts.entries())
+      .map(([name, count]) => ({
+        name,
+        count,
+        percentage: denominator > 0 ? Math.round((count / denominator) * 100) : 0,
+      }))
+      .sort((a, b) => {
+        if (b.count !== a.count) return b.count - a.count;
+        return a.name.localeCompare(b.name);
+      });
+  }, [dispositionData, calls, uniqueCalled, (currentCampaign as any)?.pipeline, (currentCampaign as any)?.name]);
 
   // Count how many contacts have call attempts available
   const retryStats = useMemo(() => {
