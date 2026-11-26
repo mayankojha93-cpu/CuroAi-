@@ -339,6 +339,7 @@ class TurnGate(FrameProcessor):
         self.context = context
         self.log_dialogue = log_dialogue
         self._seen_user_msgs = 0
+        self._last_user_text = ""
         # _trim_context() drops old messages, so the number of user messages left in the context is NOT a running
         # turn counter. Every user message trimmed away is added here so (count in context + dropped) keeps growing
         # by exactly one per real caller turn. Without it, after the first trim every later turn looked "old" and the
@@ -359,6 +360,8 @@ class TurnGate(FrameProcessor):
         if isinstance(frame, UserStartedSpeakingFrame):
             self.state.user_speaking = True
             self.state.last_activity_time = time.time()
+            if self._seen_user_msgs == 0 and getattr(self.state.step, "value", self.state.step) == "INTRODUCTION":
+                self.state.opening_speech_interrupted = True
         elif isinstance(frame, UserStoppedSpeakingFrame):
             self.state.user_speaking = False
             self.state.last_activity_time = time.time()
@@ -366,17 +369,19 @@ class TurnGate(FrameProcessor):
         if (
             isinstance(frame, LLMContextFrame)
             and direction == FrameDirection.DOWNSTREAM
-            and not getattr(frame, "speculation", False)
         ):
             msgs = frame.context.get_messages() if hasattr(frame.context, "get_messages") else frame.context.messages
             last = msgs[-1] if msgs else None
             role = last.get("role") if isinstance(last, dict) else getattr(last, "role", None)
             if role == "user":
                 n_user = self._count_users(msgs) + self._dropped_users
-                if n_user > self._seen_user_msgs:  # a NEW caller turn (not a tool-result re-run)
+                text = _message_text(last).strip()
+                is_new_turn = n_user > self._seen_user_msgs
+                is_updated_turn = (n_user == self._seen_user_msgs and bool(text) and text != self._last_user_text)
+                if is_new_turn or is_updated_turn:  # a NEW or updated caller turn (including speculative frames)
                     self._seen_user_msgs = n_user
-                    text = _message_text(last).strip()
                     if text:
+                        self._last_user_text = text
                         self.state.last_activity_time = time.time()
                         self.log_dialogue("customer", text)
                         try:
