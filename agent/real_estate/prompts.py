@@ -164,7 +164,7 @@ Human Speaking Style & Pacing Rules:
 8. IMPATIENCE HANDLING & RAPID BOOKING: If the caller sounds rushed, impatient, irritated, or says "hurry up", "jaldi bolo", "time nahi hai", "wrap it up":
    - DO NOT keep asking granular questions.
    - Immediately acknowledge their time politely, call `book_advisor_handoff(reason="Customer impatient / requested quick handoff")`, and skip to closing.
-9. Listen carefully: if the caller mentions multiple property details in a single utterance (society, unit, BHK, area, price), call `save_property_details` to capture all of them at once. DO NOT re-ask details already shared!
+9. Listen carefully: if the caller mentions one or multiple property details in a single utterance (society, unit/block/house number like "C block 73" -> unit_number="C-73", floor like "ground floor" -> floor_number="Ground", BHK, area, furnishing, price/rent), you MUST call `save_property_details` in THAT SAME TURN to save them. NEVER just say "noted Sir" in plain text without calling `save_property_details`, otherwise the detail is lost and will be asked again! DO NOT re-ask details already shared!
 10. AREA UNIT CONVERSION & BARE NUMBER HANDLING:
    - If the caller states area in gaj or square yards (e.g. "200 gaj", "150 sq yards"), convert it to square feet by multiplying by 9 (1 gaj = 9 sq ft; e.g. 200 gaj = 1800 sq ft) when calling `save_property_details(approx_area_sqft=...)`.
    - If the caller gives a small bare number without units (e.g. "100", "150", "200"): In India, residential unit areas are virtually never under 350 sq ft; callers often quote plots/floors in gaj or mean something else. Clarify gently: "Did you mean 100 gaj (which is 900 sq ft) or square feet?" If confirmed as gaj, multiply by 9 and save.
@@ -346,6 +346,11 @@ Politely acknowledge their time, invoke `book_advisor_handoff(reason="Customer i
                 if state.reply_lang == "en"
                 else "Kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"
             )
+        interrupted_note = (
+            "- INTERRUPTED INTRO: The caller interrupted your opening greeting mid-way. Do NOT restart or repeat the full introduction; acknowledge/answer what they just said directly and continue to the next relevant question.\n"
+            if getattr(state, "opening_speech_interrupted", False)
+            else ""
+        )
         return base + f"""
 Current Step: 1. INTRODUCTION
 Goal: The opening greeting has ALREADY been spoken. Now ask the customer if they are looking to sell or rent out the property.
@@ -354,7 +359,7 @@ Opening greeting already spoken: {intro_greeting}
 Qualification question for this next turn: "{next_question}"
 
 MANDATORY INSTRUCTIONS:
-- CRITICAL: Never combine the greeting with the question. The greeting was already spoken.
+{interrupted_note}- CRITICAL: Never combine the greeting with the question. The greeting was already spoken.
 - If the customer acknowledges or answers the greeting without asking questions (e.g. "Yes", "Haanji", "Haan", "Hello", "Boliye", "Tell me", "Yes speaking", "Haan sun raha hoon"):
   Ask: "{next_question}"
 - If the customer indicates interest, OR mentions selling, renting, or leasing (e.g. "I am looking to lease out", "Looking to lease", "Lease out", "Lease", "Rent out", "Rent par dena hai", "Kiraye pe dena hai", "I want to sell", "Sell", "Thinking about it", "Considering it", "Plan hai", "Maybe"):
@@ -517,6 +522,27 @@ MANDATORY RULES FOR THIS STEP:
 - If the caller's answer is unclear or garbled, ask ONCE more using different wording to clarify whether it is residential or commercial. NEVER make assumptions or use defaults.
 """
 
+    if step == RealEstateStep.ASK_SHARE_DETAILS:
+        share_q = (
+            "Would you like to share your property details with us right now?"
+            if state.reply_lang == "en"
+            else "Kya aap abhi apni property ki details share karna chahenge?"
+        )
+        return base + f"""
+Current Step: ASK_SHARE_DETAILS
+Goal: Confirm whether the customer would like to share their property details right now.
+
+Question already asked (or ask if not yet asked): "{share_q}"
+
+MANDATORY RULES FOR THIS STEP:
+- If the customer AGREES to share details now (e.g. "Yes", "Sure", "Okay", "Haan", "Haanji", "Go ahead", or starts sharing a property detail like floor, unit, BHK, etc.):
+  YOU MUST CALL `confirm_share_details_now()`.
+- If the customer is INTERESTED in selling/renting, but prefers to share the details LATER (e.g. "Later", "Not now", "Call me tomorrow", "Call in the evening", "Abhi busy hoon", "Baad mein share karunga"):
+  DO NOT ask any property-related questions. Politely end the call by calling `schedule_callback(time_slot=..., preferred_day=...)`.
+- If the customer says they are NOT interested in selling or renting:
+  DO NOT ask any property-related questions. Politely end the call immediately by calling `mark_not_interested()`.
+"""
+
     if step in (
         RealEstateStep.RESIDENTIAL_SALE,
         RealEstateStep.RESIDENTIAL_LEASE,
@@ -600,9 +626,10 @@ CRITICAL MANDATORY INSTRUCTIONS:
      When the customer gives configuration or number of bedrooms (e.g. "2 BHK", "3 BHK", "3.5", "3.5 BHK", "3 bedroom", "studio"):
      YOU MUST CALL `save_property_details(bhk_config=...)` IMMEDIATELY! Accept bare numbers or decimals like "3" -> "3 BHK", "3.5" -> "3.5 BHK".
      NEVER speak the next question without executing `save_property_details(bhk_config=...)`!
-4. NATURAL CONVERSATIONAL TRANSITION:
-   - Echo or acknowledge the caller's previous answer in 2-4 words (e.g., "1004 on 10th floor, perfect Sir." or "Signature Global, great.").
-   - Smoothly follow up with:
+4. TOOL-FIRST RULE (DO NOT JUST ACKNOWLEDGE IN TEXT):
+   - If the caller gave ANY property detail in their message, you MUST call `save_property_details(...)` FIRST — NEVER just say "noted Sir" and ask the next question in plain text without calling `save_property_details(...)`, because the system only saves data when `save_property_details(...)` is called!
+   - Only speak `{next_q}` directly (without calling `save_property_details`) when the caller did NOT provide any new detail (for example, they asked a question or gave a general affirmation).
+   - When speaking directly, echo in 2-4 words and smoothly follow up with:
      "{next_q}"
    - NEVER say "Next question", "Moving to the next question", or "Mera agla sawaal". Maintain a completely natural, consultative phone dialogue.
 5. COMMERCIAL PROPERTY INTEGRITY:
@@ -628,7 +655,8 @@ CRITICAL MANDATORY INSTRUCTIONS:
 11. FULL CONVERSATIONAL UNDERSTANDING & EXTRACTION: All human conversation is handled by you. You read and extract all answers from natural speech:
    - Understand the answer in any phrasing and language, including number words ("teen kamre", "dedh crore", "paanch lakh", "pachaas hazaar rent", "do hazaar square feet"), garbled sounds ("supar furnished" = semi-furnished), negations ("furnished nahi hai" = unfurnished), and extra remarks.
    - Save every detail the caller actually stated, even for fields other than the one just asked, with ONE save_property_details call. Then answer any question or remark in one short sentence.
-   - If the caller asks any question (e.g. "Where are you calling from?", "Who is this?", "What is the brokerage?"), answer it concisely in 1 sentence, and immediately pivot back to the pending question in the same turn.
+   - If the caller asks any question (e.g. "Where are you calling from?", "Who is this?", "What is the brokerage?", "What about parking?"), answer it concisely in 1 sentence FIRST, and immediately continue by asking the pending detail (`{next_q}`) in the same turn — NEVER restart the conversation or lose already captured details.
+   - If the caller corrects a previously provided detail (e.g. "Actually it's 5th floor, not 4th"), call `save_property_details(...)` with the corrected value to overwrite it, acknowledge briefly, and continue with the next missing field.
    - If the caller does not know only part of it ("area pata nahi, but 3 BHK hai"), save what they stated AND call customer_does_not_know for the part they do not know (pass caller_words).
 """
 
