@@ -678,6 +678,12 @@ class RealEstateTools:
     async def _go(self, next_step: RealEstateStep):
         """Transition step and synchronize agent instructions and available tools."""
         self.state.step = next_step
+        sync_fn = getattr(self, "sync_state_func", None)
+        if sync_fn:
+            try:
+                sync_fn()
+            except Exception:
+                pass
         if self.agent:
             try:
                 await self.agent.update_instructions(get_step_instructions(self.state))
@@ -757,23 +763,15 @@ class RealEstateTools:
 
         # If both category and intent are already known from the utterance:
         if self.state.category and self.state.intent:
-            cat = self.state.category
-            intn = self.state.intent
-            if cat == "residential" and intn == "sale":
-                next_step = RealEstateStep.RESIDENTIAL_SALE
-            elif cat == "residential" and intn == "lease":
-                next_step = RealEstateStep.RESIDENTIAL_LEASE
-            elif cat == "commercial" and intn == "sale":
-                next_step = RealEstateStep.COMMERCIAL_SALE
-            else:
-                next_step = RealEstateStep.COMMERCIAL_LEASE
-
-            await self._go(next_step)
-            missing = self.state.get_missing_fields()
-            first_q = missing[0]["question_en"] if self.state.reply_lang == "en" else missing[0]["question_hi"]
+            await self._go(RealEstateStep.ASK_SHARE_DETAILS)
+            share_q = (
+                "Would you like to share your property details with us right now?"
+                if self.state.reply_lang == "en"
+                else "Kya aap abhi apni property ki details share karna chahenge?"
+            )
             return self._fast(
-                first_q,
-                f"Customer confirmed interest ({cat.title()} {intn.title()}). Smoothly ask: '{first_q}'",
+                share_q,
+                f"Customer confirmed interest ({self.state.category.title()} {self.state.intent.title()}). Smoothly ask: '{share_q}'",
                 ack="auto",
             )
 
@@ -1009,25 +1007,17 @@ class RealEstateTools:
         if classified_int:
             self.state.intent = classified_int
 
-        # If both category and intent are established, transition to the respective branch 4.1 to 4.4
+        # If both category and intent are established, ask if they want to share property details now
         if self.state.category and self.state.intent:
-            cat = self.state.category
-            intn = self.state.intent
-            if cat == "residential" and intn == "sale":
-                next_step = RealEstateStep.RESIDENTIAL_SALE
-            elif cat == "residential" and intn == "lease":
-                next_step = RealEstateStep.RESIDENTIAL_LEASE
-            elif cat == "commercial" and intn == "sale":
-                next_step = RealEstateStep.COMMERCIAL_SALE
-            else:
-                next_step = RealEstateStep.COMMERCIAL_LEASE
-
-            await self._go(next_step)
-            missing = self.state.get_missing_fields()
-            first_q = missing[0]["question_en"] if self.state.reply_lang == "en" else missing[0]["question_hi"]
+            await self._go(RealEstateStep.ASK_SHARE_DETAILS)
+            share_q = (
+                "Would you like to share your property details with us right now?"
+                if self.state.reply_lang == "en"
+                else "Kya aap abhi apni property ki details share karna chahenge?"
+            )
             return self._fast(
-                first_q,
-                f"Setup complete ({cat.title()} {intn.title()}). Acknowledge and smoothly ask: '{first_q}'",
+                share_q,
+                f"Setup complete ({self.state.category.title()} {self.state.intent.title()}). Acknowledge and smoothly ask: '{share_q}'",
             )
 
         if not self.state.category:
@@ -1044,6 +1034,29 @@ class RealEstateTools:
             else "Aap ise sell karna chahte hain, ya rent par dena?"
         )
         return self._fast(q, f"Ask intent: '{q}'", ack=None)
+
+    @function_tool
+    async def confirm_share_details_now(self) -> str:
+        """Call when the customer agrees to share their property details right now (e.g. 'yes', 'sure', 'haanji', 'okay', or starts giving property details)."""
+        cat = self.state.category or "residential"
+        intn = self.state.intent or "sale"
+        if cat == "residential" and intn == "sale":
+            next_step = RealEstateStep.RESIDENTIAL_SALE
+        elif cat == "residential" and intn == "lease":
+            next_step = RealEstateStep.RESIDENTIAL_LEASE
+        elif cat == "commercial" and intn == "sale":
+            next_step = RealEstateStep.COMMERCIAL_SALE
+        else:
+            next_step = RealEstateStep.COMMERCIAL_LEASE
+
+        await self._go(next_step)
+        missing = self.state.get_missing_fields()
+        first_q = missing[0]["question_en"] if self.state.reply_lang == "en" else missing[0]["question_hi"]
+        return self._fast(
+            first_q,
+            f"Customer agreed to share details now. Acknowledge and ask: '{first_q}'",
+            ack="auto",
+        )
 
     @function_tool
     async def save_property_details(
@@ -1253,6 +1266,12 @@ class RealEstateTools:
             logger.info("Standalone/independent property detected -> skipping unit number & floor")
 
         missing = self.state.get_missing_fields()
+        sync_fn = getattr(self, "sync_state_func", None)
+        if sync_fn:
+            try:
+                sync_fn()
+            except Exception:
+                pass
         if len(missing) == 0:
             # All details for this branch are captured!
             return await self.finish_property_intake()
@@ -1521,6 +1540,8 @@ class RealEstateTools:
             return [self.confirm_owner_name] + self._objection_tools()
         elif step == RealEstateStep.CATEGORY_SELECT:
             return [self.set_category_and_intent] + self._objection_tools()
+        elif step == RealEstateStep.ASK_SHARE_DETAILS:
+            return [self.confirm_share_details_now] + self._objection_tools()
         elif step in (
             RealEstateStep.RESIDENTIAL_SALE,
             RealEstateStep.RESIDENTIAL_LEASE,
