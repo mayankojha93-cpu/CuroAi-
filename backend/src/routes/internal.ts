@@ -134,6 +134,20 @@ internalRouter.post(
   }
 );
 
+// POST /internal/real-estate/calls/:callId/state - Incrementally persist conversation state & slots
+internalRouter.post(
+  '/internal/real-estate/calls/:callId/state',
+  requireInternalSecret,
+  async (req: Request<{ callId: string }>, res: Response, next: NextFunction) => {
+    try {
+      await realEstateCallService.savePartialState(req.params.callId, req.body || {});
+      return res.status(200).json({ success: true, message: 'State synced' });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
 // POST /internal/calls/:callId/turn - Incrementally save turn (Airtel or RE)
 internalRouter.post(
   '/internal/calls/:callId/turn',
