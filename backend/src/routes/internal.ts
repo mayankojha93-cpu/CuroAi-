@@ -5,6 +5,7 @@ import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { callService } from '../services/callService.js';
 import { realEstateCallService } from '../services/realEstateCallService.js';
+import { logisticsCallService } from '../services/logisticsCallService.js';
 import { query } from '../db/index.js';
 import { validateRequest } from '../middleware/validate.js';
 import { AppError } from '../middleware/errorHandler.js';
@@ -62,10 +63,11 @@ const requireInternalSecret = (req: Request, _res: Response, next: NextFunction)
 // GET /internal/calls/active-dialing  (was unauthenticated: exposed callee phone numbers)
 internalRouter.get('/internal/calls/active-dialing', requireInternalSecret, async (req: Request, res: Response) => {
   const result = await query(
-    `SELECT c.id, c.room_name, c.exotel_call_sid, COALESCE(cust.phone, rl.phone) as phone
+    `SELECT c.id, c.room_name, c.exotel_call_sid, COALESCE(cust.phone, rl.phone, lt.driver_phone) as phone
      FROM calls c
      LEFT JOIN customers cust ON c.customer_id = cust.id
      LEFT JOIN real_estate_leads rl ON c.re_lead_id = rl.id
+     LEFT JOIN logistics_trips lt ON c.logistics_trip_id = lt.id
      WHERE c.status = 'dialing'
      ORDER BY c.created_at DESC LIMIT 1`
   );
@@ -79,10 +81,11 @@ internalRouter.get('/internal/calls/active-dialing', requireInternalSecret, asyn
 internalRouter.get('/internal/calls/by-sid/:sid', requireInternalSecret, async (req: Request, res: Response) => {
   const { sid } = req.params;
   const result = await query(
-    `SELECT c.id, c.room_name, c.exotel_call_sid, COALESCE(cust.phone, rl.phone) as phone
+    `SELECT c.id, c.room_name, c.exotel_call_sid, COALESCE(cust.phone, rl.phone, lt.driver_phone) as phone
      FROM calls c
      LEFT JOIN customers cust ON c.customer_id = cust.id
      LEFT JOIN real_estate_leads rl ON c.re_lead_id = rl.id
+     LEFT JOIN logistics_trips lt ON c.logistics_trip_id = lt.id
      WHERE c.exotel_call_sid = $1 OR c.sip_call_id = $1
      ORDER BY c.created_at DESC LIMIT 1`,
     [sid]
@@ -142,12 +145,51 @@ internalRouter.post(
       if (!text) {
         return res.status(400).json({ error: 'Turn text is required' });
       }
-      const callRes = await query('SELECT re_lead_id FROM calls WHERE id = $1', [callId]);
-      if (callRes.rows[0]?.re_lead_id) {
+      const callRes = await query('SELECT re_lead_id, logistics_trip_id FROM calls WHERE id = $1', [callId]);
+      if (callRes.rows[0]?.logistics_trip_id) {
+        await logisticsCallService.appendTurn(callId, { role, text, timestamp });
+      } else if (callRes.rows[0]?.re_lead_id) {
         await realEstateCallService.appendTurn(callId, { role, text, timestamp });
       } else {
         await callService.appendTurn(callId, { role, text, timestamp });
       }
+      return res.status(200).json({ success: true, message: 'Turn appended' });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
+// POST /internal/logistics/calls/:callId/outcome - Save logistics call outcome
+internalRouter.post(
+  '/internal/logistics/calls/:callId/outcome',
+  requireInternalSecret,
+  async (req: Request<{ callId: string }>, res: Response, next: NextFunction) => {
+    try {
+      const outcome = await logisticsCallService.saveOutcome(req.params.callId, req.body);
+      return res.status(200).json({
+        success: true,
+        message: 'Logistics call outcome saved successfully',
+        outcome,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
+// POST /internal/logistics/calls/:callId/turn - Incrementally save turn
+internalRouter.post(
+  '/internal/logistics/calls/:callId/turn',
+  requireInternalSecret,
+  async (req: Request<{ callId: string }>, res: Response, next: NextFunction) => {
+    try {
+      const { callId } = req.params;
+      const { role, text, timestamp } = req.body;
+      if (!text) {
+        return res.status(400).json({ error: 'Turn text is required' });
+      }
+      await logisticsCallService.appendTurn(callId, { role, text, timestamp });
       return res.status(200).json({ success: true, message: 'Turn appended' });
     } catch (err) {
       return next(err);
@@ -203,15 +245,21 @@ internalRouter.get(
   async (req: Request<{ callId: string }>, res: Response, next: NextFunction) => {
     try {
       const call = await callService.getCall(req.params.callId);
+      let logisticsTrip: any = null;
+      if (call.logistics_trip_id) {
+        const tripRes = await query('SELECT * FROM logistics_trips WHERE id = $1', [call.logistics_trip_id]);
+        logisticsTrip = tripRes.rows[0] || null;
+      }
       return res.status(200).json({
         success: true,
         call,
         callId: call.id,
         leadId: call.re_lead_id || call.customer_id,
         customerId: call.customer_id,
-        customerName: call.customer_name,
+        logisticsTrip,
+        customerName: logisticsTrip?.driver_name || call.customer_name,
         ownerName: call.customer_name,
-        phone: call.customer_phone || call.phone,
+        phone: logisticsTrip?.driver_phone || call.customer_phone || call.phone,
         preferredLanguage: call.language || 'en',
         language: call.language || 'en',
         propertyLocation: call.property_location || call.customer_address,
