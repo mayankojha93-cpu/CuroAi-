@@ -483,6 +483,32 @@ export const TestCallModal: React.FC<TestCallModalProps> = ({ isOpen, onClose, o
                   />
                 </div>
 
+                <div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: 5 }}>
+                    TTS Provider:
+                  </label>
+                  <select
+                    value={formData.tts_provider || 'sarvam'}
+                    onChange={(e) => handleChange('tts_provider', e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '9px 12px',
+                      borderRadius: 'var(--radius-sm)',
+                      background: 'rgba(10, 14, 23, 0.8)',
+                      border: '1px solid var(--border-light)',
+                      color: '#fff',
+                      fontSize: '0.82rem',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <option value="sarvam">Sarvam AI (Default)</option>
+                    <option value="indic_tiny">Indic Tiny TTS (Hindi + English)</option>
+                    <option value="elevenlabs">ElevenLabs</option>
+                    <option value="smallest">Smallest AI</option>
+                    <option value="soniox">Soniox</option>
+                  </select>
+                </div>
+
                 <div style={{ gridColumn: '1 / -1' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: 5 }}>
                     <MapPin size={13} color="var(--text-muted)" />
