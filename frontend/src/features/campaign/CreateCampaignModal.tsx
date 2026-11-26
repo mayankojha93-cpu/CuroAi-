@@ -134,6 +134,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
   );
   const [language, setLanguage] = useState(() => (isRealEstate ? 'en-IN' : 'hi-IN'));
   const [voicePipeline, setVoicePipeline] = useState(() => (isRealEstate ? 'Sarvam AI (Priya - en-IN)' : 'Sarvam AI (Priya - hi-IN)'));
+  const [ttsProvider, setTtsProvider] = useState<string>('sarvam');
 
   // Schedule
   const [scheduleStartTime, setScheduleStartTime] = useState('09:00');
@@ -269,6 +270,7 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
         script: selectedPreset.prompt,
         language,
         voice_pipeline: voicePipeline,
+        tts_provider: ttsProvider,
         schedule_start_time: scheduleStartTime,
         schedule_end_time: scheduleEndTime,
         operating_days: operatingDays,
@@ -578,6 +580,24 @@ export const CreateCampaignModal: React.FC<CreateCampaignModalProps> = ({
                   )}
                 </select>
               </div>
+            </div>
+
+            <div>
+              <label style={labelStyle}>TTS Provider</label>
+              <select
+                value={ttsProvider}
+                onChange={(e) => setTtsProvider(e.target.value)}
+                style={{
+                  ...inputStyle,
+                  cursor: 'pointer',
+                }}
+              >
+                <option value="sarvam" style={{ background: '#0B0F17' }}>Sarvam AI (Default)</option>
+                <option value="indic_tiny" style={{ background: '#0B0F17' }}>Indic Tiny TTS (Hindi + English)</option>
+                <option value="elevenlabs" style={{ background: '#0B0F17' }}>ElevenLabs</option>
+                <option value="smallest" style={{ background: '#0B0F17' }}>Smallest AI</option>
+                <option value="soniox" style={{ background: '#0B0F17' }}>Soniox</option>
+              </select>
             </div>
           </div>
 
