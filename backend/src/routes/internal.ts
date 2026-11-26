@@ -276,6 +276,8 @@ internalRouter.get(
         phone: logisticsTrip?.driver_phone || call.customer_phone || call.phone,
         preferredLanguage: call.language || 'en',
         language: call.language || 'en',
+        ttsProvider: (call as any).tts_provider || 'sarvam',
+        tts_provider: (call as any).tts_provider || 'sarvam',
         propertyLocation: call.property_location || call.customer_address,
         address: call.customer_address || call.property_location,
         location: call.property_location,
