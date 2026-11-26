@@ -26,6 +26,8 @@ const envSchema = z.object({
   JWT_EXPIRES_IN: z.string().default('24h'),
   DEFAULT_ADMIN_EMAIL: z.string().default('admin@curoai.in'),
   DEFAULT_ADMIN_PASSWORD: z.string().default('admin12345'),
+  LOGISTICS_ADMIN_EMAIL: z.string().default('logistics.admin@curoai.in'),
+  LOGISTICS_ADMIN_PASSWORD: z.string().default('MittalLogistics@2026'),
   OPENROUTER_API_KEY: z.string().optional().default(''),
 
   // Agent Personas
