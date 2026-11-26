@@ -76,6 +76,8 @@ const envSchema = z.object({
 
   // AI Providers
   SARVAM_API_KEY: z.string().optional().default(''),
+  INDIC_TINY_TTS_URL: z.string().optional().default('http://127.0.0.1:8010'),
+  INDIC_TINY_TTS_API_KEY: z.string().optional().default(''),
   GROQ_API_KEY: z.string().optional().default(''),
   LLM_MODEL: z.string().default('meta-llama/llama-3.3-70b-instruct'),
 
