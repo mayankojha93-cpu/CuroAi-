@@ -18,6 +18,7 @@ import {
   LoginPage
 } from './features';
 import { AuthProvider, useAuth, getStoredAuthToken } from './context/AuthContext';
+import { LogisticsDashboard } from './features/logistics/LogisticsDashboard';
 import type { AuthUser } from './types';
 import './index.css';
 import './App.css';
@@ -247,6 +248,18 @@ const AppRouter: React.FC = () => {
       );
     }
 
+    if (user?.assigned_pipeline === 'logistics') {
+      return (
+        <LogisticsDashboard
+          user={user}
+          onLogout={() => {
+            logout();
+            navigateTo('/login');
+          }}
+        />
+      );
+    }
+
     return (
       <DashboardView
         user={user}
@@ -261,6 +274,17 @@ const AppRouter: React.FC = () => {
   // Route: /login
   if (currentRoute === '/login') {
     if (isAuthed) {
+      if (user?.assigned_pipeline === 'logistics') {
+        return (
+          <LogisticsDashboard
+            user={user}
+            onLogout={() => {
+              logout();
+              navigateTo('/login');
+            }}
+          />
+        );
+      }
       return (
         <DashboardView
           user={user}
@@ -282,6 +306,17 @@ const AppRouter: React.FC = () => {
 
   // Route: / (Default Public Landing Page - Only shown when unauthenticated)
   if (isAuthed) {
+    if (user?.assigned_pipeline === 'logistics') {
+      return (
+        <LogisticsDashboard
+          user={user}
+          onLogout={() => {
+            logout();
+            navigateTo('/login');
+          }}
+        />
+      );
+    }
     return (
       <DashboardView
         user={user}
