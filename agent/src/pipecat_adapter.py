@@ -386,6 +386,7 @@ class PipecatSession:
         injector: SpeechInjector,
         tracker: PlayoutTracker,
         log_dialogue: Callable[[str, str], None],
+        tts_provider: str = "sarvam",
     ):
         self.state = state
         self.tools = tools
@@ -393,6 +394,7 @@ class PipecatSession:
         self.injector = injector
         self.tracker = tracker
         self.log_dialogue = log_dialogue
+        self.tts_provider = tts_provider
         self.guard: Optional[LLMOutputGuard] = None
         self.task = None
         self._current_tool_names: set = set()
@@ -461,13 +463,14 @@ class PipecatSession:
         asyncio.create_task(self._apply_language(lang))
 
     async def _apply_language(self, lang: str):
-        voice = TTS_SPEAKER_EN if lang == "en" else TTS_SPEAKER_HI
-        language = Language.EN_IN if lang == "en" else Language.HI_IN
+        from tts_factory import build_language_update_frame
+
+        frame = build_language_update_frame(self.tts_provider, lang, TTS_SPEAKER_EN, TTS_SPEAKER_HI)
+        if not frame:
+            return
         try:
-            self._speak_q.put_nowait(
-                TTSUpdateSettingsFrame(delta=SarvamHttpTTSService.Settings(voice=voice, language=language))
-            )
-            logger.info(f"🌐 Airtel TTS switched to {lang} ({voice})")
+            self._speak_q.put_nowait(frame)
+            logger.info(f"🌐 Airtel TTS ({self.tts_provider}) switched to {lang}")
         except Exception as e:
             logger.warning(f"TTS language switch failed: {e}")
 
