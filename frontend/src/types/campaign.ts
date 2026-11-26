@@ -55,6 +55,7 @@ export interface CampaignItem {
   script?: string;
   language?: string;
   voice_pipeline?: string;
+  tts_provider?: string;
   pipeline?: string;
   schedule_start_time?: string;
   schedule_end_time?: string;
