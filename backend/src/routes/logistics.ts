@@ -6,12 +6,12 @@ import { requireAuth } from '../middleware/auth.js';
 
 export const logisticsRouter = Router();
 
-// Enforce pipeline permission: Logistics admin or superadmin ('all') only
+// Enforce strict pipeline permission: ONLY Logistics admin ('logistics') can access
 logisticsRouter.use('/api/logistics', requireAuth, (req: Request, res: Response, next: NextFunction) => {
   const userPipeline = req.user?.assigned_pipeline;
-  if (userPipeline && userPipeline !== 'all' && userPipeline !== 'logistics') {
+  if (userPipeline !== 'logistics') {
     return res.status(403).json({
-      error: 'Forbidden: Your account does not have access to the Mittal Pigments Logistics pipeline.',
+      error: 'Forbidden: Only authorized Mittal Pigments Logistics accounts can access this dashboard.',
     });
   }
   next();
