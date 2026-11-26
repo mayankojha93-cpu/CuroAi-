@@ -133,20 +133,20 @@ def _wrap_llm(services: list):
     return ServiceSwitcher(services=services, strategy_type=ServiceSwitcherStrategyFailover)
 
 
-def _build_tts(session: aiohttp.ClientSession) -> SarvamHttpTTSService:
-    kwargs: Dict[str, Any] = dict(
-        voice=TTS_SPEAKER,
+from tts_factory import build_tts_service, extract_tts_provider
+
+
+def _build_tts(session: aiohttp.ClientSession, tts_provider: str = "sarvam"):
+    return build_tts_service(
+        tts_provider,
+        session,
+        lang="hi",
+        speaker_en=TTS_SPEAKER,
+        speaker_hi=TTS_SPEAKER,
         model=TTS_MODEL,
-        language=Language.HI_IN,
-        pace=TTS_PACE,
-    )
-    if "v3" in TTS_MODEL:
-        kwargs["temperature"] = TTS_TEMPERATURE
-    return SarvamHttpTTSService(
-        api_key=SARVAM_API_KEY,
-        aiohttp_session=session,
         sample_rate=TTS_SAMPLE_RATE,
-        settings=SarvamHttpTTSService.Settings(**kwargs),
+        pace=TTS_PACE,
+        temperature=TTS_TEMPERATURE,
     )
 
 
@@ -354,7 +354,8 @@ async def _run_logistics_pipeline(
         )
         llm_services = _build_llm_services()
         llm = _wrap_llm(llm_services)
-        tts = _build_tts(aiohttp_session)
+        tts_provider = extract_tts_provider(metadata)
+        tts = _build_tts(aiohttp_session, tts_provider)
 
         context = LLMContext(messages=[{"role": "system", "content": build_system_prompt(state)}])
         user_agg, assistant_agg = LLMContextAggregatorPair(
