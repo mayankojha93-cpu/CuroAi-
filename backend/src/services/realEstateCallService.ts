@@ -92,6 +92,7 @@ export class RealEstateCallService {
     owner_name?: string;
     name?: string;
     language?: string;
+    tts_provider?: string;
     property_location?: string;
     address?: string;
     notes?: string;
@@ -188,15 +189,16 @@ export class RealEstateCallService {
     const callId = randomUUID();
     const roomName = `re-call-${callId}`;
 
+    const ttsProvider = (data.tts_provider || 'sarvam').toLowerCase();
     const insertCall = await query(
       `INSERT INTO calls (
          id, re_lead_id, status, call_status, attempt_number, room_name, direction,
-         script, company_name, voice_pipeline, is_test_call, pipeline, language, initial_language, language_switched, category
+         script, company_name, voice_pipeline, tts_provider, is_test_call, pipeline, language, initial_language, language_switched, category
        )
        VALUES ($1, $2, 'initiated', 'initiated', $3, $4, 'outbound',
-               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Priya - hi/en)', TRUE, 'real_estate', $5, $5, FALSE, $6)
+               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Priya - hi/en)', $7, TRUE, 'real_estate', $5, $5, FALSE, $6)
        RETURNING *`,
-      [callId, lead?.id || null, lead?.total_attempts || 1, roomName, cleanLang, lead?.category || cleanCat]
+      [callId, lead?.id || null, lead?.total_attempts || 1, roomName, cleanLang, lead?.category || cleanCat, ttsProvider]
     );
     const call = insertCall.rows[0];
 
@@ -272,15 +274,23 @@ export class RealEstateCallService {
     );
     const attempt = updLead.rows[0]?.total_attempts ?? (Number(lead.total_attempts || 0) + 1);
 
+    let campaignTts = 'sarvam';
+    if (lead.campaign_id) {
+      const campRes = await query(`SELECT tts_provider FROM campaigns WHERE id = $1`, [lead.campaign_id]);
+      if (campRes.rows[0]?.tts_provider) {
+        campaignTts = String(campRes.rows[0].tts_provider).toLowerCase();
+      }
+    }
+
     const insCall = await query(
       `INSERT INTO calls (
          id, re_lead_id, campaign_id, status, call_status, attempt_number, room_name, direction,
-         script, company_name, voice_pipeline, pipeline, language, initial_language, language_switched, category
+         script, company_name, voice_pipeline, tts_provider, pipeline, language, initial_language, language_switched, category
        )
        VALUES ($1, $2, $3, 'initiated', 'initiated', $4, $5, 'outbound',
-               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Priya - hi/en)', 'real_estate', $6, $6, FALSE, $7)
+               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Priya - hi/en)', $8, 'real_estate', $6, $6, FALSE, $7)
        RETURNING *`,
-      [callId, leadId, lead.campaign_id, attempt, roomName, lead.preferred_language || 'en', lead.category || null]
+      [callId, leadId, lead.campaign_id, attempt, roomName, lead.preferred_language || 'en', lead.category || null, campaignTts]
     );
     const call = insCall.rows[0];
 
