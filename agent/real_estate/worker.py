@@ -393,21 +393,20 @@ def _wrap_llm(services: list):
     return ServiceSwitcher(services=services, strategy_type=ServiceSwitcherStrategyFailover)
 
 
-def _build_tts(session: aiohttp.ClientSession, lang: str) -> SarvamHttpTTSService:
-    settings_kwargs: Dict[str, Any] = dict(
-        voice=TTS_SPEAKER_EN if lang == "en" else TTS_SPEAKER_HI,
+from tts_factory import build_tts_service, extract_tts_provider
+
+
+def _build_tts(session: aiohttp.ClientSession, lang: str, tts_provider: str = "sarvam"):
+    return build_tts_service(
+        tts_provider,
+        session,
+        lang=lang,
+        speaker_en=TTS_SPEAKER_EN,
+        speaker_hi=TTS_SPEAKER_HI,
         model=TTS_MODEL,
-        language=Language.EN_IN if lang == "en" else Language.HI_IN,
-        pace=TTS_PACE,
-    )
-    # bulbul:v4-flash ignores `temperature` (Pipecat logs a warning) -> only send it to models that honour it.
-    if "v3" in TTS_MODEL:
-        settings_kwargs["temperature"] = TTS_TEMPERATURE
-    return SarvamHttpTTSService(
-        api_key=SARVAM_API_KEY,
-        aiohttp_session=session,
         sample_rate=TTS_SAMPLE_RATE,
-        settings=SarvamHttpTTSService.Settings(**settings_kwargs),
+        pace=TTS_PACE,
+        temperature=TTS_TEMPERATURE,
     )
 
 
@@ -569,7 +568,8 @@ async def _run_real_estate_pipeline(
         )
         llm_services = _build_llm_services()
         llm = _wrap_llm(llm_services)
-        tts = _build_tts(aiohttp_session, state.reply_lang)
+        tts_provider = extract_tts_provider(metadata)
+        tts = _build_tts(aiohttp_session, state.reply_lang, tts_provider)
 
         # System prompt + tools for the FIRST step. Both are refreshed by PipecatSession on every step change.
         context = LLMContext(messages=[{"role": "system", "content": get_step_instructions(state)}])
@@ -587,7 +587,7 @@ async def _run_real_estate_pipeline(
 
         injector = SpeechInjector()
         tracker = PlayoutTracker(state)
-        session = PipecatSession(state, tools, context, injector, tracker, log_dialogue)
+        session = PipecatSession(state, tools, context, injector, tracker, log_dialogue, tts_provider=tts_provider)
         tools.agent = session                       # tools.py: update_instructions / update_tools / .session.say
         handler = RealEstateTurnHandler(state, tools, session)
         handler.on_language_change = session.set_reply_language
