@@ -208,11 +208,19 @@ export class CallService {
         'Initiating outbound call'
       );
 
+      let campaignTts = 'sarvam';
+      if (customer.campaign_id) {
+        const campRes = await client.query('SELECT tts_provider FROM campaigns WHERE id = $1', [customer.campaign_id]);
+        if (campRes.rows[0]?.tts_provider) {
+          campaignTts = String(campRes.rows[0].tts_provider).toLowerCase();
+        }
+      }
+
       const insertRes = await client.query(
-        `INSERT INTO calls (id, customer_id, campaign_id, status, call_status, attempt_number, room_name, direction, language, initial_language, language_switched)
-         VALUES ($1, $2, $3, 'initiated', 'initiated', $4, $5, 'outbound', $6, $6, FALSE)
+        `INSERT INTO calls (id, customer_id, campaign_id, status, call_status, attempt_number, room_name, direction, language, initial_language, language_switched, tts_provider)
+         VALUES ($1, $2, $3, 'initiated', 'initiated', $4, $5, 'outbound', $6, $6, FALSE, $7)
          RETURNING *`,
-        [callId, customerId, customer.campaign_id || null, currentAttempt, roomName, customer.language || 'hi']
+        [callId, customerId, customer.campaign_id || null, currentAttempt, roomName, customer.language || 'hi', campaignTts]
       );
       call = insertRes.rows[0];
       await client.query('COMMIT');
@@ -240,6 +248,7 @@ export class CallService {
     company_name?: string;
     script?: string;
     voice_pipeline?: string;
+    tts_provider?: string;
     address?: string;
     account_no?: string;
     subs_del_no?: string;
@@ -298,19 +307,21 @@ export class CallService {
 
     const scriptName = data.script || 'Trump Towers India — Real Estate';
     const voicePipeline = data.voice_pipeline || 'HABot Pipeline';
+    const ttsProvider = (data.tts_provider || 'sarvam').toLowerCase();
     const companyName = data.company_name || (data.script?.includes('Trump') ? 'Trump Towers India' : (data.script?.includes('Ratnafin') ? 'Ratnafin' : 'Airtel'));
 
     await query(
       `UPDATE calls 
-       SET script = $1, company_name = $2, voice_pipeline = $3, is_test_call = TRUE,
+       SET script = $1, company_name = $2, voice_pipeline = $3, tts_provider = $6, is_test_call = TRUE,
            language = $5, initial_language = $5, language_switched = FALSE 
        WHERE id = $4`,
-      [scriptName, companyName, voicePipeline, call.id, cleanLang]
+      [scriptName, companyName, voicePipeline, call.id, cleanLang, ttsProvider]
     );
 
     call.script = scriptName;
     call.company_name = companyName;
     call.voice_pipeline = voicePipeline;
+    (call as any).tts_provider = ttsProvider;
     call.is_test_call = true;
     (call as any).language = cleanLang;
     (call as any).initial_language = cleanLang;

@@ -210,10 +210,16 @@ def _apply_disconnect_disposition(state: RealEstateState):
 
         caller_refused = False
         for turn in state.transcript:
+            t_text = (turn.get("text") or "").strip()
+            if not t_text:
+                continue
+            if turn.get("role") in ("assistant", "agent"):
+                t_low = t_text.lower()
+                if "samajh gayi sir, koi baat nahi" in t_low or "understood sir, no problem at all" in t_low:
+                    caller_refused = True
+                    break
+                continue
             if turn.get("role") in ("customer", "user"):
-                t_text = (turn.get("text") or "").strip()
-                if not t_text:
-                    continue
                 if is_already_interested:
                     if _DIRECT_NOT_INTERESTED.search(t_text):
                         caller_refused = True
@@ -387,21 +393,20 @@ def _wrap_llm(services: list):
     return ServiceSwitcher(services=services, strategy_type=ServiceSwitcherStrategyFailover)
 
 
-def _build_tts(session: aiohttp.ClientSession, lang: str) -> SarvamHttpTTSService:
-    settings_kwargs: Dict[str, Any] = dict(
-        voice=TTS_SPEAKER_EN if lang == "en" else TTS_SPEAKER_HI,
+from tts_factory import build_tts_service, extract_tts_provider
+
+
+def _build_tts(session: aiohttp.ClientSession, lang: str, tts_provider: str = "sarvam"):
+    return build_tts_service(
+        tts_provider,
+        session,
+        lang=lang,
+        speaker_en=TTS_SPEAKER_EN,
+        speaker_hi=TTS_SPEAKER_HI,
         model=TTS_MODEL,
-        language=Language.EN_IN if lang == "en" else Language.HI_IN,
-        pace=TTS_PACE,
-    )
-    # bulbul:v4-flash ignores `temperature` (Pipecat logs a warning) -> only send it to models that honour it.
-    if "v3" in TTS_MODEL:
-        settings_kwargs["temperature"] = TTS_TEMPERATURE
-    return SarvamHttpTTSService(
-        api_key=SARVAM_API_KEY,
-        aiohttp_session=session,
         sample_rate=TTS_SAMPLE_RATE,
-        settings=SarvamHttpTTSService.Settings(**settings_kwargs),
+        pace=TTS_PACE,
+        temperature=TTS_TEMPERATURE,
     )
 
 
@@ -497,8 +502,49 @@ async def _run_real_estate_pipeline(
         if resolved_call_id:
             _backend_pool.submit(_post_turn, "assistant" if is_agent else "customer", clean, datetime.now().isoformat())
 
+    def _post_state(payload: dict):
+        if not resolved_call_id:
+            return
+        try:
+            requests.post(
+                f"{BACKEND_URL}/internal/real-estate/calls/{resolved_call_id}/state",
+                json=payload,
+                headers={"x-internal-secret": INTERNAL_SECRET},
+                timeout=3.0,
+            )
+        except Exception as ex:
+            logger.debug(f"Incremental state sync note: {ex}")
+
+    def sync_state():
+        if not resolved_call_id:
+            return
+        missing = state.get_missing_fields()
+        pending_q = (missing[0]["question_en"] if state.reply_lang == "en" else missing[0]["question_hi"]) if missing else state.last_agent_question
+        payload = {
+            "step": state.step.value,
+            "is_interested": state.is_interested,
+            "pending_question": pending_q,
+            "category": state.category,
+            "intent": state.intent,
+            "project_or_society": state.project_or_society,
+            "sector_or_location": state.sector_or_location,
+            "unit_number": state.unit_number,
+            "floor_number": state.floor_number,
+            "bhk_config": state.bhk_config,
+            "commercial_type": state.commercial_type,
+            "approx_area_sqft": state.approx_area_sqft,
+            "furnishing_status": state.furnishing_status,
+            "expected_sale_price": state.expected_sale_price,
+            "expected_monthly_rent": state.expected_monthly_rent,
+            "is_currently_leased": state.is_currently_leased,
+            "current_rent_received": state.current_rent_received,
+            "immediate_occupancy": state.immediate_occupancy,
+        }
+        _backend_pool.submit(_post_state, payload)
+
     tools = RealEstateTools(state, None, None)
     tools.log_dialogue_func = log_dialogue
+    tools.sync_state_func = sync_state
     holder["state"] = state
 
     recorder: Optional[CallRecorder] = None
@@ -522,7 +568,8 @@ async def _run_real_estate_pipeline(
         )
         llm_services = _build_llm_services()
         llm = _wrap_llm(llm_services)
-        tts = _build_tts(aiohttp_session, state.reply_lang)
+        tts_provider = extract_tts_provider(metadata)
+        tts = _build_tts(aiohttp_session, state.reply_lang, tts_provider)
 
         # System prompt + tools for the FIRST step. Both are refreshed by PipecatSession on every step change.
         context = LLMContext(messages=[{"role": "system", "content": get_step_instructions(state)}])
@@ -540,7 +587,7 @@ async def _run_real_estate_pipeline(
 
         injector = SpeechInjector()
         tracker = PlayoutTracker(state)
-        session = PipecatSession(state, tools, context, injector, tracker, log_dialogue)
+        session = PipecatSession(state, tools, context, injector, tracker, log_dialogue, tts_provider=tts_provider)
         tools.agent = session                       # tools.py: update_instructions / update_tools / .session.say
         handler = RealEstateTurnHandler(state, tools, session)
         handler.on_language_change = session.set_reply_language
@@ -553,9 +600,10 @@ async def _run_real_estate_pipeline(
         all_tools = [
             tools.customer_interested, tools.not_interested_in_this_location, tools.has_other_property,
             tools.set_new_property_location, tools.confirm_owner_name, tools.set_category_and_intent,
-            tools.save_property_details, tools.customer_does_not_know, tools.finish_property_intake,
-            tools.mark_not_interested, tools.schedule_callback, tools.book_advisor_handoff,
-            tools.request_whatsapp_info, tools.suppress_contact_dnc, tools.mark_wrong_number,
+            tools.confirm_share_details_now, tools.save_property_details, tools.customer_does_not_know,
+            tools.finish_property_intake, tools.mark_not_interested, tools.schedule_callback,
+            tools.book_advisor_handoff, tools.request_whatsapp_info, tools.suppress_contact_dnc,
+            tools.mark_wrong_number,
         ]
         for svc in llm_services:
             session.register_tools_on(svc, all_tools)
@@ -582,6 +630,7 @@ async def _run_real_estate_pipeline(
             params=PipelineParams(
                 audio_in_sample_rate=PIPELINE_IN_SAMPLE_RATE,
                 audio_out_sample_rate=PIPELINE_OUT_SAMPLE_RATE,
+                allow_interruptions=True,
             ),
         )
         session.task = task
@@ -611,8 +660,8 @@ async def _run_real_estate_pipeline(
             state.last_activity_time = time.time()
             log_dialogue("assistant", greeting)
             context.add_message({"role": "assistant", "content": greeting})
-            # Non-interruptible so pickup noise / "hello?" cannot cancel the opening line.
-            session.say(greeting, allow_interruptions=False)
+            # Interruptible so if the caller speaks during the intro, the agent stops immediately and listens.
+            session.say(greeting, allow_interruptions=True)
 
         # ── watchdogs ──
         async def _max_duration_watchdog():
@@ -694,6 +743,103 @@ async def _run_real_estate_pipeline(
     logger.info(f"🏁 Finished call {state.call_id}. Disposition: {state.final_disposition}")
 
 
+_UNRESOLVED_DISPOSITIONS = (
+    "Abruptly Disconnected Call",
+    "Not Connected (No Answer)",
+    "Interested (Disconnected)",
+    "Partial Details Captured (Disconnected)",
+)
+
+_ALLOWED_LLM_DISPOSITIONS = {
+    "Qualified Lead",
+    "Advisor Callback Booked",
+    "Schedule Callback",
+    "Not Interested",
+    "Wrong Number",
+    "Do Not Call",
+    "WhatsApp Info Requested",
+    "Abruptly Disconnected Call",
+}
+
+
+async def _classify_disconnect_with_llm(state: RealEstateState) -> bool:
+    """When a call disconnects (e.g., user hung up) before a closing tool ran, ask the LLM to classify the transcript."""
+    has_customer_speech = any(t.get("role") in ("customer", "user") and (t.get("text") or "").strip() for t in state.transcript)
+    if not has_customer_speech:
+        return False
+
+    transcript_lines = []
+    for t in state.transcript[-20:]:
+        role = "Agent" if t.get("role") in ("assistant", "agent") else "Customer"
+        txt = (t.get("text") or "").strip()
+        if txt:
+            transcript_lines.append(f"{role}: {txt}")
+    if not transcript_lines:
+        return False
+
+    captured = {
+        k: getattr(state, k, None)
+        for k in ("intent", "category", "unit_number", "floor_number", "bhk_config", "commercial_type",
+                  "approx_area_sqft", "furnishing_status", "expected_sale_price", "expected_monthly_rent")
+        if getattr(state, k, None) not in (None, "")
+    }
+    prompt = (
+        "Classify the final call disposition from this real estate call transcript where the call ended/disconnected.\n"
+        "Allowed dispositions:\n"
+        "- Qualified Lead: Customer gave all/most key property details and completed intake.\n"
+        "- Advisor Callback Booked: Customer expressed interest to sell/rent, shared partial details, asked for valuation/pricing, or asked for an advisor.\n"
+        "- Schedule Callback: Customer was busy or asked to call back later.\n"
+        "- Not Interested: Customer refused, said they don't want to sell/rent, already sold/rented, or have no property.\n"
+        "- Wrong Number: Wrong person or wrong number.\n"
+        "- Do Not Call: Customer asked not to call again / remove number.\n"
+        "- WhatsApp Info Requested: Customer asked for details on WhatsApp.\n"
+        "- Abruptly Disconnected Call: Caller hung up early before expressing clear interest, refusal, or callback.\n\n"
+        f"Captured slots: {captured}\n"
+        "Transcript:\n" + "\n".join(transcript_lines) + "\n\n"
+        'Return strict JSON: {"disposition": "...", "is_interested": true|false|null, "summary": "1 short sentence"}'
+    )
+
+    endpoints = []
+    if GROQ_API_KEY:
+        endpoints.append(("https://api.groq.com/openai/v1/chat/completions", GROQ_API_KEY, GROQ_MODEL))
+    if OPENROUTER_API_KEY:
+        endpoints.append(("https://openrouter.ai/api/v1/chat/completions", OPENROUTER_API_KEY, LLM_MODEL))
+
+    import json as _json
+    for url, key, model in endpoints:
+        try:
+            async with aiohttp.ClientSession() as http:
+                async with http.post(
+                    url,
+                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.0,
+                        "max_tokens": 120,
+                        "response_format": {"type": "json_object"},
+                    },
+                    timeout=aiohttp.ClientTimeout(total=4.0),
+                ) as resp:
+                    if resp.status != 200:
+                        continue
+                    body = await resp.json()
+                    content = body["choices"][0]["message"]["content"]
+                    parsed = _json.loads(content)
+                    disp = str(parsed.get("disposition", "")).strip()
+                    if disp in _ALLOWED_LLM_DISPOSITIONS:
+                        state.final_disposition = disp
+                        if parsed.get("is_interested") in (True, False):
+                            state.is_interested = parsed["is_interested"]
+                        if parsed.get("summary"):
+                            state.agent_summary = str(parsed["summary"]).strip()
+                        logger.info(f"🧠 Post-call LLM classified disconnect -> {disp} ({state.agent_summary})")
+                        return True
+        except Exception as e:
+            logger.warning(f"Post-call LLM disposition fallback failed ({url}): {e}")
+    return False
+
+
 async def _finish_call(state: RealEstateState, recorder: Optional[CallRecorder]):
     """Recording first (so the URL goes into the outcome), then disposition + outcome POST (off the event loop)."""
     if recorder:
@@ -701,7 +847,15 @@ async def _finish_call(state: RealEstateState, recorder: Optional[CallRecorder])
             state.recording_url = await recorder.finalize()
         except Exception as e:
             logger.warning(f"Recording finalize failed: {e}")
-    _apply_disconnect_disposition(state)
+    if (
+        not getattr(state, "ivr_detected", False)
+        and state.final_disposition in _UNRESOLVED_DISPOSITIONS
+    ):
+        classified = await _classify_disconnect_with_llm(state)
+        if not classified:
+            _apply_disconnect_disposition(state)
+    else:
+        _apply_disconnect_disposition(state)
     if state.outcome_posted:
         return
     state.outcome_posted = True

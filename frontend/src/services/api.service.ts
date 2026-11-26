@@ -122,6 +122,7 @@ export interface TestCallInput {
   script?: string;
   language?: string;
   voice_pipeline?: string;
+  tts_provider?: string;
   address?: string;
   property_location?: string;
   category?: string;

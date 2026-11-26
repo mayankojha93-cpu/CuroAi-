@@ -74,6 +74,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
   const [selectedPipeline, setSelectedPipeline] = useState(() =>
     'Sarvam AI (Priya - hi-IN)'
   );
+  const [ttsProvider, setTtsProvider] = useState<string>('sarvam');
 
   useEffect(() => {
     if (isRealEstate) {
@@ -188,6 +189,7 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
         script: scriptKey,
         language: langCode,
         voice_pipeline: selectedPipeline,
+        tts_provider: ttsProvider,
         property_location: propertyLocation.trim() || undefined,
         address: propertyLocation.trim() || undefined,
         category: isRealEstate && propertyCategory !== 'Not Specified' ? propertyCategory : undefined,
@@ -783,6 +785,37 @@ export const TestCallView: React.FC<TestCallViewProps> = ({ onSelectCall }) => {
                         {p.label}
                       </option>
                     ))}
+                  </select>
+                  <ChevronDown size={14} color="#64748B" style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }} />
+                </div>
+              </div>
+
+              {/* TTS Provider */}
+              <div>
+                <label style={{ display: 'block', fontSize: '0.82rem', color: '#94A3B8', fontWeight: 600, marginBottom: 8 }}>
+                  TTS Provider
+                </label>
+                <div style={{ position: 'relative' }}>
+                  <select
+                    value={ttsProvider}
+                    onChange={(e) => setTtsProvider(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '10px 36px 10px 14px',
+                      borderRadius: '10px',
+                      background: '#0F172A',
+                      border: '1px solid rgba(255, 255, 255, 0.1)',
+                      color: '#F8FAFC',
+                      fontSize: '0.88rem',
+                      appearance: 'none',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <option value="sarvam">Sarvam AI (Default)</option>
+                    <option value="indic_tiny">Indic Tiny TTS (Hindi + English)</option>
+                    <option value="elevenlabs">ElevenLabs</option>
+                    <option value="smallest">Smallest AI</option>
+                    <option value="soniox">Soniox</option>
                   </select>
                   <ChevronDown size={14} color="#64748B" style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }} />
                 </div>

@@ -49,6 +49,22 @@ export class AuthService {
       } else if (existingEstate.rows[0].assigned_pipeline !== 'real_estate') {
         await pool.query(`UPDATE users SET assigned_pipeline = 'real_estate', full_name = 'My Estate Finder Admin' WHERE email = $1`, [estateEmail]);
       }
+
+      // 3. Ensure Logistics Admin exists with pipeline = 'logistics' and dedicated credentials
+      const logisticsEmail = (env.LOGISTICS_ADMIN_EMAIL || 'logistics.admin@curoai.in').toLowerCase().trim();
+      const existingLogistics = await pool.query('SELECT id, assigned_pipeline FROM users WHERE email = $1', [logisticsEmail]);
+      if (existingLogistics.rows.length === 0) {
+        logger.info({ email: logisticsEmail }, 'Seeding 3rd pipeline Logistics admin user...');
+        const logisticsHash = await bcrypt.hash(env.LOGISTICS_ADMIN_PASSWORD || 'MittalLogistics@2026', 10);
+        await pool.query(
+          `INSERT INTO users (email, password_hash, full_name, role, assigned_pipeline, is_active)
+           VALUES ($1, $2, $3, $4, 'logistics', true)`,
+          [logisticsEmail, logisticsHash, 'Mittal Pigments Logistics Ops', 'admin']
+        );
+        logger.info({ email: logisticsEmail }, 'Logistics admin user seeded successfully');
+      } else if (existingLogistics.rows[0].assigned_pipeline !== 'logistics') {
+        await pool.query(`UPDATE users SET assigned_pipeline = 'logistics', full_name = 'Mittal Pigments Logistics Ops' WHERE email = $1`, [logisticsEmail]);
+      }
     } catch (err) {
       logger.error({ err }, 'Failed to check/seed default admin users');
     }
@@ -84,7 +100,13 @@ export class AuthService {
       email: userRow.email,
       name: userRow.full_name,
       role: userRow.role,
-      assigned_pipeline: userRow.assigned_pipeline || (userRow.email.includes('estate') ? 'real_estate' : 'airtel'),
+      assigned_pipeline:
+        userRow.assigned_pipeline ||
+        (userRow.email.includes('logistics')
+          ? 'logistics'
+          : userRow.email.includes('estate')
+            ? 'real_estate'
+            : 'airtel'),
     };
 
     const token = jwt.sign(user, env.JWT_SECRET, {
@@ -110,7 +132,13 @@ export class AuthService {
       email: userRow.email,
       name: userRow.full_name,
       role: userRow.role,
-      assigned_pipeline: userRow.assigned_pipeline || (userRow.email.includes('estate') ? 'real_estate' : 'airtel'),
+      assigned_pipeline:
+        userRow.assigned_pipeline ||
+        (userRow.email.includes('logistics')
+          ? 'logistics'
+          : userRow.email.includes('estate')
+            ? 'real_estate'
+            : 'airtel'),
     };
   }
 }

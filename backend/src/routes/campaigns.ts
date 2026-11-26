@@ -13,6 +13,7 @@ const createCampaignSchema = {
     script: z.string().optional(),
     language: z.string().optional(),
     voice_pipeline: z.string().optional(),
+    tts_provider: z.string().optional(),
     schedule_start_time: z.string().optional(),
     schedule_end_time: z.string().optional(),
     operating_days: z.array(z.string()).optional(),

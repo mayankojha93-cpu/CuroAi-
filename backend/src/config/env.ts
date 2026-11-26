@@ -26,6 +26,8 @@ const envSchema = z.object({
   JWT_EXPIRES_IN: z.string().default('24h'),
   DEFAULT_ADMIN_EMAIL: z.string().default('admin@curoai.in'),
   DEFAULT_ADMIN_PASSWORD: z.string().default('admin12345'),
+  LOGISTICS_ADMIN_EMAIL: z.string().default('logistics.admin@curoai.in'),
+  LOGISTICS_ADMIN_PASSWORD: z.string().default('MittalLogistics@2026'),
   OPENROUTER_API_KEY: z.string().optional().default(''),
 
   // Agent Personas
@@ -74,6 +76,8 @@ const envSchema = z.object({
 
   // AI Providers
   SARVAM_API_KEY: z.string().optional().default(''),
+  INDIC_TINY_TTS_URL: z.string().optional().default('http://127.0.0.1:8010'),
+  INDIC_TINY_TTS_API_KEY: z.string().optional().default(''),
   GROQ_API_KEY: z.string().optional().default(''),
   LLM_MODEL: z.string().default('meta-llama/llama-3.3-70b-instruct'),
 

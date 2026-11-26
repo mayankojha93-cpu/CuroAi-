@@ -174,20 +174,20 @@ def _wrap_llm(services: list):
     return ServiceSwitcher(services=services, strategy_type=ServiceSwitcherStrategyFailover)
 
 
-def _build_tts(session: aiohttp.ClientSession, lang: str) -> SarvamHttpTTSService:
-    settings_kwargs: Dict[str, Any] = dict(
-        voice=TTS_SPEAKER_EN if lang == "en" else TTS_SPEAKER_HI,
+from tts_factory import build_tts_service, extract_tts_provider
+
+
+def _build_tts(session: aiohttp.ClientSession, lang: str, tts_provider: str = "sarvam"):
+    return build_tts_service(
+        tts_provider,
+        session,
+        lang=lang,
+        speaker_en=TTS_SPEAKER_EN,
+        speaker_hi=TTS_SPEAKER_HI,
         model=TTS_MODEL,
-        language=Language.EN_IN if lang == "en" else Language.HI_IN,
-        pace=TTS_PACE,
-    )
-    if "v3" in TTS_MODEL:
-        settings_kwargs["temperature"] = TTS_TEMPERATURE
-    return SarvamHttpTTSService(
-        api_key=SARVAM_API_KEY,
-        aiohttp_session=session,
         sample_rate=TTS_SAMPLE_RATE,
-        settings=SarvamHttpTTSService.Settings(**settings_kwargs),
+        pace=TTS_PACE,
+        temperature=TTS_TEMPERATURE,
     )
 
 
@@ -270,7 +270,8 @@ async def run_airtel_pipeline(
         )
         llm_services = _build_llm_services()
         llm = _wrap_llm(llm_services)
-        tts = _build_tts(aiohttp_session, state.reply_lang)
+        tts_provider = extract_tts_provider(metadata)
+        tts = _build_tts(aiohttp_session, state.reply_lang, tts_provider)
 
         context = LLMContext(messages=[{"role": "system", "content": get_step_instructions(state)}])
         user_agg, assistant_agg = LLMContextAggregatorPair(
@@ -284,7 +285,7 @@ async def run_airtel_pipeline(
 
         injector = SpeechInjector()
         tracker = PlayoutTracker(state)
-        session = PipecatSession(state, tools, context, injector, tracker, log_dialogue)
+        session = PipecatSession(state, tools, context, injector, tracker, log_dialogue, tts_provider=tts_provider)
         tools.agent = session
         handler = AirtelTurnHandler(state, tools, session)
         handler.on_language_change = session.set_reply_language

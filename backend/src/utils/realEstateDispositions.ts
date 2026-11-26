@@ -167,11 +167,11 @@ export function matchRealEstateDisposition(
   }
 
   // 4. Not Interested (Must take precedence over partial mentions, but after DNC & Wrong Number)
-  // If caller confirmed positive interest (isInterested === true), they are never marked Not Interested
+  // An explicit 'Not Interested' disposition always wins; otherwise only mark Not Interested when caller did not confirm interest
   if (
-    isInterested !== true && (
+    upper.includes('NOT INTERESTED') ||
+    (isInterested !== true && (
       isInterested === false ||
-      upper.includes('NOT INTERESTED') ||
       upper.includes('DECLINED') ||
       upper.includes('REFUSED') ||
       upper.includes('NAHI BECHNI') ||
@@ -184,7 +184,7 @@ export function matchRealEstateDisposition(
       summaryUpper.includes('ALREADY RENTED') ||
       summaryUpper.includes('NO PROPERTY') ||
       summaryUpper.includes("DON'T HAVE")
-    )
+    ))
   ) {
     return 'Not Interested';
   }
@@ -201,7 +201,7 @@ export function matchRealEstateDisposition(
     summaryUpper.includes('VALUATION') ||
     summaryUpper.includes('PRICING') ||
     upper.includes('PARTIAL') ||
-    upper.includes('INTERESTED')
+    (!upper.includes('NOT INTERESTED') && upper.includes('INTERESTED'))
   ) {
     return 'Advisor Callback Booked';
   }

@@ -92,6 +92,7 @@ export class RealEstateCallService {
     owner_name?: string;
     name?: string;
     language?: string;
+    tts_provider?: string;
     property_location?: string;
     address?: string;
     notes?: string;
@@ -188,15 +189,16 @@ export class RealEstateCallService {
     const callId = randomUUID();
     const roomName = `re-call-${callId}`;
 
+    const ttsProvider = (data.tts_provider || 'sarvam').toLowerCase();
     const insertCall = await query(
       `INSERT INTO calls (
          id, re_lead_id, status, call_status, attempt_number, room_name, direction,
-         script, company_name, voice_pipeline, is_test_call, pipeline, language, initial_language, language_switched, category
+         script, company_name, voice_pipeline, tts_provider, is_test_call, pipeline, language, initial_language, language_switched, category
        )
        VALUES ($1, $2, 'initiated', 'initiated', $3, $4, 'outbound',
-               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Priya - hi/en)', TRUE, 'real_estate', $5, $5, FALSE, $6)
+               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Priya - hi/en)', $7, TRUE, 'real_estate', $5, $5, FALSE, $6)
        RETURNING *`,
-      [callId, lead?.id || null, lead?.total_attempts || 1, roomName, cleanLang, lead?.category || cleanCat]
+      [callId, lead?.id || null, lead?.total_attempts || 1, roomName, cleanLang, lead?.category || cleanCat, ttsProvider]
     );
     const call = insertCall.rows[0];
 
@@ -272,15 +274,23 @@ export class RealEstateCallService {
     );
     const attempt = updLead.rows[0]?.total_attempts ?? (Number(lead.total_attempts || 0) + 1);
 
+    let campaignTts = 'sarvam';
+    if (lead.campaign_id) {
+      const campRes = await query(`SELECT tts_provider FROM campaigns WHERE id = $1`, [lead.campaign_id]);
+      if (campRes.rows[0]?.tts_provider) {
+        campaignTts = String(campRes.rows[0].tts_provider).toLowerCase();
+      }
+    }
+
     const insCall = await query(
       `INSERT INTO calls (
          id, re_lead_id, campaign_id, status, call_status, attempt_number, room_name, direction,
-         script, company_name, voice_pipeline, pipeline, language, initial_language, language_switched, category
+         script, company_name, voice_pipeline, tts_provider, pipeline, language, initial_language, language_switched, category
        )
        VALUES ($1, $2, $3, 'initiated', 'initiated', $4, $5, 'outbound',
-               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Priya - hi/en)', 'real_estate', $6, $6, FALSE, $7)
+               'My Estate Finder — Property Intake', 'My Estate Finder', 'Sarvam AI (Priya - hi/en)', $8, 'real_estate', $6, $6, FALSE, $7)
        RETURNING *`,
-      [callId, leadId, lead.campaign_id, attempt, roomName, lead.preferred_language || 'en', lead.category || null]
+      [callId, leadId, lead.campaign_id, attempt, roomName, lead.preferred_language || 'en', lead.category || null, campaignTts]
     );
     const call = insCall.rows[0];
 
@@ -651,6 +661,110 @@ ${dialogueText.slice(0, 4000)}`;
   /**
    * Saves outcome and property dossier captured during call
    */
+  /**
+   * Incrementally persist conversation step and captured property slots during a call
+   * so progress is preserved in the backend even across barge-ins or disconnects.
+   */
+  async savePartialState(callId: string, data: Record<string, any>): Promise<void> {
+    const callCheck = await query('SELECT id, re_lead_id FROM calls WHERE id = $1', [callId]);
+    if (callCheck.rows.length === 0) return;
+    const leadId = callCheck.rows[0].re_lead_id || null;
+
+    const stateMeta = {
+      step: data.step || null,
+      is_interested: data.is_interested ?? null,
+      pending_question: data.pending_question || null,
+      updated_at: new Date().toISOString(),
+    };
+    await query(
+      `UPDATE calls SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb WHERE id = $2`,
+      [JSON.stringify(stateMeta), callId]
+    ).catch(() => {});
+
+    const hasSlot = Boolean(
+      data.category || data.intent || data.project_or_society || data.sector_or_location ||
+      data.unit_number || data.floor_number || data.bhk_config || data.commercial_type ||
+      data.approx_area_sqft != null || data.furnishing_status ||
+      data.expected_sale_price || data.expected_monthly_rent ||
+      data.is_currently_leased != null || data.current_rent_received || data.immediate_occupancy != null
+    );
+    if (!hasSlot) return;
+
+    const cleanArea = data.approx_area_sqft != null && !Number.isNaN(Number(data.approx_area_sqft))
+      ? Number(data.approx_area_sqft)
+      : null;
+
+    const existingProp = await query('SELECT id FROM real_estate_properties WHERE call_id = $1 LIMIT 1', [callId]);
+    if (existingProp.rows.length > 0) {
+      await query(
+        `UPDATE real_estate_properties
+         SET category = COALESCE($1, category),
+             intent = COALESCE($2, intent),
+             project_or_society = COALESCE($3, project_or_society),
+             sector_or_location = COALESCE($4, sector_or_location),
+             unit_number = COALESCE($5, unit_number),
+             floor_number = COALESCE($6, floor_number),
+             bhk_config = COALESCE($7, bhk_config),
+             commercial_type = COALESCE($8, commercial_type),
+             approx_area_sqft = COALESCE($9, approx_area_sqft),
+             furnishing_status = COALESCE($10, furnishing_status),
+             expected_sale_price = COALESCE($11, expected_sale_price),
+             expected_monthly_rent = COALESCE($12, expected_monthly_rent),
+             is_currently_leased = COALESCE($13, is_currently_leased),
+             current_rent_received = COALESCE($14, current_rent_received),
+             immediate_occupancy = COALESCE($15, immediate_occupancy)
+         WHERE id = $16`,
+        [
+          data.category || null,
+          data.intent || null,
+          data.project_or_society || null,
+          data.sector_or_location || null,
+          data.unit_number ? String(data.unit_number).slice(0, 64) : null,
+          data.floor_number ? String(data.floor_number).slice(0, 64) : null,
+          data.bhk_config || null,
+          data.commercial_type || null,
+          cleanArea,
+          data.furnishing_status || null,
+          data.expected_sale_price ? String(data.expected_sale_price).slice(0, 128) : null,
+          data.expected_monthly_rent ? String(data.expected_monthly_rent).slice(0, 128) : null,
+          typeof data.is_currently_leased === 'boolean' ? data.is_currently_leased : null,
+          data.current_rent_received ? String(data.current_rent_received).slice(0, 128) : null,
+          typeof data.immediate_occupancy === 'boolean' ? data.immediate_occupancy : null,
+          existingProp.rows[0].id,
+        ]
+      );
+    } else {
+      await query(
+        `INSERT INTO real_estate_properties (
+           lead_id, call_id, category, intent, project_or_society, sector_or_location,
+           unit_number, floor_number, bhk_config, commercial_type, approx_area_sqft,
+           furnishing_status, expected_sale_price, expected_monthly_rent,
+           is_currently_leased, current_rent_received, immediate_occupancy
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+        [
+          leadId,
+          callId,
+          data.category || null,
+          data.intent || null,
+          data.project_or_society || null,
+          data.sector_or_location || null,
+          data.unit_number ? String(data.unit_number).slice(0, 64) : null,
+          data.floor_number ? String(data.floor_number).slice(0, 64) : null,
+          data.bhk_config || null,
+          data.commercial_type || null,
+          cleanArea,
+          data.furnishing_status || null,
+          data.expected_sale_price ? String(data.expected_sale_price).slice(0, 128) : null,
+          data.expected_monthly_rent ? String(data.expected_monthly_rent).slice(0, 128) : null,
+          typeof data.is_currently_leased === 'boolean' ? data.is_currently_leased : null,
+          data.current_rent_received ? String(data.current_rent_received).slice(0, 128) : null,
+          typeof data.immediate_occupancy === 'boolean' ? data.immediate_occupancy : null,
+        ]
+      );
+    }
+  }
+
   async saveOutcome(callId: string, data: SaveRealEstateOutcomeInput) {
     const callRes = await query('SELECT id, re_lead_id, campaign_id FROM calls WHERE id = $1', [callId]);
     if (callRes.rows.length === 0) {

@@ -25,22 +25,14 @@ except Exception:  # pragma: no cover - module is not part of this repo snapshot
 
 from .prompts import get_step_instructions
 from .state import RealEstateState, RealEstateStep, RealEstateStep as _Step
-from .config import CHAT_CTX_MAX_ITEMS, FAST_TOOL_REPLY, FASTPATH_ENABLED, SHORTCUT_MAX_TOKENS, BACKCHANNEL_IGNORE_WINDOW, TTS_SPEAKABLE, ENABLE_HUMAN_REGEX_SHORTCUTS
-from .fastpath import extract as _fastpath_extract
+from .config import CHAT_CTX_MAX_ITEMS, FAST_TOOL_REPLY, TTS_SPEAKABLE
 from .tools import (
-    classify_category,
-    classify_intent,
-    is_standalone_from_speech,
-    commercial_type_from_speech,
     explicit_refusal,
     strip_broker_negation,
     _DONT_KNOW_RE,
     _DONT_KNOW_DEV,
     extract_question,
     say_cached,
-    sell_or_rent_question,
-    other_property_question,
-    ask_new_location_question,
 )
 
 # Extra IVR / voicemail phrases (English + Hinglish + Devanagari). Used IN ADDITION to src.carrier_filter so that
@@ -62,7 +54,8 @@ _IVR_EXTRA = re.compile(
 # Markers that ONLY a machine says. They win even when the same sentence also has human-sounding words
 # ("Hi, I'm not available right now, please leave a message after the beep" contains "I'm" and "my").
 _STRONG_VM_RE = re.compile(
-    r"(after\s+the\s+(tone|beep)|at\s+the\s+tone|leave\s+(a\s+|your\s+)*(message|voicemail)(?!\s+(?:with|for|to|at)\b)|record\s+your\s+message|"
+    r"(after\s+the\s+(tone|beep)|at\s+the\s+tone|leave\s+(a\s+|your\s+)*(message|voicemail)(?!\s+(?:with|for|to|at)\b)|record\s+your\s+(?:message|name)|"
+    r"reason\s+for\s+(?:calling|your\s+call)|(?:i'?ll|we'?ll|let\s+me)\s+see\s+if\s+(?:the\s+)?person\s+is\s+available|"
     r"voice\s*mail|mail\s*box|press\s+(star|hash|pound|\d)|please\s+(stay|hold)\s+on\s+the\s+line|"
     r"(?:the|this)\s+(?:number|subscriber|customer|mobile|person)\b[^.]{0,80}(?:not\s+reachable|switched\s+off|out\s+of\s+coverage)|(beep|tone)\s+ke\s+baad|"
     r"(?:dial|dialled)\s+kiya\s+(?:gaya|hua)|uplabdh\s+nahi\s+hai|sampark\s+nahi\s+ho\s+pa\s*raha)",
@@ -163,6 +156,7 @@ ALL_RE_TOOLS = {
     "set_new_property_location",
     "confirm_owner_name",
     "set_category_and_intent",
+    "confirm_share_details_now",
     "save_property_details",
     "customer_does_not_know",
     "finish_property_intake",
@@ -393,7 +387,7 @@ def _other_property_answer(text: str):
         return None
     for c in _variants(text):
         toks = _tokens(c)
-        if not toks or len(toks) > SHORTCUT_MAX_TOKENS:
+        if not toks or len(toks) > 5:
             continue
         has_neg = any(t in _NEG_TOKENS for t in toks)
         has_aff = any(t in _STRONG_AFF for t in toks)
@@ -410,6 +404,7 @@ _REFUSAL_FILL = {"toh", "to", "ji", "jee", "sir", "bilkul", "bas", "bhi", "yar",
 _DIRECT_NOT_INTERESTED = re.compile(
     r"\b("
     r"not\s+interested|nahi\s+bechna|nahi\s+dena|nahi\s+chahiye|nahi\s+karna|nahi\s+karne|"
+    r"(?:bechna|dena|rent\s*(?:karna|pe\s*dena)|sell\s*karna)\s+(?:nahi|nhi)(?:\s+(?:chaht[aei]|hai|h))?|"
     r"already\s+(?:sold|rented|showed|given|let\s*out|disposed)|"
     r"don'?t\s+have\s+(?:any\s+)?(?:other\s+)?property(?:\s+to\s+(?:sell|rent|lease))?|"
     r"no\s+property(?:\s+to\s+(?:sell|rent|lease))?|"
@@ -990,15 +985,8 @@ class RealEstateTurnHandler:
         # Safety override: carrier detection runs before property qualification or human engagement
         if kind is None and not _HUMAN_CALLBACK_RE.search(text_x) and not self._re_state.is_interested:
             kind = classify_carrier_message(text)
-            if not kind and self._re_state.step == _Step.INTRODUCTION:
-                if _IVR_EXTRA.search(text):
-                    kind = "voicemail"
-                elif _ivr_long_turn_counts(text):
-                    self._ivr_long_turns += 1
-                    if self._ivr_long_turns >= 2:
-                        kind = "voicemail"
-                else:
-                    self._ivr_long_turns = 0
+            if not kind and self._re_state.step == _Step.INTRODUCTION and _IVR_EXTRA.search(text):
+                kind = "voicemail"
         elif kind is None and _HUMAN_CALLBACK_RE.search(text_x):
             logger.info(f"🗣️ Human callback / personal busy pattern in customer utterance: '{text}' -> bypassing IVR filter")
         if kind:
@@ -1034,605 +1022,28 @@ class RealEstateTurnHandler:
         else:
             state.hold_until = 0.0
 
-        if not ENABLE_HUMAN_REGEX_SHORTCUTS:
-            # PURE LLM PIPELINE (regex used strictly for IVR / carrier announcement detection above).
-            # All human conversational turns proceed directly to the LLM to understand natural speech.
-            lang_switched = False if _is_neutral_utterance(text) else state.update_reply_lang(text)
-            if lang_switched:
-                lang = state.reply_lang
-                logger.info(f"🌐 Customer switched language -> {lang}")
-                if self.on_language_change:
-                    try:
-                        self.on_language_change(lang)
-                    except Exception as e:
-                        logger.warning(f"Language switch callback failed: {e}")
-
-            # Ensure session instructions and tools match the current step before LLM generates
-            if self.session:
+        # Pure LLM pipeline: regex is used strictly for IVR / voicemail / carrier detection above
+        # and hold-timer grace period. All human conversational turns proceed directly to the LLM.
+        lang_switched = False if _is_neutral_utterance(text) else state.update_reply_lang(text)
+        if lang_switched:
+            lang = state.reply_lang
+            logger.info(f"🌐 Customer switched language -> {lang}")
+            if self.on_language_change:
                 try:
-                    await self.session.update_instructions(get_step_instructions(state))
-                    await self.session.update_tools(self._re_tools.tools_for_step(state.step))
+                    self.on_language_change(lang)
                 except Exception as e:
-                    logger.warning(f"Failed to refresh instructions/tools: {e}")
+                    logger.warning(f"Language switch callback failed: {e}")
 
-            # Hand turn over to the LLM (no StopResponse raised)
-            return
-
-        # NOTE: there is deliberately NO keyword check for "price / rate / market rate" here any more.
-        # The word "price" appears in plain ANSWERS too ("price 50 lakh expect kar raha hoon"); flagging it set
-        # valuation_requested and made the call close with the "advisor will tell you the price" line.
-        # Whether the caller is ASKING for a valuation is a meaning decision -> the LLM calls
-        # book_advisor_handoff(reason="Price valuation requested"), which sets the flag itself.
-
-        # ── Deterministic intake shortcuts (no LLM round trip, instant playout) ──────────
-        tools_ = self._re_tools
-
-        # Proactive intent check for INTRODUCTION step
-        _intro_refusal = _rejects_this_location(text) or _starts_with_negation(text)
-        _intro_int = None if _intro_refusal else classify_intent(text)
-
-        # Check if caller asked any question, identity query, objection, or callback
-        _has_query = bool(
-            _is_pickup_or_identity_query(text)
-            or _asks_number_source(text)
-            or _asks_if_broker(text)
-            or _asks_if_ai_or_automated(text)
-            or _asks_location_clarification(text)
-            or _asks_agent_for_price(text)
-            or "?" in text
-            or re.search(r"\b(kaun|kahan|kidhar|kya|kyun|kyon|who|what|where|why|which|how|kisne|kisko|broker|dealer)\b", low_text)
-        )
-
-        # FIX: a bare "Hello" / "Hi" is the caller ANSWERING our greeting, not an identity question. The identity regex
-        # matches it, which made the "pure greeting -> ask sell-or-rent" shortcut (A) and the bare-hello clarification
-        # (A2) unreachable, so the LLM had to improvise on the single most common pickup word.
-        if re.fullmatch(r"\W*(hello|helo|hallo|halo|hi|hey|haan\s+hello|yes\s+hello|\u0939\u0947\u0932\u094b|\u0939\u0948\u0932\u094b|\u0939\u093e\u092f)\W*", text.strip().lower()):
-            _has_query = False
-
-        # Caller specifically asks "Is this an automotive call?" or "Are you an AI Agent?"
-        if _asks_if_ai_or_automated(text) and len(_tokens(text)) <= SHORTCUT_MAX_TOKENS + 4:
-            en = state.reply_lang == "en"
-            confirm = ai_disclosure_reply(text, state.reply_lang)
-
-            followup = ""
-            if state.step == RealEstateStep.INTRODUCTION:
-                state.greeting_acknowledged = True
-                loc = state.initial_property_location or state.sector_or_location
-                followup = (
-                    f" Were you looking to sell or rent out the property in {loc}?"
-                    if loc else
-                    " Were you looking to sell or rent out your property?"
-                ) if en else (
-                    f" Aap apni {loc} wali property sell karna chahte hain, ya rent out?"
-                    if loc else
-                    " Kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"
-                )
-            elif state.step == RealEstateStep.CATEGORY_SELECT:
-                followup = (
-                    " Were you looking to sell or rent it out?"
-                    if en else
-                    " Aap ise sell karna chahte hain, ya rent par dena?"
-                )
-            elif state.step == RealEstateStep.CHECK_OTHER_PROPERTY:
-                followup = " " + other_property_question(state.reply_lang)
-            elif state.step == RealEstateStep.ASK_NEW_LOCATION:
-                followup = " " + ask_new_location_question(state.reply_lang)
-            else:
-                missing = state.get_missing_fields()
-                if missing:
-                    q = missing[0]["question_en"] if en else missing[0]["question_hi"]
-                    followup = f" {q}"
-                elif state.step not in (RealEstateStep.CLOSING, RealEstateStep.TERMINATED) and state.last_agent_question:
-                    followup = f" {state.last_agent_question}"   # e.g. the name question: never leave the caller without one
-
-            reply = f"{confirm}{followup}".strip()
-            logger.info(f"🤖 Caller asked if AI/automated ('{text}') -> confirmed: '{reply}'")
-            self.speak_and_stop(reply, allow_interruptions=True)
-
-        # A: caller acknowledges opening greeting (e.g. "Hello", "Haan", "Yes", "Speaking")
-        if state.step == _Step.INTRODUCTION and _is_greeting_ack(text) and not state.greeting_acknowledged:
-            state.greeting_acknowledged = True
-            # Follow caller language if they spoke Hindi
-            if (
-                state.reply_lang == "en"
-                and not state.language_switched
-                and (re.search(r"[\u0900-\u097F]", text) or re.search(r"\b(boliye|bataiye|kahiye|haan|haanji|hanji|kaun|kya)\b", low_text))
-            ):
-                state.reply_lang = "hi"
-                logger.info(f"🌐 Caller answered greeting in Hindi -> reply language set to hi: '{text}'")
-                if self.on_language_change:
-                    try:
-                        self.on_language_change("hi")
-                    except Exception as e:
-                        logger.warning(f"Language switch callback failed: {e}")
-
-            # If the caller asked a question (e.g. "Kaun bol raha hai?", "Kahan se number mila?"),
-            # do NOT speak a static canned qualification question. Hand off to LLM to answer warmly and naturally!
-            if not _has_query:
-                loc = state.initial_property_location or state.sector_or_location
-                has_loc = bool(loc)
-                was_interrupted = getattr(state, "opening_speech_interrupted", False)
-                reply = sell_or_rent_question(state.reply_lang, has_loc=has_loc, loc=loc, full_context=was_interrupted)
-                logger.info(f"👋 Pure greeting acknowledged -> asking qualification: '{reply}'")
-                self.speak_and_stop(reply, allow_interruptions=True)
-            else:
-                logger.info(f"👋 Greeting with question heard: '{text}' -> handing to LLM for conversational reply")
-
-        # A1: caller answered clean "Sell" or "Rent" directly at INTRODUCTION step (no additional questions/conditions)
-        if state.step == _Step.INTRODUCTION and _intro_int and not _has_query and len(_tokens(text)) <= 4:
-            state.greeting_acknowledged = True
-            state.intent = _intro_int
-            state.is_interested = True
-            cat = state.category
-            if not cat:
-                # Category is not in the lead record: ask once instead of assuming residential
-                # (a commercial owner would otherwise be asked for BHK).
-                state.step = _Step.CATEGORY_SELECT
-                await self.sync_step()
-                self.speak_and_stop(
-                    "Great, Sir! Is it a residential or a commercial property?" if state.reply_lang == "en"
-                    else "Ji bilkul Sir! Ye residential property hai ya commercial?",
-                    allow_interruptions=True,
-                )
-            if cat == "commercial":
-                state.step = _Step.COMMERCIAL_LEASE if _intro_int == "lease" else _Step.COMMERCIAL_SALE
-            else:
-                state.step = _Step.RESIDENTIAL_LEASE if _intro_int == "lease" else _Step.RESIDENTIAL_SALE
-            await self.sync_step()
-            missing = state.get_missing_fields()
-            if missing:
-                first_q = missing[0]["question_en"] if state.reply_lang == "en" else missing[0]["question_hi"]
-                ack = "Great, Sir! " if state.reply_lang == "en" else "Ji bilkul Sir! "
-                reply = ack + first_q
-                logger.info(f"🎯 Direct intent '{_intro_int}' recognized at intro -> transitioning to {state.step.value}: '{reply}'")
-                self.speak_and_stop(reply, allow_interruptions=True)
-
-        # A2: caller answered ambiguous "Haan" / "Yes" AFTER greeting was already acknowledged -> prompt to choose
-        _prior_texts = [t.lower() for t in state.recent_user_texts[:-1]]
-        _prior_refusal = any(bool(_DIRECT_NOT_INTERESTED.search(pt) or _CLEAR_REFUSAL_SHORT.match(pt)) for pt in _prior_texts[-2:])
-        if state.step == _Step.INTRODUCTION and state.greeting_acknowledged and _is_greeting_ack(text) and not _intro_int and not _has_query and not state.refusal_confirm_asked:
-            if _prior_refusal or state.is_interested is False:
-                logger.info(f"🛑 Follow-up affirmation '{text}' confirms prior refusal -> mark_not_interested & closing")
-                try:
-                    await tools_.mark_not_interested()
-                    tools_._speak_closing_and_hangup()
-                except Exception as e:
-                    logger.warning(f"mark_not_interested shortcut failed on follow-up affirmation: {e}")
-                raise StopResponse()
-            en = state.reply_lang == "en"
-            clarify = (
-                "Could you please tell me if you'd like to sell it, or put it on rent?"
-                if en else
-                "Ji, aap ise sell karna chahte hain ya rent par dena? Please batayein."
-            )
-            if re.fullmatch(r"\W*(hello|hi|hey|helo|हेलो|हैलो)\W*", text.strip().lower()):
-                clarify = (
-                    "Yes Sir, I can hear you. I was asking, would you like to sell your property, or give it on rent?"
-                    if en else
-                    "Ji Sir, main sun rahi hoon. Main pooch rahi thi, aap property sell karna chahte hain ya rent par dena?"
-                )
-            logger.info(f"🤔 Caller gave ambiguous 'yes' to sell-or-rent -> asking to choose: '{clarify}'")
-            self.speak_and_stop(clarify, allow_interruptions=True)
-
-        # B-alt: a BARE refusal ("nahi", "no sir", "nahi ji") or one of a handful of unambiguous short phrases
-        # ("not interested", "nahi bechna") closes the call without an LLM round trip.
-        _is_callback_request = bool(
-            _HUMAN_CALLBACK_RE.search(text_x)
-            or re.search(r"\b(call\s*(me\s*)?(back|later)|later|busy|baad\s*mein|baad\s*me|shaam|kal|subah|driving|drive|meeting|hospital)\b", text_x.lower())
-        )
-        _already_interested = (state.is_interested is True) or (state.intent in ("sale", "sell", "rent", "lease"))
-        _is_refusal_here = (
-            not _is_callback_request
-            and not _is_soft_refusal(text)
-            and not _already_interested
-            and not _has_query
-            and len(_tokens(text)) <= SHORTCUT_MAX_TOKENS + 3
-            and (_is_bare_refusal(text) or bool(_CLEAR_REFUSAL_SHORT.match(text.strip())))
-        )
-        if (
-            _is_refusal_here
-            and state.step == _Step.INTRODUCTION
-            and not state.refusal_confirm_asked
-            and not _CLEAR_REFUSAL_SHORT.match(text.strip())
-        ):
-            # A lone "nahi"/"no" can mean "didn't hear", "wrong person" or "not now". Ask ONE either/or question;
-            # a second bare refusal (or any clear refusal phrase) closes the call.
-            state.refusal_confirm_asked = True
-            logger.info(f"❓ Bare refusal at INTRODUCTION -> confirming once before closing: '{text}'")
-            self.speak_and_stop(
-                "No problem, Sir. Just checking, is it not for sale or rent, or is now just a bad time?"
-                if state.reply_lang == "en" else
-                "Theek hai Sir. Bas poochna tha, sell ya rent ka plan nahi hai, ya abhi bas time sahi nahi hai?",
-                allow_interruptions=True,
-            )
-        if state.step in (_Step.INTRODUCTION, _Step.CATEGORY_SELECT) and _is_refusal_here:
-            logger.info(f"🛑 Bare refusal at {state.step.value} -> mark_not_interested & closing (no LLM): '{text}'")
-            try:
-                await tools_.mark_not_interested()
-                tools_._speak_closing_and_hangup()
-            except Exception as e:
-                logger.warning(f"mark_not_interested shortcut failed, falling back to LLM: {e}")
-            raise StopResponse()
-
-        # B1 / B2: clean yes / no to "do you have any other property?"
-        if state.step == _Step.CHECK_OTHER_PROPERTY:
-            _ans = _other_property_answer(text)
-            if _ans is not None:
-                logger.info(f"🏘️ Other property answer = {_ans} (no LLM): '{text}'")
-                try:
-                    await tools_.has_other_property(has_other=_ans)
-                    if _ans:
-                        reply = state.direct_reply or ask_new_location_question(state.reply_lang)
-                        state.direct_reply = None
-                        self.speak_and_stop(reply, allow_interruptions=True)
-                    else:
-                        tools_._speak_closing_and_hangup()
-                        raise StopResponse()
-                except Exception as e:
-                    logger.warning(f"Other-property shortcut failed, falling back to LLM: {e}")
-
-        # Caller says "standalone" / "independent" property -> no unit number or floor exists, so
-        # get_missing_fields() stops asking for them. Checked on every pre-closing intake turn.
-        from .state import RealEstateStep as _SS
-        standalone_changed = False
-        if (
-            not state.is_standalone
-            and state.step in (
-                _SS.CATEGORY_SELECT, _SS.ASK_NEW_LOCATION,
-                _SS.RESIDENTIAL_SALE, _SS.RESIDENTIAL_LEASE,
-                _SS.COMMERCIAL_SALE, _SS.COMMERCIAL_LEASE,
-            )
-            and is_standalone_from_speech(text)
-        ):
-            state.is_standalone = True
-            if not state.unit_number:
-                state.unit_number = "Standalone"
-            if not state.floor_number:
-                state.floor_number = "Ground"
-            standalone_changed = True
-            logger.info(f"🏠 Standalone/independent property -> unit & floor set to Standalone: '{text}'")
-
-        # Caller says "don't know" / "nahi pata" / "yaad nahi" to the currently asked intake field:
-        # Skip the field cleanly without corrupting data (e.g. unit_floor will NOT be marked standalone).
-        _intake_steps = (_SS.RESIDENTIAL_SALE, _SS.RESIDENTIAL_LEASE, _SS.COMMERCIAL_SALE, _SS.COMMERCIAL_LEASE)
-        # Only when the sentence is JUST "I don't know" (short, no figure in it). A longer sentence such as
-        # "area pata nahi, but 3 BHK hai" also carries a fact -> the LLM saves it AND skips the field.
-        if (
-            state.step in _intake_steps
-            and (_DONT_KNOW_RE.search(low_text) or _DONT_KNOW_DEV.search(text))
-            and len(_tokens(text)) <= SHORTCUT_MAX_TOKENS
-            and not re.search(r"[0-9\u0966-\u096F]", text)
-        ):
-            missing = state.get_missing_fields()
-            if missing:
-                skipped_id = missing[0]["id"]
-                state.skipped_fields.add(skipped_id)
-                logger.info(f"⏭️ Caller doesn't know {skipped_id} ('{text}') -> skipped without corrupting data")
-                missing_after = state.get_missing_fields()
-                if missing_after:
-                    next_q = missing_after[0]["question_en"] if state.reply_lang == "en" else missing_after[0]["question_hi"]
-                    lead = "No problem Sir. " if state.reply_lang == "en" else "Koi baat nahi Sir. "
-                    reply = lead + next_q
-                    self.speak_and_stop(reply, allow_interruptions=True)
-                else:
-                    tools_._speak_closing_and_hangup()
-                    raise StopResponse()
-
-        # Caller states "market rate" / "jo market rate chal raha hai" as expected price:
-        if (
-            state.step in _intake_steps
-            and len(_tokens(text)) <= SHORTCUT_MAX_TOKENS + 2
-            and not re.search(r"[0-9\u0966-\u096F]", text)
-            and _is_market_rate_statement(text)
-        ):
-            missing = state.get_missing_fields()
-            if missing and missing[0]["id"] in ("sale_price", "monthly_rent"):
-                field_id = missing[0]["id"]
-                if field_id == "sale_price":
-                    state.expected_sale_price = "Market Rate"
-                else:
-                    state.expected_monthly_rent = "Market Rate"
-                logger.info(f"💰 Caller stated price as Market Rate ('{text}') -> saved {field_id}='Market Rate'")
-                missing_after = state.get_missing_fields()
-                if missing_after:
-                    next_q = missing_after[0]["question_en"] if state.reply_lang == "en" else missing_after[0]["question_hi"]
-                    lead = "Market rate, noted Sir. " if state.reply_lang == "en" else "Market rate, note kar liya Sir. "
-                    reply = lead + next_q
-                    self.speak_and_stop(reply, allow_interruptions=True)
-                else:
-                    tools_._speak_closing_and_hangup()
-                    raise StopResponse()
-
-        # Caller asks us to repeat / says "what did you ask?" -> re-ask the open question (no LLM,
-        # no tool call, nothing skipped). Runs BEFORE category detection because the caller's
-        # words often quote the question itself ("residential hai ya commercial hai na?").
-        from .state import RealEstateStep as _S
-        _intake = (_S.RESIDENTIAL_SALE, _S.RESIDENTIAL_LEASE, _S.COMMERCIAL_SALE, _S.COMMERCIAL_LEASE)
-        # "repeat" is only trusted in a SHORT utterance; "samajh nahi aa raha ki price kya rakhun" is a real
-        # sentence with a question inside -> LLM.
-        _rep = _asks_repeat(text) and len(_tokens(text)) <= SHORTCUT_MAX_TOKENS + 3
-        if state.step in _intake or state.step == _S.CATEGORY_SELECT:
-            _neutral = _is_neutral_utterance(text)
-            _reask = None
-            _kind = None
-            if state.step == _S.CATEGORY_SELECT and (_rep or _neutral):
-                # A bare "haan"/"ji" does not answer "residential or commercial? sell or rent?"
-                # (often it is just a backchannel that interrupted the question).
-                _cat, _int = classify_category(text), classify_intent(text)
-                if _rep or not (_cat or _int):
-                    en = state.reply_lang == "en"
-                    # Only re-ask what is STILL missing — never re-ask an already-collected field
-                    if state.category and state.intent:
-                        # Both known → nothing to re-ask here; fall through to LLM
-                        pass
-                    elif state.category and not state.intent:
-                        _reask = "Are you looking to sell or rent it out?" if en else "Aap ise sell karna chahte hain, ya rent par dena?"
-                        _kind = "intent"
-                    elif state.intent and not state.category:
-                        _reask = "Is it a residential or commercial property?" if en else "Ye residential property hai ya commercial?"
-                        _kind = "category"
-                    else:
-                        _reask = (
-                            "Is it a residential or commercial property? And are you looking to sell or rent it out?"
-                            if en else
-                            "Ye residential property hai ya commercial? Aur aap ise sell karna chahte hain ya rent par dena chahte hain?"
-                        )
-                        _kind = "category"
-            elif state.step in _intake:
-                if _rep:
-                    _missing = state.get_missing_fields()
-                    if _missing:
-                        _reask = _missing[0]["question_en"] if state.reply_lang == "en" else _missing[0]["question_hi"]
-                        _kind = _missing[0]["id"]
-                elif _neutral:
-                    if BACKCHANNEL_IGNORE_WINDOW > 0 and (time.time() - state.last_agent_speech_end) < BACKCHANNEL_IGNORE_WINDOW:
-                        logger.info(f"🤫 Backchannel '{text}' overlapped the end of the agent's speech -> ignored")
-                        raise StopResponse()
-                    _missing = state.get_missing_fields()
-                    if _missing:
-                        _kind = _missing[0]["id"]
-                        _n = _bump_reask(state, f"{state.step.value}|{_kind}")
-                        if _n >= 3:
-                            logger.info(f"🔁 Neutral backchannel heard {_n}x -> handing turn to LLM instead of looping")
-                            _reask = None
-                        else:
-                            _reask = _intake_slot_nudge(state.reply_lang == "en", _kind, _n)
-                            _no_lead = True
-            _no_lead = _no_lead if '_no_lead' in locals() else False
-            if _reask and not _no_lead:
-                _n = _bump_reask(state, f"{state.step.value}|{_reask}")
-                if _n >= 3:
-                    logger.info(f"🔁 Same question re-asked {_n}x -> handing this turn to the LLM instead of looping")
-                    _reask = None
-                elif _kind and not (_rep and not _neutral):
-                    # the caller did not ask us to repeat; they gave an unusable answer -> ask it in simpler words
-                    _alt = _simplified_reask(state.reply_lang == "en", _kind, _n)
-                    if _alt:
-                        _reask, _no_lead = _alt, True
-            if _reask:
-                lead = "" if _no_lead else ("Sure, " if state.reply_lang == "en" else "Ji, ")
-                logger.info(f"🔁 Repeat/backchannel -> re-asking open question (no LLM): '{_reask}'")
-                self.speak_and_stop(lead + _reask, allow_interruptions=True)
-
-        # "Repeat" at ANY other step (other-property, new location, name): say the last question
-        # we actually asked, verbatim. Repeating only happens when the caller asks for it.
-        if state.step not in _intake and state.step != _S.CATEGORY_SELECT and state.step != _S.INTRODUCTION and state.step != _S.CLOSING \
-                and _rep:
-            q_to_repeat = state.last_agent_question
-            if not q_to_repeat:
-                if state.step == _S.CHECK_OTHER_PROPERTY:
-                    q_to_repeat = other_property_question(state.reply_lang)
-                elif state.step == _S.ASK_NEW_LOCATION:
-                    q_to_repeat = ask_new_location_question(state.reply_lang)
-            if q_to_repeat:
-                lead = "Sure, " if state.reply_lang == "en" else "Ji, "
-                logger.info(f"🔁 Repeat requested -> re-asking last question (no LLM): '{q_to_repeat}'")
-                self.speak_and_stop(lead + q_to_repeat, allow_interruptions=True)
-
-        # NOTE: no keyword list for "impatient" any more ("short mein", "time nahi" ... also appear inside
-        # ordinary sentences). The LLM judges tone and calls book_advisor_handoff(reason="...impatient...").
-
-        # Proactively detect category & intent directly from caller utterance
-        # A refusal ("nahi, us location pe nahi bechna") must not be read as an intent ('bechna' -> sale).
-        _refusal = state.step in (RealEstateStep.INTRODUCTION, RealEstateStep.CHECK_OTHER_PROPERTY) and (
-            _rejects_this_location(text) or _starts_with_negation(text)
-        )
-        # Category is strictly locked once intake begins (or if provided from audience file/db).
-        # Only re-detect in early turns (INTRODUCTION, CATEGORY_SELECT, new location) or if category is unknown.
-        _allow_cat_detect = (not state.category) or (state.step in (
-            RealEstateStep.INTRODUCTION, RealEstateStep.CATEGORY_SELECT,
-            RealEstateStep.CHECK_OTHER_PROPERTY, RealEstateStep.ASK_NEW_LOCATION
-        ))
-        _is_asking_question = bool(
-            _asks_agent_for_price(text)
-            or _asks_number_source(text)
-            or _asks_if_broker(text)
-            or _asks_if_ai_or_automated(text)
-        )
-        # Keyword classification is trusted only for a SHORT reply with no question in it ("residential sell",
-        # "flat rent pe"). A long / questioning sentence ("rent kitna milega?", "ghar pe baat karni hai baad
-        # mein") is read by the LLM, which calls set_category_and_intent / customer_interested itself.
-        _kw_ok = (not _has_query) and len(_tokens(text)) <= SHORTCUT_MAX_TOKENS + 1
-        detected_cat = None if (_refusal or not _allow_cat_detect or _is_asking_question or not _kw_ok) else classify_category(text)
-        detected_int = None if (_refusal or _is_asking_question or not _kw_ok) else classify_intent(text)
-        step_changed = False
-
-        if detected_cat:
-            old_cat = state.category
-            state.category = detected_cat
-            if detected_cat == "commercial":
-                if not state.bhk_config:
-                    state.bhk_config = None
-                # Keep exactly what the caller said as the unit type ("office", "shop"...). Never assumed:
-                # if they only said "commercial", the type stays empty and is asked next.
-                _said = commercial_type_from_speech(text)
-                if _said and _said != "Other" and not state.commercial_type:
-                    state.commercial_type = _said
-                    logger.info(f"🏢 Commercial unit type from caller's words: '{_said}'")
-                if state.step == RealEstateStep.RESIDENTIAL_SALE:
-                    state.step = RealEstateStep.COMMERCIAL_SALE
-                    step_changed = True
-                elif state.step == RealEstateStep.RESIDENTIAL_LEASE:
-                    state.step = RealEstateStep.COMMERCIAL_LEASE
-                    step_changed = True
-            elif detected_cat == "residential":
-                state.commercial_type = None
-                if state.step == RealEstateStep.COMMERCIAL_SALE:
-                    state.step = RealEstateStep.RESIDENTIAL_SALE
-                    step_changed = True
-                elif state.step == RealEstateStep.COMMERCIAL_LEASE:
-                    state.step = RealEstateStep.RESIDENTIAL_LEASE
-                    step_changed = True
-            if old_cat != detected_cat:
-                logger.info(f"🏷️ Proactively recognized property category: '{detected_cat}' from utterance: '{text}'")
-
-        if detected_int:
-            if not state.intent or detected_int != state.intent:
-                old_intent = state.intent
-                state.intent = detected_int
-                logger.info(f"🎯 Recognized/updated intent: '{detected_int}' (was '{old_intent}') from utterance: '{text}'")
-                if state.category == "residential":
-                    target_step = RealEstateStep.RESIDENTIAL_LEASE if detected_int == "lease" else RealEstateStep.RESIDENTIAL_SALE
-                    if state.step in (RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.RESIDENTIAL_LEASE) and state.step != target_step:
-                        state.step = target_step
-                        step_changed = True
-                elif state.category == "commercial":
-                    target_step = RealEstateStep.COMMERCIAL_LEASE if detected_int == "lease" else RealEstateStep.COMMERCIAL_SALE
-                    if state.step in (RealEstateStep.COMMERCIAL_SALE, RealEstateStep.COMMERCIAL_LEASE) and state.step != target_step:
-                        state.step = target_step
-                        step_changed = True
-
-        if state.step in (RealEstateStep.INTRODUCTION, RealEstateStep.CATEGORY_SELECT, RealEstateStep.ASK_NEW_LOCATION) and state.category and state.intent:
-            if state.category == "commercial":
-                state.step = RealEstateStep.COMMERCIAL_LEASE if state.intent == "lease" else RealEstateStep.COMMERCIAL_SALE
-            else:
-                state.step = RealEstateStep.RESIDENTIAL_LEASE if state.intent == "lease" else RealEstateStep.RESIDENTIAL_SALE
-            step_changed = True
-
-        if standalone_changed and not step_changed:
-            # MUST be synchronous: otherwise the LLM could still see the old "ask unit & floor" instruction.
+        # Ensure session instructions and tools match the current step before LLM generates
+        if self.session:
             try:
                 await self.session.update_instructions(get_step_instructions(state))
+                await self.session.update_tools(self._re_tools.tools_for_step(state.step))
             except Exception as e:
-                logger.warning(f"Failed to refresh instructions after standalone detection: {e}")
+                logger.warning(f"Failed to refresh instructions/tools: {e}")
 
-        # Greetings / backchannels like "Hello." must not flip the reply language.
-        lang_switched = False if _is_neutral_utterance(text) else state.update_reply_lang(text)
-        if lang_switched or state.impatient_detected or step_changed:
-            lang = state.reply_lang
-            if lang_switched:
-                logger.info(f"🌐 Customer switched language -> {lang}")
-                if self.on_language_change:
-                    try:
-                        self.on_language_change(lang)
-                    except Exception as e:
-                        logger.warning(f"Language switch callback failed: {e}")
-
-            if step_changed:
-                # MUST be synchronous: the tool set changes, so the LLM must see the correct
-                # tools *before* it starts generating. Running this as a background task causes
-                # the LLM to run with stale tools, which leads to wrong step transitions and
-                # premature closings (issues #1 and #2).
-                try:
-                    await self.session.update_instructions(get_step_instructions(state))
-                    await self.session.update_tools(self._re_tools.tools_for_step(state.step))
-                    logger.info(f"Step sync'd ({state.step.value}): instructions + tools updated.")
-                except Exception as e:
-                    logger.warning(f"Failed to refresh instructions/tools on step change: {e}")
-            else:
-                # Instruction-only refresh (language switch / impatience): tool set stays the same,
-                # so it is safe to run as a background task without delaying LLM dispatch.
-                _agent = self
-                async def _refresh_lang_instructions():
-                    try:
-                        await _agent.session.update_instructions(get_step_instructions(state))
-                    except Exception as e:
-                        logger.warning(f"Failed to refresh instructions: {e}")
-                asyncio.create_task(_refresh_lang_instructions())
-
-        # ── FAST PATH: a clean answer to the ONE open intake question needs no LLM call ─────────────
-        # Parsed with regex (fastpath.py) -> save_property_details() -> the tool speaks the next canonical
-        # question (FAST_TOOL_REPLY). Anything unclear / multi-field / objection returns None and the
-        # normal LLM path below handles it exactly as before.
-        if (
-            FASTPATH_ENABLED
-            and FAST_TOOL_REPLY
-            and text
-            and state.step in (
-                RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.RESIDENTIAL_LEASE,
-                RealEstateStep.COMMERCIAL_SALE, RealEstateStep.COMMERCIAL_LEASE,
-            )
-            and not state.closing_spoken
-            and not state.impatient_detected
-        ):
-            _fp_missing = state.get_missing_fields()
-            # Backfill any missing field already answered in recent turns if uncaptured
-            if _fp_missing and state.recent_user_texts:
-                for _m_item in list(_fp_missing):
-                    _m_id = _m_item["id"]
-                    if _m_id == "commercial_type":
-                        continue
-                    # Check recent utterances (prior to current text)
-                    for _prev_u in reversed(state.recent_user_texts[-2:-1]):   # only the previous turn (older turns can belong to another question)
-                        _bk = _fastpath_extract(_m_id, _prev_u, state=state, allow_bare=False)
-                        if _bk:
-                            logger.info(f"⚡ Backfilled {_m_id}={_bk} from recent speech '{_prev_u[:50]}'")
-                            try:
-                                await self._re_tools.save_property_details(**_bk)
-                            except Exception:
-                                pass
-                            break
-                _fp_missing = state.get_missing_fields()
-
-            if _fp_missing:
-                _fp_field = _fp_missing[0]["id"]
-                if _fp_field == "commercial_type":
-                    # Whole-sentence accounting, like fastpath.extract(): the sentence must be ONLY a unit type
-                    # ("office", "shop hai") or ONLY a bare denial ("nahi nahi"). "office nahi, shop hai",
-                    # "shop nahi dena" or anything longer carries more meaning -> LLM.
-                    _toks = _tokens(text)
-                    _neg_in = any(t in _NEG_TOKENS for t in _toks)
-                    _fp_kw = None
-                    if _is_bare_refusal(text):
-                        logger.info(f"🏡 Bare denial of commercial ('{text}') -> switching category to residential")
-                        _fp_kw = {"category": "residential"}
-                    elif not _neg_in and len(_toks) <= 4:
-                        _ct = commercial_type_from_speech(text)
-                        if _ct and _ct != "Other":
-                            _rest = [t for t in _toks if t not in set(re.findall(r"[a-z\u0900-\u097F]+", _ct.lower()))
-                                     and t not in {"hai", "hain", "sir", "ji", "haan", "ye", "yeh", "it", "is", "its", "a", "an", "space", "retail"}]
-                            _fp_kw = {"commercial_type": _ct} if not _rest else None
-                else:
-                    _fp_kw = _fastpath_extract(_fp_field, text, state=state)
-
-                # If open field did not match, check other remaining missing fields (e.g. caller answered area first)
-                if not _fp_kw and len(_fp_missing) > 1:
-                    for _other_item in _fp_missing[1:]:
-                        _other_id = _other_item["id"]
-                        if _other_id != "commercial_type":
-                            _other_kw = _fastpath_extract(_other_id, text, state=state, allow_bare=False)
-                            if _other_kw:
-                                _fp_field = _other_id
-                                _fp_kw = _other_kw
-                                break
-
-                if _fp_kw:
-                    try:
-                        await self._re_tools.save_property_details(**_fp_kw)
-                    except Exception as e:
-                        logger.warning(f"Fast path failed, falling back to LLM: {e}")
-                    else:
-                        logger.info(f"⚡ FASTPATH (LLM skipped) field={_fp_field} saved={_fp_kw} heard='{text[:80]}'")
-                        if not state.closing_spoken:   # closing is spoken by the tool itself
-                            _fp_reply, state.direct_reply = state.direct_reply, None
-                            if not _fp_reply:          # never leave dead air
-                                _m = state.get_missing_fields()
-                                if _m:
-                                    _fp_reply = _m[0]["question_en"] if state.reply_lang == "en" else _m[0]["question_hi"]
-                            if _fp_reply:
-                                self.speak_and_stop(_fp_reply, allow_interruptions=True)
-                        raise StopResponse()
-
+        # Hand turn over to the LLM (no StopResponse raised)
+        return
 
     async def handle_turn(self, text: str) -> bool:
         """Returns True when the turn was fully handled deterministically (LLM must NOT run)."""

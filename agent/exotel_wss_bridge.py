@@ -43,6 +43,7 @@ except Exception as _filter_err:
 
 from real_estate.worker import run_real_estate_pipeline  # noqa: E402
 from src.worker import run_airtel_pipeline  # noqa: E402
+from logistics.worker import run_logistics_pipeline  # noqa: E402
 
 BRIDGE_PORT = int(os.getenv("EXOTEL_BRIDGE_PORT", "8088"))
 BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:3000").rstrip("/")
@@ -230,27 +231,34 @@ async def media_stream(ws: WebSocket, path_call_id: Optional[str] = None):
     req_pipeline = (qs.get("pipeline") or qs.get("agent") or custom.get("pipeline") or custom.get("agent") or "").lower()
 
     # Determine which pipeline to run
-    is_re = False
-    if req_pipeline in ("real_estate", "realestate", "estate", "estate_finder", "sagar"):
-        is_re = True
+    selected_pipeline = None
+    if req_pipeline in ("logistics", "mittal", "mittal_pigments", "driver"):
+        selected_pipeline = "logistics"
+    elif req_pipeline in ("real_estate", "realestate", "estate", "estate_finder", "sagar"):
+        selected_pipeline = "real_estate"
     elif req_pipeline in ("telecom", "airtel", "priya", "habot"):
-        is_re = False
+        selected_pipeline = "airtel"
     elif metadata:
         call_obj = metadata.get("call") or {}
-        if call_obj.get("re_lead_id") or (metadata.get("leadId") and not metadata.get("customerId")):
-            is_re = True
+        if call_obj.get("logistics_trip_id") or str(call_obj.get("pipeline", "")).lower() == "logistics" or metadata.get("logisticsTrip"):
+            selected_pipeline = "logistics"
+        elif call_obj.get("re_lead_id") or (metadata.get("leadId") and not metadata.get("customerId")):
+            selected_pipeline = "real_estate"
         elif call_obj.get("customer_id") or metadata.get("customerId"):
-            is_re = False
+            selected_pipeline = "airtel"
         elif "real estate" in str(call_obj.get("script", "")).lower() or "estate" in str(call_obj.get("script", "")).lower():
-            is_re = True
+            selected_pipeline = "real_estate"
         else:
-            is_re = DEFAULT_PIPELINE in ("real_estate", "realestate", "estate")
+            selected_pipeline = "real_estate" if DEFAULT_PIPELINE in ("real_estate", "realestate", "estate") else "airtel"
     else:
-        is_re = DEFAULT_PIPELINE in ("real_estate", "realestate", "estate")
+        selected_pipeline = "real_estate" if DEFAULT_PIPELINE in ("real_estate", "realestate", "estate") else "airtel"
         logger.warning(f"⚠️ No pipeline hint and no metadata for call {call_id}; using default '{DEFAULT_PIPELINE}'")
 
     try:
-        if is_re:
+        if selected_pipeline == "logistics":
+            logger.info(f"🚀 Running Pipecat Logistics Pipeline for call {call_id}...")
+            await run_logistics_pipeline(transport=transport, call_id=call_id, phone=phone, metadata=metadata)
+        elif selected_pipeline == "real_estate":
             logger.info(f"🚀 Running Pipecat Real Estate Pipeline for call {call_id}...")
             await run_real_estate_pipeline(transport=transport, call_id=call_id, phone=phone, metadata=metadata)
         else:

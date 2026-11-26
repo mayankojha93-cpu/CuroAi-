@@ -75,15 +75,6 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 LLM_FALLBACK = os.getenv("LLM_FALLBACK", "1") == "1"
 LLM_ATTEMPT_TIMEOUT = float(os.getenv("LLM_ATTEMPT_TIMEOUT", "4.0"))
 
-# FASTPATH_ENABLED=0 : regex fastpath disabled; slot extraction and meaning decisions are handled by LLM.
-FASTPATH_ENABLED = os.getenv("FASTPATH_ENABLED", "0") == "1"
-
-# ENABLE_HUMAN_REGEX_SHORTCUTS=0 : keep regex ONLY for IVR/voicemail/carrier detection.
-# All human conversational turns go to the LLM to handle natural speech without rigid regex intercepts.
-ENABLE_HUMAN_REGEX_SHORTCUTS = os.getenv("ENABLE_HUMAN_REGEX_SHORTCUTS", "0") == "1"
-
-# Deterministic shortcuts max tokens
-SHORTCUT_MAX_TOKENS = int(os.getenv("SHORTCUT_MAX_TOKENS", "5"))
 # PRERENDER_GREETING=1 : while the phone is still ringing the opening line is synthesised in advance and
 #                        played from memory the moment the callee answers (no TTS wait on "Hello?").
 #                        Costs one greeting's worth of TTS characters for calls that are never answered.

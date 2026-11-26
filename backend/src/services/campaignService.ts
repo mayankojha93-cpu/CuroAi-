@@ -82,6 +82,7 @@ export interface CampaignDbRow {
   script?: string;
   language?: string;
   voice_pipeline?: string;
+  tts_provider?: string;
   schedule_start_time?: string;
   schedule_end_time?: string;
   operating_days?: string[];
@@ -237,6 +238,7 @@ export class CampaignService {
     script?: string;
     language?: string;
     voice_pipeline?: string;
+    tts_provider?: string;
     schedule_start_time?: string;
     schedule_end_time?: string;
     operating_days?: string[];
@@ -290,11 +292,11 @@ export class CampaignService {
     const query = `
       INSERT INTO campaigns (
         name, description, status, total_contacts, total_credits, remaining_calls,
-        script, language, voice_pipeline, schedule_start_time, schedule_end_time,
+        script, language, voice_pipeline, tts_provider, schedule_start_time, schedule_end_time,
         operating_days, max_concurrent_calls, calls_per_minute, retry_attempts,
         retry_delay_minutes, max_call_duration_minutes, expected_dispositions, pipeline
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
       RETURNING *
     `;
     const res = await pool.query(query, [
@@ -307,6 +309,7 @@ export class CampaignService {
       data.script || (campaignPipeline === 'real_estate' ? 'My Estate Finder — Property Intake (Priya)' : 'Airtel Delhi Wi-Fi (Routine Pickup)'),
       data.language || (campaignPipeline === 'real_estate' ? 'en-IN' : 'hi-IN'),
       data.voice_pipeline || (campaignPipeline === 'real_estate' ? 'Sarvam AI (Priya - hi/en)' : 'Sarvam AI (Priya - hi-IN)'),
+      (data.tts_provider || 'sarvam').toLowerCase(),
       data.schedule_start_time || '09:00',
       data.schedule_end_time || '20:00',
       JSON.stringify(data.operating_days || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']),
