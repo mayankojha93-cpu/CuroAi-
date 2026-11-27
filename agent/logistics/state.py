@@ -79,6 +79,8 @@ class LogisticsState:
 
         # Runtime flags
         self.callee_connected: bool = False
+        self.opening_speech_active: bool = False
+        self.opening_speech_interrupted: bool = False
         self.answered_at: Optional[float] = None
         self.start_time: float = time.time()
         self.last_activity_time: float = time.time()
@@ -92,6 +94,17 @@ class LogisticsState:
         self.silence_count: int = 0
         self.latency_samples: List[float] = []
         self.transcript: List[Dict[str, Any]] = []
+
+        # Backend conversation state & barge-in tracking
+        self.current_step: str = "opening"
+        self.pending_question: str = ""
+        self.last_bot_utterance: str = ""
+        self.barge_in_pending: bool = False
+        self.interrupted_step: str = ""
+        self.interrupted_question: str = ""
+        self.last_interruption_type: str = ""
+        self.last_user_utterance: str = ""
+        self.barge_in_count: int = 0
 
         # End-of-call output fields
         self.call_status: str = "connected"
@@ -135,3 +148,92 @@ class LogisticsState:
             "driver_questions_for_ops": self.driver_questions_for_ops,
             "summary_in_english": self.summary_in_english,
         }
+
+    def collected_summary(self) -> List[str]:
+        """Return human-readable list of already-collected backend state fields."""
+        items: List[str] = []
+        if self.call_status != "connected":
+            items.append(f"call_status={self.call_status}")
+        if self.callback_time:
+            items.append(f"callback_time={self.callback_time}")
+        if self.unloaded != "unknown":
+            items.append(f"unloaded={self.unloaded}")
+        if self.current_location:
+            items.append(f"current_location={self.current_location}")
+        if self.unloading_delay_reason != "none":
+            items.append(f"unloading_delay_reason={self.unloading_delay_reason}")
+        if self.waiting_hours:
+            items.append(f"waiting_hours={self.waiting_hours}")
+        if self.pod_signed_received != "na":
+            items.append(f"pod_signed_received={self.pod_signed_received}")
+        if self.shortage_or_damage_reported == "yes":
+            items.append("shortage_or_damage_reported=yes")
+        if self.money_demanded_amount:
+            items.append(f"money_demanded_amount={self.money_demanded_amount}")
+        if self.issue_details:
+            items.append(f"issue_details={self.issue_details}")
+        if self.next_assignment_communicated == "yes":
+            items.append(f"next_assignment_communicated=yes (accepted={self.driver_accepted_next_assignment})")
+        if self.driver_departure_eta:
+            items.append(f"driver_departure_eta={self.driver_departure_eta}")
+        if self.driver_questions_for_ops:
+            items.append(f"driver_questions_for_ops={self.driver_questions_for_ops}")
+        return items
+
+    def missing_fields(self) -> List[str]:
+        """Return remaining fields needed based on the active branch."""
+        if self.call_status in ("busy_callback", "wrong_person") or self.closing_spoken:
+            return []
+        if self.unloaded == "unknown":
+            return ["unloaded (yes / no / on_the_way)"]
+        if self.unloaded == "yes":
+            missing: List[str] = []
+            if not self.current_location:
+                missing.append("current_location")
+            if self.pod_signed_received == "na":
+                missing.append("pod_signed_received")
+            if self.next_assignment_communicated == "no":
+                missing.append("next_assignment_communicated")
+            elif self.driver_accepted_next_assignment == "yes" and not self.driver_departure_eta:
+                missing.append("driver_departure_eta")
+            return missing
+        # Branch B: not unloaded / on_the_way
+        missing = []
+        if self.unloading_delay_reason == "none" and not self.issue_details and not self.current_location:
+            missing.append("delay_reason_or_eta")
+        return missing
+
+    def advance_state_from_fields(self) -> None:
+        """Recompute current_step deterministically from collected backend fields."""
+        if self.closing_spoken or self.hangup_started:
+            self.current_step = "closing"
+            return
+        if self.call_status in ("busy_callback", "wrong_person"):
+            self.current_step = "closing"
+            return
+        if self.unloaded == "unknown":
+            if (
+                self.callee_connected
+                and self.current_step == "opening"
+                and not self.opening_speech_active
+                and not self.barge_in_pending
+            ):
+                self.current_step = "unloading_status"
+            return
+        if self.unloaded == "yes":
+            if not self.current_location:
+                self.current_step = "location"
+            elif self.pod_signed_received == "na":
+                self.current_step = "pod_check"
+            elif self.next_assignment_communicated == "no":
+                self.current_step = "next_assignment"
+            elif self.driver_accepted_next_assignment == "yes" and not self.driver_departure_eta:
+                self.current_step = "departure_eta"
+            else:
+                self.current_step = "closing"
+            return
+        # unloaded in ("no", "on_the_way")
+        if self.unloading_delay_reason == "none" and not self.issue_details and not self.current_location:
+            self.current_step = "delay_reason"
+        else:
+            self.current_step = "closing"

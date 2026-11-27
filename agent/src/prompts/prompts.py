@@ -205,5 +205,21 @@ You just asked whether the registered address '{state.address}' is correct. WAIT
     else:
         step_guide = ""
 
-    return f"{base}\n\n{step_guide}"
+    collected = state.collected_summary() if hasattr(state, "collected_summary") else []
+    missing = state.missing_fields() if hasattr(state, "missing_fields") else []
+    collected_str = ", ".join(collected) if collected else "none yet"
+    missing_str = ", ".join(missing) if missing else "none"
+    barge_in_note = ""
+    if getattr(state, "barge_in_pending", False):
+        barge_in_note = (
+            f"\nACTIVE BARGE-IN CONTEXT:\n"
+            f"- Interrupted step: {getattr(state, 'interrupted_step', '') or getattr(state.step, 'value', state.step)}\n"
+            f"- Interrupted pending question: {getattr(state, 'interrupted_question', '') or 'none'}\n"
+            f"- Detected interruption intent: {getattr(state, 'last_interruption_type', '') or 'info'}\n"
+            f"- Handle 'wait' by saying 'जी, आराम से बोलिए, मैं सुन रही हूँ।' without advancing step; "
+            f"'question' by answering first then re-asking pending question; "
+            f"'info'/'correction' by saving via tool and continuing to missing fields ({missing_str})."
+        )
+
+    return f"{base}\n\nBACKEND STATE: step={getattr(state.step, 'value', state.step)} | collected=[{collected_str}] | missing=[{missing_str}]{barge_in_note}\n\n{step_guide}"
     

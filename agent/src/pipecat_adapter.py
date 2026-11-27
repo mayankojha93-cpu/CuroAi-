@@ -29,6 +29,7 @@ from pipecat.frames.frames import (
     LLMTextFrame,
     TTSSpeakFrame,
     TTSUpdateSettingsFrame,
+    UserStartedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.llm_service import FunctionCallParams
@@ -275,7 +276,7 @@ class LLMOutputGuard(FrameProcessor):
             self._buf.append(frame.text)
             return
 
-        if isinstance(frame, InterruptionFrame):
+        if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame)):
             self._buf.clear()
             self._end_evt.set()
             await self.push_frame(frame, direction)
@@ -287,6 +288,8 @@ class LLMOutputGuard(FrameProcessor):
             out = await self._finalize(full)
             if out:
                 await self.push_frame(LLMTextFrame(out), FrameDirection.DOWNSTREAM)
+            self.state.barge_in_pending = False
+            self.state.last_interruption_type = ""
             self._end_evt.set()
             await self.push_frame(frame, direction)
             return
@@ -295,7 +298,7 @@ class LLMOutputGuard(FrameProcessor):
 
     async def _finalize(self, full: str) -> Optional[str]:
         st = self.state
-        if st.closing_spoken:
+        if getattr(st, "closing_spoken", False):
             return None
 
         if self._tool_seen:
@@ -313,6 +316,35 @@ class LLMOutputGuard(FrameProcessor):
             return None
         self.log_dialogue("assistant", clean)
         return prep_for_tts(clean)
+
+
+_AIRTEL_WAIT_PATTERNS = (
+    "रुको", "रुकिए", "एक मिनट", "एक सेकंड", "ठहरो", "ठहरिए", "होल्ड",
+    "wait", "hold on", "one minute", "one second", "hang on", "ruk", "ek minute",
+)
+_AIRTEL_CORRECTION_PATTERNS = (
+    "नहीं नहीं", "गलत", "बदल", "सॉरी", "मेरा मतलब", "वो नहीं", "पहले वाला नहीं",
+    "actually", "sorry", "wrong", "correction", "change that", "not that",
+    "galat", "nahi nahi",
+)
+_AIRTEL_QUESTION_WORDS = (
+    "क्या", "कब", "कहाँ", "कहां", "कौन", "क्यों", "कितना", "कितने", "कैसे",
+    "किस", "who", "what", "when", "where", "why", "how",
+    "kya", "kab", "kahan", "kaun", "kyun", "kitna", "kaise",
+)
+
+
+def classify_airtel_barge_in_intent(text: str) -> str:
+    norm = (text or "").strip().lower()
+    if not norm:
+        return "info"
+    if any(p in norm for p in _AIRTEL_WAIT_PATTERNS):
+        return "wait"
+    if any(p in norm for p in _AIRTEL_CORRECTION_PATTERNS):
+        return "correction"
+    if "?" in norm or "？" in norm or any(w in norm for w in _AIRTEL_QUESTION_WORDS):
+        return "question"
+    return "info"
 
 
 class TurnGate(FrameProcessor):
@@ -334,8 +366,14 @@ class TurnGate(FrameProcessor):
 
         from pipecat.frames.frames import UserStartedSpeakingFrame
         if isinstance(frame, UserStartedSpeakingFrame):
-            if self._last_user_msg is None and getattr(self.state.step, "value", self.state.step) == "IDENTITY":
+            step_val = getattr(self.state.step, "value", str(self.state.step))
+            if self._last_user_msg is None and step_val == "IDENTITY":
                 self.state.opening_speech_interrupted = True
+            self.state.barge_in_pending = True
+            self.state.barge_in_count += 1
+            self.state.interrupted_step = step_val
+            if self.handler and hasattr(self.handler, "_pending_question"):
+                self.state.interrupted_question = self.handler._pending_question()
 
         if (
             isinstance(frame, LLMContextFrame)
@@ -354,14 +392,21 @@ class TurnGate(FrameProcessor):
                     if text:
                         self.state.last_activity_time = time.time()
                         self.log_dialogue("customer", text)
+                        if self.state.barge_in_pending or self.state.opening_speech_interrupted:
+                            self.state.last_interruption_type = classify_airtel_barge_in_intent(text)
                         try:
                             handled = await self.handler.handle_turn(text)
                         except Exception as e:
                             logger.error(f"Turn handler crashed, falling back to LLM: {e}", exc_info=True)
                             handled = False
                         if handled:
+                            self.state.barge_in_pending = False
+                            self.state.last_interruption_type = ""
                             logger.info("🛑 Turn handled deterministically -> LLM skipped")
                             return
+                        if msgs and isinstance(msgs[0], dict) and msgs[0].get("role") == "system":
+                            from .prompts.prompts import get_step_instructions
+                            msgs[0]["content"] = get_step_instructions(self.state)
                     else:
                         return
             self._trim_context()

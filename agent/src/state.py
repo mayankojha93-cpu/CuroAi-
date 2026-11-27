@@ -60,6 +60,11 @@ class ConversationState:
         # Current conversation step
         self.step: Step = Step.IDENTITY
         self.opening_speech_interrupted: bool = False
+        self.barge_in_pending: bool = False
+        self.interrupted_step: str = ""
+        self.interrupted_question: str = ""
+        self.last_interruption_type: str = ""
+        self.barge_in_count: int = 0
 
         # Core fields matching Airtel Campaign Outcome Spec
         self.identity_confirmed: Optional[bool] = None
@@ -92,6 +97,35 @@ class ConversationState:
         self.is_completed: bool = False
         self.hangup_started: bool = False  # clean_hangup runs at most once
         self.recording_url: Optional[str] = None
+
+    def collected_summary(self) -> List[str]:
+        items: List[str] = []
+        if self.identity_confirmed is not None:
+            items.append(f"identity_confirmed={self.identity_confirmed}")
+        if self.pickup_accepted is not None:
+            items.append(f"pickup_accepted={self.pickup_accepted}")
+        if self.offered_date_spoken or self.offered_date:
+            items.append(f"offered_date={self.offered_date_spoken or self.offered_date}")
+        if self.confirmed_date or self.pickup_date_spoken:
+            items.append(f"confirmed_date={self.pickup_date_spoken or self.confirmed_date}")
+        if self.registered_address_confirmed is not None:
+            items.append(f"registered_address_confirmed={self.registered_address_confirmed}")
+        if self.new_address:
+            items.append(f"new_address={self.new_address}")
+        if self.alternate_phone:
+            items.append(f"alternate_phone={self.alternate_phone}")
+        return items
+
+    def missing_fields(self) -> List[str]:
+        if self.step == Step.IDENTITY:
+            return ["identity_confirmed"]
+        if self.step == Step.PICKUP_DECISION:
+            return ["pickup_accepted"]
+        if self.step == Step.DATE_RESOLUTION:
+            return ["confirmed_date"]
+        if self.step == Step.ADDRESS_CONFIRMATION:
+            return ["registered_address_confirmed (or new_address)"]
+        return []
 
         # Telephony & Pipecat runtime state
         self.callee_connected: bool = False
