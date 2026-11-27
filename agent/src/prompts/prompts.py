@@ -126,12 +126,21 @@ def get_step_instructions(state: ConversationState) -> str:
 - Customer called in. If they mention Wi-Fi router, pickup or account -> confirm_identity(is_correct=true).
 - Language barrier -> record_language_barrier. DND -> record_do_not_call."""
         else:
+            delivered_intro = state.delivered_intro_text() if hasattr(state, "delivered_intro_text") else ""
+            remaining_intro = state.remaining_intro_text() if hasattr(state, "remaining_intro_text") else ""
+            delivered_note = delivered_intro if delivered_intro else "none yet (caller interrupted right at pickup)"
+            remaining_note = remaining_intro or t(
+                f"क्या मेरी बात {state.customer_name} जी से हो रही है?",
+                f"Am I speaking with {state.customer_name}?",
+            )
             interrupted_rule = (
-                f"- INTERRUPTED INTRO: The caller interrupted your opening greeting. Maintain conversation context:\n"
-                f"  1. Do NOT restart the entire introduction blindly, and do NOT force-resume the intro automatically every time.\n"
-                f"  2. If the caller asked a question (e.g. 'Kaun bol raha hai?', 'Kahan se?', 'Kya kaam hai?'), answer it FIRST in 1 short sentence, then decide if confirming identity ('{t(f'क्या मेरी बात {state.customer_name} जी से हो रही है?', f'Am I speaking with {state.customer_name}?')}') is still relevant.\n"
-                f"  3. If the caller already confirmed identity or gave their reason (e.g. 'already recharged', 'wrong number', 'call later'), handle that directly with the matching tool — do NOT re-ask the intro.\n"
-                f"  4. Only if they gave a bare 'Hello?' / 'Boliye' and identity is still unconfirmed, continue briefly with the remaining relevant part ('{t(f'क्या मेरी बात {state.customer_name} जी से हो रही है?', f'Am I speaking with {state.customer_name}?')}').\n"
+                f"- INTERRUPTED INTRO RESUME:\n"
+                f"  * Already delivered intro: \"{delivered_note}\"\n"
+                f"  * Remaining intro to resume: \"{remaining_note}\"\n"
+                f"  * Do NOT repeat already delivered intro sentences. "
+                f"If the caller asked a question, answer it FIRST in 1 short sentence, then resume ONLY the remaining intro part if still relevant.\n"
+                f"  * If the caller already confirmed identity or gave their reason (e.g. 'already recharged', 'wrong number', 'call later'), handle that directly with the matching tool.\n"
+                f"  * If they only gave a bare 'Hello?' / 'Boliye', acknowledge briefly and continue ONLY with: \"{remaining_note}\".\n"
                 if getattr(state, "opening_speech_interrupted", False)
                 else ""
             )

@@ -347,14 +347,20 @@ Politely acknowledge their time, invoke `book_advisor_handoff(reason="Customer i
                 else "Kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"
             )
         is_interrupted = bool(getattr(state, "opening_speech_interrupted", False))
-        loc_tail = (
-            f"I'm calling about your property in {spoken_loc}. {next_question}"
-            if loc
-            else f"{next_question}"
-        )
+        delivered_intro = state.delivered_intro_text() if hasattr(state, "delivered_intro_text") else ""
+        remaining_intro = state.remaining_intro_text() if hasattr(state, "remaining_intro_text") else ""
+        if remaining_intro:
+            resume_line = f"{remaining_intro} {next_question}"
+        elif loc:
+            resume_line = f"I'm calling about your property in {spoken_loc}. {next_question}"
+        else:
+            resume_line = f"{next_question}"
+        delivered_note = delivered_intro if delivered_intro else "none yet (caller interrupted right at pickup)"
         interrupted_note = (
-            f"- INTERRUPTED INTRO: NEVER repeat 'Hello {name_call}' or '{AGENT_PERSONA_NAME} this side from My Estate Finder' — that part was already spoken. "
-            f"Simply acknowledge briefly (e.g. 'Yes Sir,') and continue directly with: \"{loc_tail}\"\n"
+            f"- INTERRUPTED INTRO RESUME:\n"
+            f"  * Already delivered intro: \"{delivered_note}\"\n"
+            f"  * Remaining intro to deliver: \"{resume_line}\"\n"
+            f"  * Respond briefly to what the caller just said (e.g. if 'Hello', say 'Yes Sir,'; if they asked a question, answer it first), then resume ONLY the remaining intro without repeating already delivered sentences: \"{resume_line}\"\n"
             "- NEVER call `customer_interested()` on a bare 'Hello', 'Yes', 'Haan', or 'Haanji' — ONLY call it when the caller actually mentions selling, renting, or interest.\n"
             if is_interrupted
             else "- CRITICAL: Never combine the greeting with the question. The greeting was already spoken.\n"

@@ -38,14 +38,19 @@ def build_system_prompt(state: LogisticsState) -> str:
     ops_spoken = format_digits_for_speech(state.ops_number)
     next_assign = state.next_assignment or "अभी अगली ट्रिप का प्लान कन्फर्म नहीं है, खाली होने के बाद ऑपरेशन टीम बता देगी।"
     if state.opening_speech_interrupted:
+        delivered_intro = state.delivered_intro_text() if hasattr(state, "delivered_intro_text") else ""
+        remaining_intro = state.remaining_intro_text() if hasattr(state, "remaining_intro_text") else ""
+        delivered_note = delivered_intro if delivered_intro else "none yet (driver interrupted right at pickup)"
+        remaining_note = remaining_intro or "continue naturally to unloading status"
         opening_status = "INTERRUPTED by driver before completion"
         opening_interrupted_rules = (
-            "- **INTERRUPTED INTRO RULE**: The driver interrupted your opening greeting before you finished speaking. "
-            "Do NOT force yourself to complete the greeting, do NOT restart the entire introduction blindly, "
-            "and do NOT automatically resume the rest of the introduction every time.\n"
-            "- Listen to what the driver just said and maintain full conversation context. "
-            "If the driver asked a question, answer it directly first; then decide whether any remaining part of the introduction "
-            "(who you are, vehicle number, or why you called) is still relevant before moving naturally into the call flow.\n"
+            f"- **INTERRUPTED INTRO RESUME**:\n"
+            f"  * Already delivered intro: \"{delivered_note}\"\n"
+            f"  * Remaining intro to resume: \"{remaining_note}\"\n"
+            f"  * Do NOT repeat already delivered intro sentences, do NOT restart the entire greeting blindly, "
+            f"and do NOT force-resume if the driver already answered.\n"
+            f"  * Listen to what the driver just said and maintain full conversation context. "
+            f"If they asked a question, answer it directly first; then resume ONLY the remaining intro part if still relevant before moving into the call flow.\n"
         )
     else:
         opening_status = "already spoken by system"

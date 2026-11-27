@@ -435,11 +435,14 @@ async def _run_logistics_pipeline(
             await task.cancel()
 
         greeting = build_greeting(state)
+        state.set_intro_text(greeting)
 
         @task.event_handler("on_pipeline_started")
         async def _on_started(_task, _frame):
             state.callee_connected = True
             state.opening_speech_active = True
+            state.intro_spoken_count = 0
+            state.intro_started_at = 0.0
             state.current_step = "opening"
             state.pending_question = greeting
             state.last_bot_utterance = greeting

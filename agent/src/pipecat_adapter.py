@@ -208,6 +208,8 @@ class PlayoutTracker(FrameProcessor):
             self.speaking = True
             self.state.agent_speaking = True
             self._started_at = time.monotonic()
+            if self.state.opening_speech_active and self.state.intro_started_at <= 0.0:
+                self.state.intro_started_at = self._started_at
             async with self._cond:
                 self._cond.notify_all()
         elif isinstance(frame, BotStoppedSpeakingFrame):
@@ -215,6 +217,9 @@ class PlayoutTracker(FrameProcessor):
             self.state.agent_speaking = False
             self._stopped_at = time.monotonic()
             self.state.last_agent_speech_end = time.time()
+            if self.state.opening_speech_active and not getattr(self.state, "user_speaking", False):
+                self.state.opening_speech_active = False
+                self.state.intro_spoken_count = len(self.state.intro_sentences)
             async with self._cond:
                 self._cond.notify_all()
         await self.push_frame(frame, direction)
@@ -288,6 +293,9 @@ class LLMOutputGuard(FrameProcessor):
             out = await self._finalize(full)
             if out:
                 await self.push_frame(LLMTextFrame(out), FrameDirection.DOWNSTREAM)
+                if self.state.opening_speech_interrupted:
+                    self.state.intro_spoken_count = len(self.state.intro_sentences)
+                    self.state.opening_speech_interrupted = False
             self.state.barge_in_pending = False
             self.state.last_interruption_type = ""
             self._end_evt.set()
@@ -367,8 +375,15 @@ class TurnGate(FrameProcessor):
         from pipecat.frames.frames import UserStartedSpeakingFrame
         if isinstance(frame, UserStartedSpeakingFrame):
             step_val = getattr(self.state.step, "value", str(self.state.step))
-            if self._last_user_msg is None and step_val == "IDENTITY":
+            if self.state.opening_speech_active or (self._last_user_msg is None and step_val == "IDENTITY"):
+                self.state.opening_speech_active = False
                 self.state.opening_speech_interrupted = True
+                elapsed = (
+                    max(0.0, time.monotonic() - self.state.intro_started_at)
+                    if self.state.intro_started_at > 0.0
+                    else 0.0
+                )
+                self.state.mark_intro_elapsed(elapsed)
             self.state.barge_in_pending = True
             self.state.barge_in_count += 1
             self.state.interrupted_step = step_val

@@ -79,7 +79,11 @@ class RealEstateState:
         self.hold_until: float = 0.0
         self.consecutive_silence: int = 0
         self.greeting_acknowledged: bool = False
+        self.opening_speech_active: bool = False
         self.opening_speech_interrupted: bool = False
+        self.intro_sentences: List[str] = []
+        self.intro_spoken_count: int = 0
+        self.intro_started_at: float = 0.0
         self.latency_samples: List[float] = []
 
         # Current conversation step
@@ -189,6 +193,36 @@ class RealEstateState:
         if self.last_user_text and (not turns or self.last_user_text != turns[-1]):
             turns.append(self.last_user_text)
         return " ".join(turns)
+
+    def delivered_intro_text(self) -> str:
+        if not self.intro_sentences or self.intro_spoken_count <= 0:
+            return ""
+        return " ".join(self.intro_sentences[:self.intro_spoken_count]).strip()
+
+    def remaining_intro_text(self) -> str:
+        if not self.intro_sentences:
+            return ""
+        if self.intro_spoken_count >= len(self.intro_sentences):
+            return ""
+        return " ".join(self.intro_sentences[self.intro_spoken_count:]).strip()
+
+    def mark_intro_elapsed(self, elapsed_seconds: float) -> None:
+        """Estimate how many intro sentences were actually heard before interruption."""
+        if not self.intro_sentences:
+            return
+        if elapsed_seconds < 1.2:
+            self.intro_spoken_count = 0
+            return
+        acc = 0.0
+        spoken = 0
+        for sent in self.intro_sentences:
+            dur = max(1.5, len(sent.split()) * 0.35)
+            if elapsed_seconds >= acc + dur * 0.75:
+                spoken += 1
+                acc += dur
+            else:
+                break
+        self.intro_spoken_count = min(spoken, len(self.intro_sentences))
 
     def add_transcript(self, role: str, text: str):
         if text and text.strip():

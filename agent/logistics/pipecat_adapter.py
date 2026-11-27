@@ -144,12 +144,15 @@ class PlayoutTracker(FrameProcessor):
         await super().process_frame(frame, direction)
         if isinstance(frame, BotStartedSpeakingFrame):
             self.speaking = True
+            if self.state.opening_speech_active and self.state.intro_started_at <= 0.0:
+                self.state.intro_started_at = time.monotonic()
             self._stopped_event.clear()
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self.speaking = False
             self.state.last_agent_speech_end = time.time()
             if self.state.opening_speech_active and not self.state.user_speaking:
                 self.state.opening_speech_active = False
+                self.state.intro_spoken_count = len(self.state.intro_sentences)
                 self.state.advance_state_from_fields()
             self._stopped_event.set()
         elif isinstance(frame, UserStartedSpeakingFrame):
@@ -159,6 +162,12 @@ class PlayoutTracker(FrameProcessor):
             if self.state.opening_speech_active:
                 self.state.opening_speech_active = False
                 self.state.opening_speech_interrupted = True
+                elapsed = (
+                    max(0.0, time.monotonic() - self.state.intro_started_at)
+                    if self.state.intro_started_at > 0.0
+                    else 0.0
+                )
+                self.state.mark_intro_elapsed(elapsed)
             if was_speaking:
                 self.state.barge_in_pending = True
                 self.state.barge_in_count += 1
@@ -235,6 +244,9 @@ class LLMOutputGuard(FrameProcessor):
                         self.state.pending_question = q
                 self.state.barge_in_pending = False
                 self.state.last_interruption_type = ""
+                if self.state.opening_speech_interrupted:
+                    self.state.intro_spoken_count = len(self.state.intro_sentences)
+                    self.state.opening_speech_interrupted = False
                 self.state.advance_state_from_fields()
                 refresh_system_prompt(self.context, self.state)
                 self.log_dialogue("assistant", full_text)
