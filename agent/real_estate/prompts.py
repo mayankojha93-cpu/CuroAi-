@@ -347,8 +347,14 @@ Politely acknowledge their time, invoke `book_advisor_handoff(reason="Customer i
                 else "Kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"
             )
         is_interrupted = bool(getattr(state, "opening_speech_interrupted", False))
+        loc_tail = (
+            f"I'm calling about your property in {spoken_loc}. {next_question}"
+            if loc
+            else f"{next_question}"
+        )
         interrupted_note = (
-            f"- INTERRUPTED INTRO: The caller interrupted your opening greeting mid-way. Do NOT restart the full greeting from 'Hello {name_call}...'. Instead, respond naturally to what they just said and continue the rest of the introduction smoothly (e.g., mention My Estate Finder / {loc or 'your property'} briefly if not yet heard) and ask: \"{next_question}\"\n"
+            f"- INTERRUPTED INTRO: NEVER repeat 'Hello {name_call}' or '{AGENT_PERSONA_NAME} this side from My Estate Finder' — that part was already spoken. "
+            f"Simply acknowledge briefly (e.g. 'Yes Sir,') and continue directly with: \"{loc_tail}\"\n"
             "- NEVER call `customer_interested()` on a bare 'Hello', 'Yes', 'Haan', or 'Haanji' — ONLY call it when the caller actually mentions selling, renting, or interest.\n"
             if is_interrupted
             else "- CRITICAL: Never combine the greeting with the question. The greeting was already spoken.\n"

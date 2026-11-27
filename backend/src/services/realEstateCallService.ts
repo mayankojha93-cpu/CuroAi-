@@ -168,20 +168,21 @@ export class RealEstateCallService {
              preferred_language = $2,
              notes = COALESCE($3, notes),
              category = COALESCE($4, category),
+             property_location = COALESCE($6, property_location),
              total_attempts = COALESCE(total_attempts, 0) + 1,
              last_called_at = NOW(),
              updated_at = NOW()
          WHERE id = $5
          RETURNING *`,
-        [ownerName, cleanLang, data.notes || 'Developer Test Call', cleanCat, existingLead.rows[0].id]
+        [ownerName, cleanLang, data.notes || 'Developer Test Call', cleanCat, existingLead.rows[0].id, propertyLocation]
       );
       lead = upd.rows[0];
     } else {
       const ins = await query(
-        `INSERT INTO real_estate_leads (owner_name, phone, preferred_language, notes, category, total_attempts, max_attempts, last_called_at)
-         VALUES ($1, $2, $3, $4, $5, 1, 3, NOW())
+        `INSERT INTO real_estate_leads (owner_name, phone, preferred_language, notes, category, property_location, total_attempts, max_attempts, last_called_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 1, 3, NOW())
          RETURNING *`,
-        [ownerName || 'Property Owner', normalizedPhone, cleanLang, data.notes || 'Developer Test Call', cleanCat]
+        [ownerName || 'Property Owner', normalizedPhone, cleanLang, data.notes || 'Developer Test Call', cleanCat, propertyLocation]
       );
       lead = ins.rows[0];
     }
