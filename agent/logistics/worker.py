@@ -69,6 +69,8 @@ from .pipecat_adapter import (
     LogisticsSession,
     PlayoutTracker,
     SpeechInjector,
+    classify_barge_in_intent,
+    refresh_system_prompt,
 )
 from .prompts import build_greeting, build_system_prompt
 from .state import LogisticsState, SilenceGuard
@@ -78,16 +80,24 @@ _backend_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="logistics-
 
 
 class _UserTranscriptLogger(FrameProcessor):
-    def __init__(self, state: LogisticsState, log_dialogue):
+    def __init__(self, state: LogisticsState, log_dialogue, context=None):
         super().__init__()
         self.state = state
         self.log_dialogue = log_dialogue
+        self.context = context
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, TranscriptionFrame) and frame.text and frame.text.strip():
+            text = frame.text.strip()
             self.state.last_activity_time = time.time()
-            self.log_dialogue("user", frame.text.strip())
+            self.state.last_user_utterance = text
+            if self.state.barge_in_pending or self.state.opening_speech_interrupted:
+                self.state.last_interruption_type = classify_barge_in_intent(text)
+            if self.state.last_interruption_type != "wait":
+                self.state.advance_state_from_fields()
+            refresh_system_prompt(self.context, self.state)
+            self.log_dialogue("user", text)
         await self.push_frame(frame, direction)
 
 
@@ -368,10 +378,10 @@ async def _run_logistics_pipeline(
         )
 
         injector = SpeechInjector()
-        tracker = PlayoutTracker(state)
+        tracker = PlayoutTracker(state, context=context)
         session = LogisticsSession(state, context, injector, tracker)
-        user_logger = _UserTranscriptLogger(state, log_dialogue)
-        guard = LLMOutputGuard(state, log_dialogue)
+        user_logger = _UserTranscriptLogger(state, log_dialogue, context=context)
+        guard = LLMOutputGuard(state, log_dialogue, context=context)
 
         async def _hangup():
             if state.hangup_started:
@@ -413,6 +423,7 @@ async def _run_logistics_pipeline(
             params=PipelineParams(
                 audio_in_sample_rate=PIPELINE_IN_SAMPLE_RATE,
                 audio_out_sample_rate=PIPELINE_OUT_SAMPLE_RATE,
+                allow_interruptions=True,
             ),
         )
         session.task = task
@@ -428,6 +439,10 @@ async def _run_logistics_pipeline(
         @task.event_handler("on_pipeline_started")
         async def _on_started(_task, _frame):
             state.callee_connected = True
+            state.opening_speech_active = True
+            state.current_step = "opening"
+            state.pending_question = greeting
+            state.last_bot_utterance = greeting
             state.answered_at = time.time()
             state.last_activity_time = time.time()
             log_dialogue("assistant", greeting)

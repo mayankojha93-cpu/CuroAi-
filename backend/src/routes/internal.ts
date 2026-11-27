@@ -174,6 +174,20 @@ internalRouter.post(
   }
 );
 
+// POST /internal/calls/:callId/state - Incrementally persist Airtel conversation state
+internalRouter.post(
+  '/internal/calls/:callId/state',
+  requireInternalSecret,
+  async (req: Request<{ callId: string }>, res: Response, next: NextFunction) => {
+    try {
+      await callService.savePartialState(req.params.callId, req.body || {});
+      return res.status(200).json({ success: true, message: 'State synced' });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
 // POST /internal/logistics/calls/:callId/outcome - Save logistics call outcome
 internalRouter.post(
   '/internal/logistics/calls/:callId/outcome',

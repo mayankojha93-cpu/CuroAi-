@@ -64,11 +64,15 @@ export async function initiateLogisticsTestCall(payload: LogisticsTripInput): Pr
   return res.json();
 }
 
-export async function initiateLogisticsCall(tripId: string, callRound?: number): Promise<{ call: any; trip: LogisticsTrip }> {
+export async function initiateLogisticsCall(
+  tripId: string,
+  callRound?: number,
+  ttsProvider?: string
+): Promise<{ call: any; trip: LogisticsTrip }> {
   const res = await logisticsFetch('/api/logistics/calls/initiate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tripId, callRound }),
+    body: JSON.stringify({ tripId, callRound, tts_provider: ttsProvider }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));

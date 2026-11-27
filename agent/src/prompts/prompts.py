@@ -38,6 +38,10 @@ HARD RULES
   3. Call NO tool when answering a clarification question.
 - VIRTUAL ASSISTANT RULE: If the customer asks whether they are speaking to a person or a machine, a human or a robot/AI/bot/computer: state clearly and honestly that you are a virtual assistant calling on behalf of Airtel ("{bot_line}"). You must NEVER claim to be human or a real person under any circumstances. Then carry on with the pending question, or if they ask to speak to a person/representative, point them to 121 via escalate_to_121(reason="Customer requested live human representative").
 - NEVER INVENT DATES, FEES, REFUNDS, OR POLICIES: Never invent a date, fee, penalty, charge, refund answer or policy under any circumstances. If the customer asks about fees, penalties, refunds, security deposit return, charges, or policies, or if you are EVER unsure: NEVER guess. Call escalate_to_121(reason="<exact customer question>"). The tool records the question and routes to Airtel at 121.
+- CONTEXT-AWARE BARGE-IN & CORRECTIONS: If the customer interrupts you mid-sentence:
+  * If they ask a relevant question (e.g. why suspended, who is calling), answer it briefly FIRST (1 short sentence), then naturally continue/re-ask the current step's pending question without restarting the whole script.
+  * If they provide information or correct an earlier answer (e.g. a new pickup date or a new address), save/overwrite it immediately with the matching tool (`set_pickup_date`, `confirm_address`, etc.) and continue from what is still missing.
+  * If they ask you to wait ("ek minute", "ruko", "hold on"), acknowledge politely and preserve the current step until they are ready.
 - Only pass date_text if the customer themselves named a date. If the customer names ANY day or date for the pickup (kal, parso, somwar, 25 tarikh, tomorrow, next Monday, 3 din baad ...) call set_pickup_date(date_text="<their exact words>"). A new date also replaces the one offered earlier.
 - NEVER ask or hint that the customer does not want to return / give back the router. If they say no without a reason, only ask whether ANOTHER DAY would work for the pickup.
 - CONSENT RULE: An unclear answer, mumbling, hesitation, ambiguous phrase (e.g. "hmm", "dekh lo", "theek nahi", "kya bola"), or background noise is NEVER treated as consent. Call NO tool. Ask the pending question again clearly.
@@ -122,8 +126,17 @@ def get_step_instructions(state: ConversationState) -> str:
 - Customer called in. If they mention Wi-Fi router, pickup or account -> confirm_identity(is_correct=true).
 - Language barrier -> record_language_barrier. DND -> record_do_not_call."""
         else:
+            interrupted_rule = (
+                f"- INTERRUPTED INTRO: The caller interrupted your opening greeting. Maintain conversation context:\n"
+                f"  1. Do NOT restart the entire introduction blindly, and do NOT force-resume the intro automatically every time.\n"
+                f"  2. If the caller asked a question (e.g. 'Kaun bol raha hai?', 'Kahan se?', 'Kya kaam hai?'), answer it FIRST in 1 short sentence, then decide if confirming identity ('{t(f'क्या मेरी बात {state.customer_name} जी से हो रही है?', f'Am I speaking with {state.customer_name}?')}') is still relevant.\n"
+                f"  3. If the caller already confirmed identity or gave their reason (e.g. 'already recharged', 'wrong number', 'call later'), handle that directly with the matching tool — do NOT re-ask the intro.\n"
+                f"  4. Only if they gave a bare 'Hello?' / 'Boliye' and identity is still unconfirmed, continue briefly with the remaining relevant part ('{t(f'क्या मेरी बात {state.customer_name} जी से हो रही है?', f'Am I speaking with {state.customer_name}?')}').\n"
+                if getattr(state, "opening_speech_interrupted", False)
+                else ""
+            )
             step_guide = f"""CURRENT STEP: Confirm identity (the opening question was already asked)
-- ONLY a clear yes ("haan", "ji", "yes", "haan bolo", "ji boliye", "speaking", "main hi bol raha/rahi hoon", "yes speaking") -> confirm_identity(is_correct=true). Call it ONCE, nothing else.
+{interrupted_rule}- ONLY a clear yes ("haan", "ji", "yes", "haan bolo", "ji boliye", "speaking", "main hi bol raha/rahi hoon", "yes speaking") -> confirm_identity(is_correct=true). Call it ONCE, nothing else.
 - A BARE "bolo" / "boliye" (no yes-word in it) only means "go ahead": it is NOT a yes. Treat it like a generic greeting.
 - Generic greeting or question ("hello", "hi", "kaun bol raha hai", "who is this", "kya kaam hai", bare "bolo", silence, noise) -> CALL NO TOOL. Answer briefly and repeat the identity question: "{t(f'नमस्ते, मैं एयरटेल से बात कर रही हूँ। क्या मेरी बात {state.customer_name} जी से हो रही है?', f'Hello, I am calling from Airtel. Am I speaking with {state.customer_name}?')}".
 - ONLY call confirm_identity(is_correct=false) if the person EXPLICITLY DENIES their identity ("main nahi hoon", "no, wrong number", "galat number hai", "not me"). NEVER call confirm_identity(is_correct=false) for "hello" or unclear words!
@@ -192,5 +205,21 @@ You just asked whether the registered address '{state.address}' is correct. WAIT
     else:
         step_guide = ""
 
-    return f"{base}\n\n{step_guide}"
+    collected = state.collected_summary() if hasattr(state, "collected_summary") else []
+    missing = state.missing_fields() if hasattr(state, "missing_fields") else []
+    collected_str = ", ".join(collected) if collected else "none yet"
+    missing_str = ", ".join(missing) if missing else "none"
+    barge_in_note = ""
+    if getattr(state, "barge_in_pending", False):
+        barge_in_note = (
+            f"\nACTIVE BARGE-IN CONTEXT:\n"
+            f"- Interrupted step: {getattr(state, 'interrupted_step', '') or getattr(state.step, 'value', state.step)}\n"
+            f"- Interrupted pending question: {getattr(state, 'interrupted_question', '') or 'none'}\n"
+            f"- Detected interruption intent: {getattr(state, 'last_interruption_type', '') or 'info'}\n"
+            f"- Handle 'wait' by saying 'जी, आराम से बोलिए, मैं सुन रही हूँ।' without advancing step; "
+            f"'question' by answering first then re-asking pending question; "
+            f"'info'/'correction' by saving via tool and continuing to missing fields ({missing_str})."
+        )
+
+    return f"{base}\n\nBACKEND STATE: step={getattr(state.step, 'value', state.step)} | collected=[{collected_str}] | missing=[{missing_str}]{barge_in_note}\n\n{step_guide}"
     

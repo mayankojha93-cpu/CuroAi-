@@ -32,12 +32,14 @@ const tripSchema = z.object({
   plant_contact_number: z.string().optional(),
   ops_number: z.string().optional(),
   notes: z.string().optional(),
+  tts_provider: z.string().optional(),
 });
 
 const initiateCallSchema = {
   body: z.object({
     tripId: z.string().uuid({ message: 'tripId must be a valid UUID' }),
     callRound: z.number().int().min(1).max(2).optional(),
+    tts_provider: z.string().optional(),
   }),
 };
 
@@ -117,7 +119,12 @@ logisticsRouter.post(
   validateRequest(initiateCallSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const result = await logisticsCallService.initiateCall(req.body.tripId, req.body.callRound);
+      const result = await logisticsCallService.initiateCall(
+        req.body.tripId,
+        req.body.callRound,
+        false,
+        req.body.tts_provider
+      );
       return res.status(201).json({
         success: true,
         message: 'Logistics driver call placed successfully',

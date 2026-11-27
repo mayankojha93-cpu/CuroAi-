@@ -23,6 +23,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({ isOpen, onClos
     next_assignment: '',
     plant_contact_number: '',
     ops_number: '9800011122',
+    tts_provider: 'sarvam',
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -122,6 +123,16 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({ isOpen, onClos
           <label style={{ fontSize: 13 }}>
             Ops Callback Number
             <input className="input" value={form.ops_number} onChange={(e) => setForm({ ...form, ops_number: e.target.value })} />
+          </label>
+          <label style={{ fontSize: 13 }}>
+            TTS Provider
+            <select className="input" value={form.tts_provider || 'sarvam'} onChange={(e) => setForm({ ...form, tts_provider: e.target.value })}>
+              <option value="sarvam">Sarvam AI (Default)</option>
+              <option value="elevenlabs">ElevenLabs</option>
+              <option value="smallest">Smallest AI</option>
+              <option value="soniox">Soniox</option>
+              <option value="indic_tiny">Indic Tiny TTS</option>
+            </select>
           </label>
         </div>
 

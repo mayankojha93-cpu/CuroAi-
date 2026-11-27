@@ -29,6 +29,7 @@ class LogisticsTools:
             self.state.callback_time = callback_time.strip()
         if call_status == "wrong_person":
             self.state.escalate_to_human = "yes"
+        self.state.advance_state_from_fields()
         logger.info(f"[TOOL] record_call_status: status={self.state.call_status}, callback={self.state.callback_time}")
         return f"Recorded call_status={self.state.call_status}."
 
@@ -58,14 +59,14 @@ class LogisticsTools:
             self.state.unloaded = unloaded
         if current_location:
             self.state.current_location = current_location.strip()
-        if unloading_delay_reason:
+        if unloading_delay_reason and unloading_delay_reason.strip() != "none":
             self.state.unloading_delay_reason = unloading_delay_reason.strip()
         if waiting_hours:
             self.state.waiting_hours = waiting_hours.strip()
-        if pod_signed_received in ("yes", "no", "na"):
+        if pod_signed_received in ("yes", "no"):
             self.state.pod_signed_received = pod_signed_received
-        if shortage_or_damage_reported in ("yes", "no"):
-            self.state.shortage_or_damage_reported = shortage_or_damage_reported
+        if shortage_or_damage_reported == "yes":
+            self.state.shortage_or_damage_reported = "yes"
         if issue_details:
             self.state.issue_details = issue_details.strip()
         if money_demanded_amount:
@@ -75,6 +76,7 @@ class LogisticsTools:
             "shortage_damage", "union_charges", "breakdown", "documents"
         ):
             self.state.escalate_to_human = "yes"
+        self.state.advance_state_from_fields()
         logger.info(
             f"[TOOL] record_unloading_status: unloaded={self.state.unloaded}, reason={self.state.unloading_delay_reason}"
         )
@@ -100,6 +102,7 @@ class LogisticsTools:
                 self.state.escalate_to_human = "yes"
         if driver_departure_eta:
             self.state.driver_departure_eta = driver_departure_eta.strip()
+        self.state.advance_state_from_fields()
         logger.info(
             f"[TOOL] record_next_assignment: accepted={self.state.driver_accepted_next_assignment}, eta={self.state.driver_departure_eta}"
         )
@@ -135,6 +138,7 @@ class LogisticsTools:
                 if self.state.driver_questions_for_ops
                 else driver_questions_for_ops.strip()
             )
+        self.state.advance_state_from_fields()
         logger.warning(f"[TOOL] flag_safety_or_escalation: priority={self.state.priority}, details={self.state.issue_details}")
         return f"Escalated to ops with priority={self.state.priority}."
 

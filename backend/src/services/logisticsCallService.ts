@@ -22,6 +22,7 @@ export interface LogisticsTripInput {
   plant_contact_number?: string;
   ops_number?: string;
   notes?: string;
+  tts_provider?: string;
 }
 
 export interface SaveLogisticsOutcomeInput {
@@ -139,11 +140,11 @@ export class LogisticsCallService {
 
   async initiateTestCall(data: LogisticsTripInput) {
     const trip = await this.createTrip(data);
-    const { call } = await this.initiateCall(trip.id, trip.current_call_round, true);
+    const { call } = await this.initiateCall(trip.id, trip.current_call_round, true, data.tts_provider);
     return { call, trip };
   }
 
-  async initiateCall(tripId: string, callRoundOverride?: number, isTestCall = false) {
+  async initiateCall(tripId: string, callRoundOverride?: number, isTestCall = false, ttsProviderOverride?: string) {
     const tripRes = await query(`SELECT * FROM logistics_trips WHERE id = $1`, [tripId]);
     if (tripRes.rows.length === 0) {
       throw new AppError(`Logistics trip not found: ${tripId}`, 404);
@@ -165,19 +166,20 @@ export class LogisticsCallService {
     }
 
     const round = callRoundOverride === 2 ? 2 : callRoundOverride === 1 ? 1 : (trip.current_call_round || 1);
+    const ttsProvider = (ttsProviderOverride || 'sarvam').toLowerCase();
     const callId = randomUUID();
     const roomName = `logistics-call-${callId}`;
 
     const insertCall = await query(
       `INSERT INTO calls (
          id, logistics_trip_id, status, call_status, attempt_number, room_name, direction,
-         script, company_name, voice_pipeline, is_test_call, pipeline, language, initial_language, language_switched
+         script, company_name, voice_pipeline, tts_provider, is_test_call, pipeline, language, initial_language, language_switched
        )
        VALUES ($1, $2, 'initiated', 'initiated', $3, $4, 'outbound',
                'Mittal Pigments Logistics Assistant', 'Mittal Pigments Private Limited',
-               'Sarvam AI (hi/en)', $5, 'logistics', 'hi', 'hi', FALSE)
+               'Sarvam AI (hi/en)', $6, $5, 'logistics', 'hi', 'hi', FALSE)
        RETURNING *`,
-      [callId, trip.id, round, roomName, isTestCall]
+      [callId, trip.id, round, roomName, isTestCall, ttsProvider]
     );
     const call = insertCall.rows[0];
 

@@ -37,6 +37,42 @@ def build_system_prompt(state: LogisticsState) -> str:
     lr_spoken = format_digits_for_speech(state.lr_number)
     ops_spoken = format_digits_for_speech(state.ops_number)
     next_assign = state.next_assignment or "अभी अगली ट्रिप का प्लान कन्फर्म नहीं है, खाली होने के बाद ऑपरेशन टीम बता देगी।"
+    if state.opening_speech_interrupted:
+        opening_status = "INTERRUPTED by driver before completion"
+        opening_interrupted_rules = (
+            "- **INTERRUPTED INTRO RULE**: The driver interrupted your opening greeting before you finished speaking. "
+            "Do NOT force yourself to complete the greeting, do NOT restart the entire introduction blindly, "
+            "and do NOT automatically resume the rest of the introduction every time.\n"
+            "- Listen to what the driver just said and maintain full conversation context. "
+            "If the driver asked a question, answer it directly first; then decide whether any remaining part of the introduction "
+            "(who you are, vehicle number, or why you called) is still relevant before moving naturally into the call flow.\n"
+        )
+    else:
+        opening_status = "already spoken by system"
+        opening_interrupted_rules = ""
+
+    if state.last_interruption_type != "wait":
+        state.advance_state_from_fields()
+    collected = state.collected_summary()
+    missing = state.missing_fields()
+    collected_str = ", ".join(collected) if collected else "none yet"
+    missing_str = ", ".join(missing) if missing else "none (ready to close)"
+    pending_q = state.pending_question or "none"
+
+    barge_in_block = ""
+    if state.barge_in_pending:
+        barge_in_block = (
+            f"\n# ACTIVE BARGE-IN CONTEXT\n"
+            f"- The driver just interrupted you while you were speaking.\n"
+            f"- Interrupted step: {state.interrupted_step or state.current_step}\n"
+            f"- Interrupted pending question: {state.interrupted_question or pending_q}\n"
+            f"- Detected interruption intent: {state.last_interruption_type or 'unknown'}\n"
+            f"- Rules:\n"
+            f"  1. If `wait` (e.g. 'रुको', 'एक मिनट', 'hold on'): say briefly 'जी भैया, आराम से बोलिए, मैं सुन रही हूँ।' and keep the pending question/step unchanged.\n"
+            f"  2. If `question`: answer the driver's question FIRST (or log unknown payment/rate questions via `flag_safety_or_escalation`), then naturally ask the interrupted/pending question again if still unanswered.\n"
+            f"  3. If `info`: save the new information immediately using the appropriate tool, do NOT re-ask what was just answered, and continue with the next missing item.\n"
+            f"  4. If `correction`: update/overwrite the corrected field using the appropriate tool, confirm briefly, and continue with the next missing item.\n"
+        )
 
     return f"""# ROLE
 You are "Mittal Pigments Logistics Assistant", a voice agent calling on behalf of Mittal Pigments Private Limited. You call truck drivers to get a quick status update on their trip: whether the vehicle has been unloaded, whether there is any problem, and what they should do next.
@@ -65,10 +101,17 @@ You speak like a polite, friendly dispatch/ops executive who has worked with tru
 - Next assignment if unloaded: {next_assign}
 - Ops team callback number: {state.ops_number} (spoken: {ops_spoken})
 
+# BACKEND CONVERSATION STATE (SOURCE OF TRUTH)
+- Current step: {state.current_step}
+- Pending question: {pending_q}
+- Already collected: {collected_str}
+- Still missing: {missing_str}
+- Never restart the call flow from the beginning or re-ask already collected fields. After handling any interruption or side question, check `Still missing` and continue naturally from `Current step`.{barge_in_block}
+
 # CALL FLOW
 
-## 1. Opening (already spoken by system)
-- If the driver says they are driving / busy: "कोई बात नहीं भैया, गाड़ी साइड में लगाकर बात कर लीजिए, या बताइए मैं कितनी देर बाद दोबारा फ़ोन करूँ?" -> call `record_call_status(call_status="busy_callback", callback_time=...)` and `end_logistics_call`.
+## 1. Opening ({opening_status})
+{opening_interrupted_rules}- If the driver says they are driving / busy: "कोई बात नहीं भैया, गाड़ी साइड में लगाकर बात कर लीजिए, या बताइए मैं कितनी देर बाद दोबारा फ़ोन करूँ?" -> call `record_call_status(call_status="busy_callback", callback_time=...)` and `end_logistics_call`.
 - If wrong person / driver not available: ask when the driver will be available, call `record_call_status(call_status="wrong_person", callback_time=...)` and `end_logistics_call`.
 - If asked "Are you a robot / AI?": answer honestly, "जी, मैं मित्तल पिगमेंट्स का AI असिस्टेंट हूँ, आपकी गाड़ी का अपडेट लेने के लिए फ़ोन किया है।" Then continue. If they insist on a human, offer {ops_spoken}.
 
