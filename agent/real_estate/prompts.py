@@ -363,7 +363,6 @@ Politely acknowledge their time, invoke `book_advisor_handoff(reason="Customer i
             f"  * CRITICAL: Do NOT skip the remaining introduction and do NOT ask \"{next_question}\" yet! "
             f"First respond briefly to what the caller said (e.g. if 'Hello', say 'Yes Sir,'; if they asked a question, answer it briefly), "
             f"then speak ONLY the remaining intro: \"{remaining_intro}\".\n"
-            "- NEVER call `customer_interested()` on a bare 'Hello', 'Yes', 'Haan', or 'Haanji' — ONLY call it when the caller actually mentions selling, renting, or interest.\n"
             if is_interrupted
             else "- CRITICAL: Never combine the greeting with the question. The greeting was already spoken.\n"
         )
@@ -372,16 +371,25 @@ Politely acknowledge their time, invoke `book_advisor_handoff(reason="Customer i
             if is_interrupted
             else "The opening greeting has ALREADY been spoken. Now ask the customer if they are looking to sell or rent out the property."
         )
+        ack_instruction = (
+            f"- If the customer acknowledges or says a greeting without asking questions (e.g. \"Yes\", \"Haanji\", \"Haan\", \"Okay\", \"Ok\", \"Alright\", \"Hello\", \"हैलो\", \"Boliye\", \"Tell me\", \"Yes speaking\", \"Haan sun raha hoon\"):\n"
+            f"  DO NOT call any tool and DO NOT ask \"{next_question}\" yet! Simply acknowledge briefly (e.g. \"Yes Sir,\") and speak ONLY the remaining intro: \"{remaining_intro}\"."
+            if is_interrupted
+            else f"- If the customer acknowledges or answers the greeting without asking questions (e.g. \"Yes\", \"Haanji\", \"Haan\", \"Okay\", \"Ok\", \"Alright\", \"Hello\", \"हैलो\", \"Boliye\", \"Tell me\", \"Yes speaking\", \"Haan sun raha hoon\"):\n"
+            f"  DO NOT call any tool! Simply continue/ask: \"{next_question}\""
+        )
         return base + f"""
 Current Step: 1. INTRODUCTION
 Goal: {intro_goal}
 
 Opening greeting already spoken: {intro_greeting}
-Qualification question for this next turn: "{next_question}"
+{'' if is_interrupted else f'Qualification question for this next turn: "{next_question}"'}
 
 MANDATORY INSTRUCTIONS:
-{interrupted_note}- If the customer acknowledges or answers the greeting without asking questions (e.g. "Yes", "Haanji", "Haan", "Hello", "Boliye", "Tell me", "Yes speaking", "Haan sun raha hoon"):
-  DO NOT call any tool! Simply continue/ask: "{next_question}"
+{interrupted_note}- NEVER call `customer_interested()` on a bare greeting or acknowledgement ('Hello', 'हैलो', 'Okay', 'Ok', 'Alright', 'Sure', 'Yes', 'Haan', 'Haanji'), OR when the caller asks a clarifying question (e.g. "on what?", "about what?", "what?", "kya?", "kis baare mein?") — ONLY call it when the caller actually mentions selling, renting, leasing, or interest.
+- If the caller asks a clarifying/general question (e.g. "Um, on what?", "What are you talking about?", "About what?"):
+  DO NOT call any tool! Answer briefly in 1 short sentence using the known context ({f'your property in {loc}' if loc else 'whether you have a property to sell or rent'}), and then return to asking: "{remaining_intro if is_interrupted else next_question}"
+{ack_instruction}
 - If the customer indicates interest, OR mentions selling, renting, or leasing (e.g. "I am looking to lease out", "Looking to lease", "Lease out", "Lease", "Rent out", "Rent par dena hai", "Kiraye pe dena hai", "I want to sell", "Sell", "Thinking about it", "Considering it", "Plan hai", "Maybe"):
   YOU MUST EXECUTE `customer_interested()`.
   - For leasing or renting, pass intent='lease': `customer_interested(intent='lease')`.
@@ -555,10 +563,14 @@ Goal: Confirm whether the customer would like to share their property details ri
 Question already asked (or ask if not yet asked): "{share_q}"
 
 MANDATORY RULES FOR THIS STEP:
+- If the caller asks a natural-language question (e.g. "Are you talking about any property?", "Which property?", "Who is this?", "Why do you need details?", "What are you talking about?"):
+  DO NOT call `confirm_share_details_now()` yet! Answer their question concisely in 1 short sentence (e.g. "Yes Sir, I'm calling from My Estate Finder about your property{f' in {state.sector_or_location}' if state.sector_or_location else ''}."), and in the same turn return to asking: "{share_q}"
 - ALWAYS judge by the customer's LATEST complete statement (if they said "Yeah" then "No, it's not possible", they are declining to share details right now — NEVER call `confirm_share_details_now()`!).
-- ONLY call `confirm_share_details_now()` if the customer clearly AGREES to share details now (e.g. "Yes", "Sure", "Okay", "Haan", "Haanji", "Go ahead", or starts sharing a property detail like floor, unit, BHK, etc.) AND did NOT say "no", "not possible", "not now", or "later".
-- If the customer is INTERESTED in selling/renting, but says they cannot share details right now or prefers LATER (e.g. "No, it's not possible", "Not possible now", "Later", "Not now", "Call me tomorrow", "Call in the evening", "Abhi busy hoon", "Baad mein share karunga"):
-  DO NOT call `confirm_share_details_now()` and DO NOT ask any property-related questions. Politely end the call immediately by calling `schedule_callback(time_slot=..., preferred_day=...)`.
+- ONLY call `confirm_share_details_now()` if the customer clearly AGREES to share details now (e.g. "Yes", "Sure", "Okay", "Haan", "Haanji", "Go ahead", or starts sharing a property detail like floor, unit, BHK, etc.) AND did NOT say "no", "not possible", "not now", or "later", AND did NOT ask an unanswered question.
+- If the customer is INTERESTED in selling/renting, but says NO or says they cannot share details right now or prefers LATER (e.g. "No", "Uh, no, no", "No, it's not possible", "I can't share details right now", "Not possible now", "Later", "Not now", "Call me tomorrow", "Call in the evening", "Abhi busy hoon", "Baad mein share karunga"):
+  DO NOT call `confirm_share_details_now()` and DO NOT ask any property-related questions!
+  - If they gave a day/time, call `schedule_callback(time_slot=..., preferred_day=...)`.
+  - Otherwise, ask politely: "No problem Sir, what day and time would be good for me to call you back?" (and call `schedule_callback` once they reply, or `mark_not_interested` if they decline a callback too).
 - If the customer says they are NOT interested in selling or renting:
   DO NOT call `confirm_share_details_now()` and DO NOT ask any property-related questions. Politely end the call immediately by calling `mark_not_interested(caller_words=...)`.
 """
@@ -612,9 +624,10 @@ MANDATORY RULES FOR THIS STEP:
             RealEstateStep.COMMERCIAL_LEASE: "4.4 Lease of Commercial Premises",
         }[step]
 
+        loc_ctx = ", ".join(p for p in [state.project_or_society, state.sector_or_location] if p) or "their property"
         return base + f"""
 Current Step: {branch_title}
-Goal: Conduct a smooth, consultative phone dialogue with the owner to understand their property.
+Goal: Conduct a smooth, consultative phone dialogue with the owner to understand their property ({loc_ctx}).
 
 {captured_note}
 
@@ -646,17 +659,20 @@ CRITICAL MANDATORY INSTRUCTIONS:
      When the customer gives configuration or number of bedrooms (e.g. "2 BHK", "3 BHK", "3.5", "3.5 BHK", "3 bedroom", "studio"):
      YOU MUST CALL `save_property_details(bhk_config=...)` IMMEDIATELY! Accept bare numbers or decimals like "3" -> "3 BHK", "3.5" -> "3.5 BHK".
      NEVER speak the next question without executing `save_property_details(bhk_config=...)`!
-4. TOOL-FIRST RULE (DO NOT JUST ACKNOWLEDGE IN TEXT):
+4. TOOL-FIRST RULE & QUESTION HANDLING (DO NOT IGNORE CALLER QUESTIONS):
    - If the caller gave ANY property detail in their message, you MUST call `save_property_details(...)` FIRST — NEVER just say "noted Sir" and ask the next question in plain text without calling `save_property_details(...)`, because the system only saves data when `save_property_details(...)` is called!
-   - Only speak `{next_q}` directly (without calling `save_property_details`) when the caller did NOT provide any new detail (for example, they asked a question or gave a general affirmation).
-   - When speaking directly, echo in 2-4 words and smoothly follow up with:
-     "{next_q}"
+   - If the caller asks ANY natural-language question (e.g. "Are you talking about any property?", "What is the unit number?", "What are you talking about?", "Where are you calling from?", "Who is this?", "Why do you need this?"):
+     * DO NOT call `customer_does_not_know` and DO NOT just say "Understood, Sir"!
+     * Answer their question concisely and naturally in 1 short sentence FIRST (using the known call context: My Estate Finder, calling about {loc_ctx}, asking for their property details so our advisor can assist), and then smoothly return to the pending question:
+       "{next_q}"
+   - Only echo in 2-4 words and ask "{next_q}" directly when the caller gave a general affirmation without details and without asking a question.
    - NEVER say "Next question", "Moving to the next question", or "Mera agla sawaal". Maintain a completely natural, consultative phone dialogue.
 5. COMMERCIAL PROPERTY INTEGRITY:
    - If this is a commercial property (office space, shop, showroom, etc.), NEVER ask for BHK configuration!
    - NEVER explain or mention that you are skipping BHK. Simply ask the current missing detail directly.
-6. UNKNOWN DETAILS: If the customer says they do not know, do not remember, or cannot share the detail just asked (pata nahi, yaad nahi, idea nahi), use the customer_does_not_know tool and move on to the next detail. NEVER ask that detail again.
-7. TALK LATER: If the customer says they want to talk later (baad mein baat karte hain), ask which day and time suits them, then schedule the callback. Do not ask any more property questions.
+6. UNKNOWN DETAILS: If the customer says they do not know or do not remember ONE specific detail just asked (e.g. "area pata nahi", "unit number yaad nahi"), use `customer_does_not_know` and move on to the next detail. NEVER use `customer_does_not_know` if the customer says they cannot share property details right now as a whole!
+7. CANNOT SHARE DETAILS NOW / TALK LATER: If the customer says they cannot share the property details right now or want to talk later (e.g. "I can't share the property details right now", "Not now", "Baad mein baat karte hain"):
+   DO NOT call `customer_does_not_know` and DO NOT ask any more property questions! Ask which day and time suits them for a callback, then call `schedule_callback` (or `mark_not_interested` if they decline a callback too).
 8. STT PHONETIC RECOGNITION (Sarvam phone-line garbling — accept these as valid answers):
    - "furnishing" question: "supar furnished" / "simi furnished" / "semi furnish" = semi-furnished; "phully furnished" / "fuli furnished" = fully furnished.
    - "available / occupancy" question: "right abhi" / "avelable" / "availeble" / "avlble" = available immediately.
