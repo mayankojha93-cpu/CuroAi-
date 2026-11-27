@@ -332,6 +332,11 @@ class TurnGate(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
+        from pipecat.frames.frames import UserStartedSpeakingFrame
+        if isinstance(frame, UserStartedSpeakingFrame):
+            if self._last_user_msg is None and getattr(self.state.step, "value", self.state.step) == "IDENTITY":
+                self.state.opening_speech_interrupted = True
+
         if (
             isinstance(frame, LLMContextFrame)
             and direction == FrameDirection.DOWNSTREAM
