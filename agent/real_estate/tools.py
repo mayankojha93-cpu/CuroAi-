@@ -740,7 +740,8 @@ class RealEstateTools:
         category: Optional[str] = None,
         intent: Optional[str] = None,
     ) -> str:
-        """Call when customer confirms interest OR indicates they are thinking about / considering selling, renting, or leasing out (e.g. 'looking to lease out', 'lease out', 'lease', 'rent out', 'sell', 'soch raha hoon', 'sochata rahun', 'thinking about it', 'considering it', 'plan hai').
+        """Call ONLY when the customer explicitly confirms interest OR indicates they are thinking about / considering selling, renting, or leasing out (e.g. 'looking to lease out', 'lease out', 'lease', 'rent out', 'sell', 'soch raha hoon', 'thinking about it', 'considering it', 'plan hai').
+        NEVER call this on a bare greeting such as 'Hello', 'हैलो', 'Hi', 'Haan', or 'Yes'.
         Optionally accepts category ('residential'/'commercial') or intent ('sale'/'lease'/'rent') if mentioned."""
         self.state.is_interested = True
         self._apply_standalone()

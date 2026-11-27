@@ -363,7 +363,6 @@ Politely acknowledge their time, invoke `book_advisor_handoff(reason="Customer i
             f"  * CRITICAL: Do NOT skip the remaining introduction and do NOT ask \"{next_question}\" yet! "
             f"First respond briefly to what the caller said (e.g. if 'Hello', say 'Yes Sir,'; if they asked a question, answer it briefly), "
             f"then speak ONLY the remaining intro: \"{remaining_intro}\".\n"
-            "- NEVER call `customer_interested()` on a bare 'Hello', 'Yes', 'Haan', or 'Haanji' — ONLY call it when the caller actually mentions selling, renting, or interest.\n"
             if is_interrupted
             else "- CRITICAL: Never combine the greeting with the question. The greeting was already spoken.\n"
         )
@@ -372,16 +371,23 @@ Politely acknowledge their time, invoke `book_advisor_handoff(reason="Customer i
             if is_interrupted
             else "The opening greeting has ALREADY been spoken. Now ask the customer if they are looking to sell or rent out the property."
         )
+        ack_instruction = (
+            f"- If the customer acknowledges or says a greeting without asking questions (e.g. \"Yes\", \"Haanji\", \"Haan\", \"Hello\", \"हैलो\", \"Boliye\", \"Tell me\", \"Yes speaking\", \"Haan sun raha hoon\"):\n"
+            f"  DO NOT call any tool and DO NOT ask \"{next_question}\" yet! Simply acknowledge briefly (e.g. \"Yes Sir,\") and speak ONLY the remaining intro: \"{remaining_intro}\"."
+            if is_interrupted
+            else f"- If the customer acknowledges or answers the greeting without asking questions (e.g. \"Yes\", \"Haanji\", \"Haan\", \"Hello\", \"हैलो\", \"Boliye\", \"Tell me\", \"Yes speaking\", \"Haan sun raha hoon\"):\n"
+            f"  DO NOT call any tool! Simply continue/ask: \"{next_question}\""
+        )
         return base + f"""
 Current Step: 1. INTRODUCTION
 Goal: {intro_goal}
 
 Opening greeting already spoken: {intro_greeting}
-Qualification question for this next turn: "{next_question}"
+{'' if is_interrupted else f'Qualification question for this next turn: "{next_question}"'}
 
 MANDATORY INSTRUCTIONS:
-{interrupted_note}- If the customer acknowledges or answers the greeting without asking questions (e.g. "Yes", "Haanji", "Haan", "Hello", "Boliye", "Tell me", "Yes speaking", "Haan sun raha hoon"):
-  DO NOT call any tool! Simply continue/ask: "{next_question}"
+{interrupted_note}- NEVER call `customer_interested()` on a bare 'Hello', 'हैलो', 'Yes', 'Haan', or 'Haanji' — ONLY call it when the caller actually mentions selling, renting, leasing, or interest.
+{ack_instruction}
 - If the customer indicates interest, OR mentions selling, renting, or leasing (e.g. "I am looking to lease out", "Looking to lease", "Lease out", "Lease", "Rent out", "Rent par dena hai", "Kiraye pe dena hai", "I want to sell", "Sell", "Thinking about it", "Considering it", "Plan hai", "Maybe"):
   YOU MUST EXECUTE `customer_interested()`.
   - For leasing or renting, pass intent='lease': `customer_interested(intent='lease')`.
