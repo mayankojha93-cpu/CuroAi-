@@ -38,6 +38,7 @@ export const LogisticsDashboard: React.FC<LogisticsDashboardProps> = ({ user, on
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [selectedCall, setSelectedCall] = useState<LogisticsCallRecord | null>(null);
   const [bannerMsg, setBannerMsg] = useState<string | null>(null);
+  const [ttsProvider, setTtsProvider] = useState<string>('sarvam');
 
   const loadData = async () => {
     setLoading(true);
@@ -100,8 +101,8 @@ export const LogisticsDashboard: React.FC<LogisticsDashboardProps> = ({ user, on
   const handleCallTrip = async (tripId: string, round: number) => {
     setDialingTripId(tripId);
     try {
-      await initiateLogisticsCall(tripId, round);
-      setBannerMsg(`Round ${round} call initiated.`);
+      await initiateLogisticsCall(tripId, round, ttsProvider);
+      setBannerMsg(`Round ${round} call initiated (${ttsProvider}).`);
       await loadData();
     } catch (err: any) {
       setBannerMsg(err.message || 'Failed to initiate call');
@@ -135,7 +136,20 @@ export const LogisticsDashboard: React.FC<LogisticsDashboardProps> = ({ user, on
             </div>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <select
+            className="input"
+            value={ttsProvider}
+            onChange={(e) => setTtsProvider(e.target.value)}
+            title="Select TTS Provider for driver calls"
+            style={{ width: 'auto', minWidth: 165 }}
+          >
+            <option value="sarvam">TTS: Sarvam AI (Default)</option>
+            <option value="elevenlabs">TTS: ElevenLabs</option>
+            <option value="smallest">TTS: Smallest AI</option>
+            <option value="soniox">TTS: Soniox</option>
+            <option value="indic_tiny">TTS: Indic Tiny TTS</option>
+          </select>
           <button className="btn btn-secondary" onClick={loadData} disabled={loading} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <RefreshCw size={15} /> Refresh
           </button>
