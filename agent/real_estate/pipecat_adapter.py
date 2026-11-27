@@ -183,12 +183,17 @@ class PlayoutTracker(FrameProcessor):
         if isinstance(frame, BotStartedSpeakingFrame):
             self.speaking = True
             self._started_at = time.monotonic()
+            if self.state.opening_speech_active and self.state.intro_started_at <= 0.0:
+                self.state.intro_started_at = self._started_at
             async with self._cond:
                 self._cond.notify_all()
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self.speaking = False
             self._stopped_at = time.monotonic()
             self.state.last_agent_speech_end = time.time()
+            if self.state.opening_speech_active and not self.state.user_speaking:
+                self.state.opening_speech_active = False
+                self.state.intro_spoken_count = len(self.state.intro_sentences)
             async with self._cond:
                 self._cond.notify_all()
         await self.push_frame(frame, direction)
@@ -278,6 +283,9 @@ class LLMOutputGuard(FrameProcessor):
             out = await self._finalize(full)
             if out:
                 await self.push_frame(LLMTextFrame(out), FrameDirection.DOWNSTREAM)
+                if self.state.opening_speech_interrupted:
+                    self.state.intro_spoken_count = len(self.state.intro_sentences)
+                    self.state.opening_speech_interrupted = False
             self._end_evt.set()
             await self.push_frame(frame, direction)
             return
@@ -360,8 +368,25 @@ class TurnGate(FrameProcessor):
         if isinstance(frame, UserStartedSpeakingFrame):
             self.state.user_speaking = True
             self.state.last_activity_time = time.time()
-            if self._seen_user_msgs == 0 and getattr(self.state.step, "value", self.state.step) == "INTRODUCTION":
+            if self.state.opening_speech_active or (
+                self._seen_user_msgs == 0 and getattr(self.state.step, "value", self.state.step) == "INTRODUCTION"
+            ):
+                self.state.opening_speech_active = False
                 self.state.opening_speech_interrupted = True
+                elapsed = (
+                    max(0.0, time.monotonic() - self.state.intro_started_at)
+                    if self.state.intro_started_at > 0.0
+                    else 0.0
+                )
+                self.state.mark_intro_elapsed(elapsed)
+                if msgs := (
+                    self.context.get_messages()
+                    if hasattr(self.context, "get_messages")
+                    else getattr(self.context, "messages", None)
+                ):
+                    if isinstance(msgs, list) and msgs and isinstance(msgs[0], dict) and msgs[0].get("role") == "system":
+                        from .prompts import get_step_instructions
+                        msgs[0]["content"] = get_step_instructions(self.state)
         elif isinstance(frame, UserStoppedSpeakingFrame):
             self.state.user_speaking = False
             self.state.last_activity_time = time.time()

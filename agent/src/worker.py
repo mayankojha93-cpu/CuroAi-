@@ -376,11 +376,15 @@ async def run_airtel_pipeline(
             await task.cancel()
 
         greeting = _build_greeting(state)
+        state.set_intro_text(greeting)
 
         @task.event_handler("on_pipeline_started")
         async def _on_started(_task, _frame):
             session.start()
             state.callee_connected = True
+            state.opening_speech_active = True
+            state.intro_spoken_count = 0
+            state.intro_started_at = 0.0
             state.answered_at = time.time()
             state.last_activity_time = time.time()
             log_dialogue("assistant", greeting)
