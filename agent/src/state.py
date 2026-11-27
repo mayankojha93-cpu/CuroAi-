@@ -59,6 +59,7 @@ class ConversationState:
 
         # Current conversation step
         self.step: Step = Step.IDENTITY
+        self.opening_speech_interrupted: bool = False
 
         # Core fields matching Airtel Campaign Outcome Spec
         self.identity_confirmed: Optional[bool] = None
