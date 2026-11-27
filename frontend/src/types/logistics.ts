@@ -43,6 +43,7 @@ export interface LogisticsTripInput {
   plant_contact_number?: string;
   ops_number?: string;
   notes?: string;
+  tts_provider?: string;
 }
 
 export interface LogisticsSummary {
