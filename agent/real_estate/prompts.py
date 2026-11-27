@@ -50,7 +50,7 @@ def get_base_persona(state: RealEstateState) -> str:
   Confirm WhatsApp number: "Certainly! I will have our service details sent to your WhatsApp right away. Is this your WhatsApp number?"
   Call `request_whatsapp_info(phone=...)`.
 - 'Do not call me / DNC':
-  Apologize sincerely, confirm suppression, and end: "I apologize for disturbing you, Sir. I have added your number to our Do Not Call list and you will not receive further calls. Have a wonderful day!"
+  Apologize sincerely, confirm suppression, and end: "I apologize for disturbing you, Sir. I have added your number to our Do Not Call list and you will not receive further calls. Thank you for your time."
   Call `suppress_contact_dnc()`.
 - 'Brokerage / Commission charges':
   Explain transparent terms and smoothly return to the open detail: "Listing on our platform is completely free for owners, with zero upfront charges. Our advisor will share more details when they connect... And Sir, which floor is your unit on?"
@@ -99,7 +99,7 @@ def get_base_persona(state: RealEstateState) -> str:
   Confirm WhatsApp number: "Ji zaroor Sir! Main aapko hamari service details WhatsApp par share kar deti hoon... Kya yehi aapka WhatsApp number hai?"
   Call `request_whatsapp_info(phone=...)`.
 - 'Mujhe call mat karna' (Stop calling / DNC):
-  Apologize sincerely, confirm suppression, and end: "Disturbance ke liye maafi chahti hoon Sir. Maine aapka number Do Not Call list mein add kar diya hai aur aage se call nahi aayegi. Have a wonderful day!"
+  Apologize sincerely, confirm suppression, and end: "Disturbance ke liye maafi chahti hoon Sir. Maine aapka number Do Not Call list mein add kar diya hai aur aage se call nahi aayegi. Thank you for your time."
   Call `suppress_contact_dnc()`.
 - 'Brokerage / Commission charges kitna hai?' (Fees inquiry):
   Explain transparent terms and smoothly return to the open detail: "Hamare platform par basic listing owners ke liye bilkul free hai, koi upfront charges nahi hain... Waise Sir, aapka unit kaun se floor par hai?"
@@ -250,12 +250,12 @@ def get_valuation_closing_text(state: RealEstateState) -> str:
         return (
             f"Sure {name}, absolutely... To give you the most accurate {what}, our senior property advisor will check "
             f"recent transactions and nearby market rates, and share an expected {what} with you directly. "
-            "I’ve noted all your details... Thank you so much for your time, and have a wonderful day!"
+            "I’ve noted all your details... Thank you for your time."
         )
     return (
         f"Ji {name}, bilkul... Aapko property ka sahi {what} batane ke liye hamare senior property advisor recent market rates "
         f"aur nearby properties check karenge, aur aapse direct expected {what} discuss karenge. "
-        "Maine saari details note kar li hain... Apna time dene ke liye thank you so much, have a wonderful day!"
+        "Maine saari details note kar li hain... Thank you for your time."
     )
 
 
@@ -265,32 +265,32 @@ def get_closing_text(state: RealEstateState) -> str:
         return get_valuation_closing_text(state)
     disp = (state.final_disposition or "").lower()
     if "dnc" in disp or "do not call" in disp:
-        closing_en = "I apologize for disturbing you, Sir. Your number has been removed from our calling list... Have a great day!"
-        closing_hi = "Disturbance ke liye maafi chahti hoon, Sir. Aapka number hamari list se remove kar diya gaya hai... Have a great day!"
+        closing_en = "I apologize for disturbing you, Sir. Your number has been removed from our calling list... Thank you for your time."
+        closing_hi = "Disturbance ke liye maafi chahti hoon, Sir. Aapka number hamari list se remove kar diya gaya hai... Thank you for your time."
     elif "whatsapp" in disp:
-        closing_en = "Thank you so much! I will have the property details and brochure sent to your WhatsApp shortly... Have a wonderful day!"
-        closing_hi = "Thank you so much, Sir! Main property details aur brochure aapke WhatsApp par bhejwa deti hoon... Have a wonderful day!"
+        closing_en = "Thank you so much! I will have the property details and brochure sent to your WhatsApp shortly... Thank you for your time."
+        closing_hi = "Thank you so much, Sir! Main property details aur brochure aapke WhatsApp par bhejwa deti hoon... Thank you for your time."
     elif "advisor" in disp:
         reason = (state.advisor_handoff_reason or "").lower()
         if any(w in reason for w in ("unclear", "repeat", "understand", "failed", "hearing", "trouble")):
-            closing_en = "I'm having a bit of trouble hearing you clearly. Let me arrange for our senior property advisor to connect with you directly. Thank you for your time, have a wonderful day!"
-            closing_hi = "Aapki aawaz theek se clear nahi aa rahi hai. Main apne senior property advisor se aapka callback schedule karwa deti hoon jo aapse connect karenge. Thank you for your time, have a wonderful day!"
+            closing_en = "I'm having a bit of trouble hearing you clearly. Let me arrange for our senior property advisor to connect with you directly. Thank you for your time."
+            closing_hi = "Aapki aawaz theek se clear nahi aa rahi hai. Main apne senior property advisor se aapka callback schedule karwa deti hoon jo aapse connect karenge. Thank you for your time."
         else:
-            closing_en = "Thank you for your time, Sir! I’ve noted all the details, and our senior property advisor will connect with you shortly... Have a wonderful day!"
-            closing_hi = "Apna time dene ke liye thank you, Sir! Maine details note kar li hain, aur hamare senior property advisor aapse jald hi connect karenge. Have a wonderful day!"
+            closing_en = "I’ve noted all the details, and our senior property advisor will connect with you shortly... Thank you for your time."
+            closing_hi = "Maine details note kar li hain, aur hamare senior property advisor aapse jald hi connect karenge. Thank you for your time."
     elif "not interested" in disp:
         closing_en = "Understood Sir, no problem at all! Thank you for your time."
-        closing_hi = "Samajh gayi Sir, koi baat nahi! Apna time dene ke liye thank you."
+        closing_hi = "Samajh gayi Sir, koi baat nahi! Thank you for your time."
     elif "wrong number" in disp:
-        closing_en = "Sorry to have bothered you, Sir! Have a great day."
-        closing_hi = "Sorry to bother you, Sir! Have a great day."
+        closing_en = "Sorry to have bothered you, Sir! Thank you for your time."
+        closing_hi = "Sorry to bother you, Sir! Thank you for your time."
     elif "callback" in disp:
-        closing_en = "Sure Sir, we will call you back at your requested time... Thank you so much and have a great day!"
-        closing_hi = "Sure Sir, hum aapke bataye huye time par zaroor call karenge... Thank you so much aur have a great day!"
+        closing_en = "Sure Sir, we will call you back at your requested time... Thank you for your time."
+        closing_hi = "Sure Sir, hum aapke bataye huye time par zaroor call karenge... Thank you for your time."
     else:
         # Step 5 Official Closing from doc:
-        closing_en = "Thank you so much for your time, Sir... I’ve noted down all the details, and our property manager will connect with you shortly for the next steps. Have a great day!"
-        closing_hi = "Apna time dene ke liye thank you so much, Sir... Maine saari details note kar li hain, aur hamare property manager aapse jald hi connect karenge. Have a great day!"
+        closing_en = "I’ve noted down all the details, and our property manager will connect with you shortly for the next steps. Thank you for your time."
+        closing_hi = "Maine saari details note kar li hain, aur hamare property manager aapse jald hi connect karenge. Thank you for your time."
 
     selected_closing = closing_en if state.reply_lang == "en" else closing_hi
     return selected_closing
