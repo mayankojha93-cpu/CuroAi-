@@ -134,14 +134,14 @@ def get_step_instructions(state: ConversationState) -> str:
                 f"Am I speaking with {state.customer_name}?",
             )
             interrupted_rule = (
-                f"- INTERRUPTED INTRO RESUME:\n"
-                f"  * Already delivered intro: \"{delivered_note}\"\n"
-                f"  * Remaining intro to resume: \"{remaining_note}\"\n"
-                f"  * Do NOT repeat already delivered intro sentences. "
-                f"If the caller asked a question, answer it FIRST in 1 short sentence, then resume ONLY the remaining intro part if still relevant.\n"
+                f"- INTERRUPTED INTRO RESUME (INTRO NOT COMPLETED YET):\n"
+                f"  * Already delivered intro (DO NOT REPEAT): \"{delivered_note}\"\n"
+                f"  * Remaining intro to resume NOW: \"{remaining_note}\"\n"
+                f"  * CRITICAL: Do NOT skip the remaining introduction and do NOT repeat already delivered intro sentences. "
+                f"If the caller asked a question, answer it FIRST in 1 short sentence, then resume ONLY the remaining intro part: \"{remaining_note}\".\n"
                 f"  * If the caller already confirmed identity or gave their reason (e.g. 'already recharged', 'wrong number', 'call later'), handle that directly with the matching tool.\n"
                 f"  * If they only gave a bare 'Hello?' / 'Boliye', acknowledge briefly and continue ONLY with: \"{remaining_note}\".\n"
-                if getattr(state, "opening_speech_interrupted", False)
+                if getattr(state, "opening_speech_interrupted", False) and not getattr(state, "intro_completed", False)
                 else ""
             )
             step_guide = f"""CURRENT STEP: Confirm identity (the opening question was already asked)

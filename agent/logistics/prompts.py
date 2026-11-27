@@ -37,20 +37,18 @@ def build_system_prompt(state: LogisticsState) -> str:
     lr_spoken = format_digits_for_speech(state.lr_number)
     ops_spoken = format_digits_for_speech(state.ops_number)
     next_assign = state.next_assignment or "अभी अगली ट्रिप का प्लान कन्फर्म नहीं है, खाली होने के बाद ऑपरेशन टीम बता देगी।"
-    if state.opening_speech_interrupted:
+    if state.opening_speech_interrupted and not getattr(state, "intro_completed", False):
         delivered_intro = state.delivered_intro_text() if hasattr(state, "delivered_intro_text") else ""
         remaining_intro = state.remaining_intro_text() if hasattr(state, "remaining_intro_text") else ""
         delivered_note = delivered_intro if delivered_intro else "none yet (driver interrupted right at pickup)"
         remaining_note = remaining_intro or "continue naturally to unloading status"
-        opening_status = "INTERRUPTED by driver before completion"
+        opening_status = "INTERRUPTED by driver before completion (INTRO NOT COMPLETED YET)"
         opening_interrupted_rules = (
-            f"- **INTERRUPTED INTRO RESUME**:\n"
-            f"  * Already delivered intro: \"{delivered_note}\"\n"
-            f"  * Remaining intro to resume: \"{remaining_note}\"\n"
-            f"  * Do NOT repeat already delivered intro sentences, do NOT restart the entire greeting blindly, "
-            f"and do NOT force-resume if the driver already answered.\n"
-            f"  * Listen to what the driver just said and maintain full conversation context. "
-            f"If they asked a question, answer it directly first; then resume ONLY the remaining intro part if still relevant before moving into the call flow.\n"
+            f"- **INTERRUPTED INTRO RESUME (INTRO NOT COMPLETED YET)**:\n"
+            f"  * Already delivered intro (DO NOT REPEAT): \"{delivered_note}\"\n"
+            f"  * Remaining intro to resume NOW: \"{remaining_note}\"\n"
+            f"  * CRITICAL: Do NOT skip the remaining introduction and do NOT move to the next question ('माल उतर गया क्या?') yet unless the driver already answered it.\n"
+            f"  * Respond briefly to what the driver just said (answer any question first), then speak ONLY the remaining intro part: \"{remaining_note}\".\n"
         )
     else:
         opening_status = "already spoken by system"

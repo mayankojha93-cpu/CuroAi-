@@ -170,9 +170,10 @@ class SpeechHandle:
 class PlayoutTracker(FrameProcessor):
     """Place AFTER transport.output(). Tracks when the bot really started / stopped talking on the line."""
 
-    def __init__(self, state: RealEstateState):
+    def __init__(self, state: RealEstateState, on_intro_completed: Optional[Callable[[], Any]] = None):
         super().__init__()
         self.state = state
+        self.on_intro_completed = on_intro_completed
         self.speaking = False
         self._started_at = 0.0
         self._stopped_at = 0.0
@@ -193,7 +194,18 @@ class PlayoutTracker(FrameProcessor):
             self.state.last_agent_speech_end = time.time()
             if self.state.opening_speech_active and not self.state.user_speaking:
                 self.state.opening_speech_active = False
+                self.state.opening_speech_interrupted = False
                 self.state.intro_spoken_count = len(self.state.intro_sentences)
+                self.state.intro_completed = True
+                if (
+                    self.state.intro_resumed_awaiting_completion
+                    and getattr(self.state.step, "value", self.state.step) == "INTRODUCTION"
+                ):
+                    self.state.intro_resumed_awaiting_completion = False
+                    if self.on_intro_completed:
+                        res = self.on_intro_completed()
+                        if asyncio.iscoroutine(res):
+                            asyncio.create_task(res)
             async with self._cond:
                 self._cond.notify_all()
         await self.push_frame(frame, direction)
@@ -283,9 +295,15 @@ class LLMOutputGuard(FrameProcessor):
             out = await self._finalize(full)
             if out:
                 await self.push_frame(LLMTextFrame(out), FrameDirection.DOWNSTREAM)
-                if self.state.opening_speech_interrupted:
-                    self.state.intro_spoken_count = len(self.state.intro_sentences)
+                if getattr(self.state.step, "value", self.state.step) != "INTRODUCTION":
+                    self.state.intro_completed = True
                     self.state.opening_speech_interrupted = False
+                    self.state.intro_resumed_awaiting_completion = False
+                elif not self.state.intro_completed:
+                    # Track playout of the resumed introduction; only BotStoppedSpeakingFrame marks intro_completed=True
+                    self.state.opening_speech_active = True
+                    self.state.intro_started_at = 0.0
+                    self.state.intro_resumed_awaiting_completion = True
             self._end_evt.set()
             await self.push_frame(frame, direction)
             return
@@ -368,11 +386,13 @@ class TurnGate(FrameProcessor):
         if isinstance(frame, UserStartedSpeakingFrame):
             self.state.user_speaking = True
             self.state.last_activity_time = time.time()
-            if self.state.opening_speech_active or (
-                self._seen_user_msgs == 0 and getattr(self.state.step, "value", self.state.step) == "INTRODUCTION"
+            if not self.state.intro_completed and (
+                self.state.opening_speech_active
+                or getattr(self.state.step, "value", self.state.step) == "INTRODUCTION"
             ):
                 self.state.opening_speech_active = False
                 self.state.opening_speech_interrupted = True
+                self.state.intro_resumed_awaiting_completion = False
                 elapsed = (
                     max(0.0, time.monotonic() - self.state.intro_started_at)
                     if self.state.intro_started_at > 0.0

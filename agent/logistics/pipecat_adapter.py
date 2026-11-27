@@ -123,10 +123,16 @@ def schema_for_tool(fn: Callable) -> FunctionSchema:
 
 
 class PlayoutTracker(FrameProcessor):
-    def __init__(self, state: LogisticsState, context: Optional[Any] = None):
+    def __init__(
+        self,
+        state: LogisticsState,
+        context: Optional[Any] = None,
+        on_intro_completed: Optional[Callable[[], Any]] = None,
+    ):
         super().__init__()
         self.state = state
         self.context = context
+        self.on_intro_completed = on_intro_completed
         self.speaking = False
         self._stopped_event = asyncio.Event()
         self._stopped_event.set()
@@ -152,16 +158,27 @@ class PlayoutTracker(FrameProcessor):
             self.state.last_agent_speech_end = time.time()
             if self.state.opening_speech_active and not self.state.user_speaking:
                 self.state.opening_speech_active = False
+                self.state.opening_speech_interrupted = False
                 self.state.intro_spoken_count = len(self.state.intro_sentences)
+                self.state.intro_completed = True
                 self.state.advance_state_from_fields()
+                if self.state.intro_resumed_awaiting_completion and self.state.unloaded == "unknown":
+                    self.state.intro_resumed_awaiting_completion = False
+                    if self.on_intro_completed:
+                        res = self.on_intro_completed()
+                        if asyncio.iscoroutine(res):
+                            asyncio.create_task(res)
             self._stopped_event.set()
         elif isinstance(frame, UserStartedSpeakingFrame):
             self.state.user_speaking = True
             self.state.last_activity_time = time.time()
             was_speaking = self.speaking or self.state.opening_speech_active or self.state.llm_busy_since > 0.0
-            if self.state.opening_speech_active:
+            if not self.state.intro_completed and (
+                self.state.opening_speech_active or self.state.current_step == "opening"
+            ):
                 self.state.opening_speech_active = False
                 self.state.opening_speech_interrupted = True
+                self.state.intro_resumed_awaiting_completion = False
                 elapsed = (
                     max(0.0, time.monotonic() - self.state.intro_started_at)
                     if self.state.intro_started_at > 0.0
@@ -244,9 +261,14 @@ class LLMOutputGuard(FrameProcessor):
                         self.state.pending_question = q
                 self.state.barge_in_pending = False
                 self.state.last_interruption_type = ""
-                if self.state.opening_speech_interrupted:
-                    self.state.intro_spoken_count = len(self.state.intro_sentences)
+                if self.state.unloaded != "unknown" or self.state.current_step != "opening":
+                    self.state.intro_completed = True
                     self.state.opening_speech_interrupted = False
+                    self.state.intro_resumed_awaiting_completion = False
+                elif not self.state.intro_completed:
+                    self.state.opening_speech_active = True
+                    self.state.intro_started_at = 0.0
+                    self.state.intro_resumed_awaiting_completion = True
                 self.state.advance_state_from_fields()
                 refresh_system_prompt(self.context, self.state)
                 self.log_dialogue("assistant", full_text)

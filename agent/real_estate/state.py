@@ -81,6 +81,8 @@ class RealEstateState:
         self.greeting_acknowledged: bool = False
         self.opening_speech_active: bool = False
         self.opening_speech_interrupted: bool = False
+        self.intro_completed: bool = False
+        self.intro_resumed_awaiting_completion: bool = False
         self.intro_sentences: List[str] = []
         self.intro_spoken_count: int = 0
         self.intro_started_at: float = 0.0
@@ -207,22 +209,23 @@ class RealEstateState:
         return " ".join(self.intro_sentences[self.intro_spoken_count:]).strip()
 
     def mark_intro_elapsed(self, elapsed_seconds: float) -> None:
-        """Estimate how many intro sentences were actually heard before interruption."""
+        """Advance intro_spoken_count based on how many remaining sentences were heard before interruption."""
         if not self.intro_sentences:
             return
         if elapsed_seconds < 1.2:
-            self.intro_spoken_count = 0
             return
         acc = 0.0
-        spoken = 0
-        for sent in self.intro_sentences:
+        newly_spoken = 0
+        for sent in self.intro_sentences[self.intro_spoken_count:]:
             dur = max(1.5, len(sent.split()) * 0.35)
             if elapsed_seconds >= acc + dur * 0.75:
-                spoken += 1
+                newly_spoken += 1
                 acc += dur
             else:
                 break
-        self.intro_spoken_count = min(spoken, len(self.intro_sentences))
+        self.intro_spoken_count = min(self.intro_spoken_count + newly_spoken, len(self.intro_sentences))
+        if self.intro_spoken_count >= len(self.intro_sentences):
+            self.intro_completed = True
 
     def add_transcript(self, role: str, text: str):
         if text and text.strip():
