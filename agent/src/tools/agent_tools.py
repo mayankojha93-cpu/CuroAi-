@@ -197,6 +197,12 @@ class AgentTools:
     async def _go(self, step: Step):
         """Move to next step AND swap the LLM's instructions + tools for that step."""
         self.state.transition_to(step)
+        sync_fn = getattr(self, "sync_state_func", None)
+        if sync_fn:
+            try:
+                sync_fn()
+            except Exception:
+                pass
         if self.agent is not None and hasattr(self.agent, "sync_step"):
             try:
                 await self.agent.sync_step()
