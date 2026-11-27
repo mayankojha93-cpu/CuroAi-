@@ -248,9 +248,39 @@ async def run_airtel_pipeline(
         if resolved_call_id:
             _backend_pool.submit(_post_turn, "assistant" if is_agent else "customer", clean, datetime.now().isoformat())
 
+    def _post_state(payload: dict):
+        if not resolved_call_id:
+            return
+        try:
+            requests.post(
+                f"{BACKEND_URL}/internal/calls/{resolved_call_id}/state",
+                headers={"X-Internal-Secret": INTERNAL_SECRET},
+                json=payload,
+                timeout=3.0,
+            )
+        except Exception as ex:
+            logger.debug(f"Incremental Airtel state sync note: {ex}")
+
+    def sync_state():
+        if not resolved_call_id:
+            return
+        payload = {
+            "step": state.step.value,
+            "identity_confirmed": state.identity_confirmed,
+            "pickup_accepted": state.pickup_accepted,
+            "proposed_date": state.proposed_date,
+            "confirmed_date": state.confirmed_date,
+            "offered_date": state.offered_date,
+            "registered_address_confirmed": state.registered_address_confirmed,
+            "new_address": state.new_address,
+            "pending_question": state.closing_line or None,
+        }
+        _backend_pool.submit(_post_state, payload)
+
     timing_tracker: Dict[str, Any] = {"last_activity_time": time.time()}
     tools = AgentTools(state, timing_tracker)
     tools.log_dialogue_func = log_dialogue
+    tools.sync_state_func = sync_state
 
     recorder: Optional[CallRecorder] = None
     if RECORD_CALLS and resolved_call_id:
@@ -325,6 +355,7 @@ async def run_airtel_pipeline(
             params=PipelineParams(
                 audio_in_sample_rate=PIPELINE_IN_SAMPLE_RATE,
                 audio_out_sample_rate=PIPELINE_OUT_SAMPLE_RATE,
+                allow_interruptions=True,
             ),
         )
         session.task = task
@@ -354,7 +385,7 @@ async def run_airtel_pipeline(
             state.last_activity_time = time.time()
             log_dialogue("assistant", greeting)
             context.add_message({"role": "assistant", "content": greeting})
-            session.say(greeting, allow_interruptions=False)
+            session.say(greeting, allow_interruptions=True)
 
         async def _max_duration_watchdog():
             try:
