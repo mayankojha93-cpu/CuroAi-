@@ -637,6 +637,29 @@ export class CallService {
   /**
    * Idempotent save outcome handler with Airtel canonical disposition & retry logic.
    */
+  /**
+   * Incrementally persist Airtel conversation step and collected state into calls.metadata
+   * so progress is preserved in the backend across barge-ins or disconnects.
+   */
+  async savePartialState(callId: string, data: Record<string, any>): Promise<void> {
+    const stateMeta = {
+      step: data.step || null,
+      identity_confirmed: data.identity_confirmed ?? null,
+      pickup_accepted: data.pickup_accepted ?? null,
+      proposed_date: data.proposed_date || null,
+      confirmed_date: data.confirmed_date || null,
+      offered_date: data.offered_date || null,
+      registered_address_confirmed: data.registered_address_confirmed ?? null,
+      new_address: data.new_address || null,
+      pending_question: data.pending_question || null,
+      updated_at: new Date().toISOString(),
+    };
+    await query(
+      `UPDATE calls SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb WHERE id = $2`,
+      [JSON.stringify(stateMeta), callId]
+    ).catch(() => {});
+  }
+
   async saveOutcome(callId: string, data: SaveOutcomeInput) {
     const rawDisp = data.final_disposition || data.outcome || (data.duration_seconds && data.duration_seconds > 0 ? 'Abruptly Disconnected Call' : 'Not Connected (No Answer)');
     
