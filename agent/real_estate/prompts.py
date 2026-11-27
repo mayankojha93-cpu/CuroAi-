@@ -346,22 +346,28 @@ Politely acknowledge their time, invoke `book_advisor_handoff(reason="Customer i
                 if state.reply_lang == "en"
                 else "Kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"
             )
+        is_interrupted = bool(getattr(state, "opening_speech_interrupted", False))
         interrupted_note = (
-            "- INTERRUPTED INTRO: The caller interrupted your opening greeting mid-way. Do NOT restart or repeat the full introduction; acknowledge/answer what they just said directly and continue to the next relevant question.\n"
-            if getattr(state, "opening_speech_interrupted", False)
-            else ""
+            f"- INTERRUPTED INTRO: The caller interrupted your opening greeting mid-way. Do NOT restart the full greeting from 'Hello {name_call}...'. Instead, respond naturally to what they just said and continue the rest of the introduction smoothly (e.g., mention My Estate Finder / {loc or 'your property'} briefly if not yet heard) and ask: \"{next_question}\"\n"
+            "- NEVER call `customer_interested()` on a bare 'Hello', 'Yes', 'Haan', or 'Haanji' — ONLY call it when the caller actually mentions selling, renting, or interest.\n"
+            if is_interrupted
+            else "- CRITICAL: Never combine the greeting with the question. The greeting was already spoken.\n"
+        )
+        intro_goal = (
+            "The caller interrupted your opening greeting. Respond to them, continue the rest of the introduction without restarting, and ask if they want to sell or rent."
+            if is_interrupted
+            else "The opening greeting has ALREADY been spoken. Now ask the customer if they are looking to sell or rent out the property."
         )
         return base + f"""
 Current Step: 1. INTRODUCTION
-Goal: The opening greeting has ALREADY been spoken. Now ask the customer if they are looking to sell or rent out the property.
+Goal: {intro_goal}
 
 Opening greeting already spoken: {intro_greeting}
 Qualification question for this next turn: "{next_question}"
 
 MANDATORY INSTRUCTIONS:
-{interrupted_note}- CRITICAL: Never combine the greeting with the question. The greeting was already spoken.
-- If the customer acknowledges or answers the greeting without asking questions (e.g. "Yes", "Haanji", "Haan", "Hello", "Boliye", "Tell me", "Yes speaking", "Haan sun raha hoon"):
-  Ask: "{next_question}"
+{interrupted_note}- If the customer acknowledges or answers the greeting without asking questions (e.g. "Yes", "Haanji", "Haan", "Hello", "Boliye", "Tell me", "Yes speaking", "Haan sun raha hoon"):
+  DO NOT call any tool! Simply continue/ask: "{next_question}"
 - If the customer indicates interest, OR mentions selling, renting, or leasing (e.g. "I am looking to lease out", "Looking to lease", "Lease out", "Lease", "Rent out", "Rent par dena hai", "Kiraye pe dena hai", "I want to sell", "Sell", "Thinking about it", "Considering it", "Plan hai", "Maybe"):
   YOU MUST EXECUTE `customer_interested()`.
   - For leasing or renting, pass intent='lease': `customer_interested(intent='lease')`.
@@ -535,12 +541,12 @@ Goal: Confirm whether the customer would like to share their property details ri
 Question already asked (or ask if not yet asked): "{share_q}"
 
 MANDATORY RULES FOR THIS STEP:
-- If the customer AGREES to share details now (e.g. "Yes", "Sure", "Okay", "Haan", "Haanji", "Go ahead", or starts sharing a property detail like floor, unit, BHK, etc.):
-  YOU MUST CALL `confirm_share_details_now()`.
-- If the customer is INTERESTED in selling/renting, but prefers to share the details LATER (e.g. "Later", "Not now", "Call me tomorrow", "Call in the evening", "Abhi busy hoon", "Baad mein share karunga"):
-  DO NOT ask any property-related questions. Politely end the call by calling `schedule_callback(time_slot=..., preferred_day=...)`.
+- ALWAYS judge by the customer's LATEST complete statement (if they said "Yeah" then "No, it's not possible", they are declining to share details right now — NEVER call `confirm_share_details_now()`!).
+- ONLY call `confirm_share_details_now()` if the customer clearly AGREES to share details now (e.g. "Yes", "Sure", "Okay", "Haan", "Haanji", "Go ahead", or starts sharing a property detail like floor, unit, BHK, etc.) AND did NOT say "no", "not possible", "not now", or "later".
+- If the customer is INTERESTED in selling/renting, but says they cannot share details right now or prefers LATER (e.g. "No, it's not possible", "Not possible now", "Later", "Not now", "Call me tomorrow", "Call in the evening", "Abhi busy hoon", "Baad mein share karunga"):
+  DO NOT call `confirm_share_details_now()` and DO NOT ask any property-related questions. Politely end the call immediately by calling `schedule_callback(time_slot=..., preferred_day=...)`.
 - If the customer says they are NOT interested in selling or renting:
-  DO NOT ask any property-related questions. Politely end the call immediately by calling `mark_not_interested()`.
+  DO NOT call `confirm_share_details_now()` and DO NOT ask any property-related questions. Politely end the call immediately by calling `mark_not_interested(caller_words=...)`.
 """
 
     if step in (
