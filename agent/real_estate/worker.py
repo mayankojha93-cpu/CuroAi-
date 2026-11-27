@@ -586,7 +586,29 @@ async def _run_real_estate_pipeline(
         )
 
         injector = SpeechInjector()
-        tracker = PlayoutTracker(state)
+
+        async def _on_intro_completed():
+            if state.closing_spoken or state.hangup_started:
+                return
+            if getattr(state.step, "value", state.step) != "INTRODUCTION":
+                return
+            if state.initial_property_location:
+                q = (
+                    "Were you looking to sell or rent it out?"
+                    if state.reply_lang == "en"
+                    else "Kya aap isse sell ya rent karne ka plan kar rahe hain?"
+                )
+            else:
+                q = (
+                    "Do you own any property that you'd like to sell or rent out?"
+                    if state.reply_lang == "en"
+                    else "Kya aap apni koi property sell ya rent karne ka plan kar rahe hain?"
+                )
+            log_dialogue("assistant", q)
+            context.add_message({"role": "assistant", "content": q})
+            session.say(q, allow_interruptions=True)
+
+        tracker = PlayoutTracker(state, on_intro_completed=_on_intro_completed)
         session = PipecatSession(state, tools, context, injector, tracker, log_dialogue, tts_provider=tts_provider)
         tools.agent = session                       # tools.py: update_instructions / update_tools / .session.say
         handler = RealEstateTurnHandler(state, tools, session)
@@ -658,6 +680,8 @@ async def _run_real_estate_pipeline(
             session.start()
             state.callee_connected = True
             state.opening_speech_active = True
+            state.intro_completed = False
+            state.intro_resumed_awaiting_completion = False
             state.intro_spoken_count = 0
             state.intro_started_at = 0.0
             state.answered_at = time.time()
