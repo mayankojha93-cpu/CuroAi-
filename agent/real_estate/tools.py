@@ -162,7 +162,7 @@ _EXPLICIT_REFUSAL_PHRASES = re.compile(
     r"(?!(?:\s+\w+){0,3}\s+(?:right\s+now|at\s+the\s+moment|at\s+present|currently|as\s+of\s+now|for\s+now))"
     r"|(?:un|not\s+)interested"
     r"|don'?t\s+want\s+to\s+(?:sell|rent|lease|talk|proceed)"
-    r"|no\s+thanks?|no\s+thank\s+you"
+    r"|no(?:[,\s]+no)*[.,\s]+thank(?:\s*you|s)"
     r"|already\s+(?:sold|rented|showed|given|let\s*out|disposed)"
     r"|don'?t\s+have\s+(?:any\s+)?(?:other\s+)?property(?:\s+to\s+(?:sell|rent|lease))?"
     r"|no\s+property(?:\s+to\s+(?:sell|rent|lease))?"
@@ -210,7 +210,8 @@ _BARE_REFUSAL_WORDS = {
 _REFUSAL_FILL_WORDS = {
     "ji", "jee", "sir", "madam", "bhai", "bhaiya", "thanks", "thank", "you",
     "shukriya", "dhanyawad", "re", "baba",
-    "bas", "toh", "to", "bhi", "yar", "yaar", "जी", "सर", "मैडम", "भैया", "भाई", "बस", "तो", "भी"
+    "bas", "toh", "to", "bhi", "yar", "yaar", "uh", "um", "umm", "hmm", "hm", "er", "well",
+    "जी", "सर", "मैडम", "भैया", "भाई", "बस", "तो", "भी"
 }
 
 
@@ -741,8 +742,34 @@ class RealEstateTools:
         intent: Optional[str] = None,
     ) -> str:
         """Call ONLY when the customer explicitly confirms interest OR indicates they are thinking about / considering selling, renting, or leasing out (e.g. 'looking to lease out', 'lease out', 'lease', 'rent out', 'sell', 'soch raha hoon', 'thinking about it', 'considering it', 'plan hai').
-        NEVER call this on a bare greeting such as 'Hello', 'हैलो', 'Hi', 'Haan', or 'Yes'.
+        NEVER call this on a bare greeting such as 'Hello', 'हैलो', 'Hi', 'Okay', 'Haan', or 'Yes'.
         Optionally accepts category ('residential'/'commercial') or intent ('sale'/'lease'/'rent') if mentioned."""
+        heard_tokens = [
+            w.strip(".,?!;:-_।॥")
+            for w in (self.state.last_user_text or "").lower().split()
+            if w.strip(".,?!;:-_।॥")
+        ]
+        _bare_acks = {
+            "ok", "okay", "yes", "yeah", "ji", "haan", "haanji", "hello", "hi",
+            "alright", "sure", "hmm", "hm", "boliye", "sir", "madam",
+            "हेलो", "हैलो", "हाँ", "हां", "हाँजी", "हांजी", "जी", "ठीक", "अच्छा", "ओके", "बोलिए", "सर",
+        }
+        if (
+            self.state.step == RealEstateStep.INTRODUCTION
+            and heard_tokens
+            and (len(heard_tokens) <= 2 or not self.state.intro_completed)
+            and all(tok in _bare_acks for tok in heard_tokens)
+        ):
+            logger.warning(f"🛑 customer_interested rejected on bare ack/greeting: '{self.state.last_user_text}'")
+            if not self.state.intro_completed:
+                return (
+                    "REJECTED: The introduction is NOT completed yet and the caller only said a greeting/acknowledgement. "
+                    "Do NOT assume sale or rent and DO NOT move to the next question yet. Complete the remaining introduction."
+                )
+            return (
+                "REJECTED: The caller only gave a brief greeting/acknowledgement and has NOT said whether they want to sell or rent. "
+                "Do NOT assume sale or rent. Ask: 'Were you looking to sell or rent it out?'"
+            )
         self.state.is_interested = True
         self._apply_standalone()
 
@@ -1039,6 +1066,26 @@ class RealEstateTools:
     @function_tool
     async def confirm_share_details_now(self) -> str:
         """Call when the customer agrees to share their property details right now (e.g. 'yes', 'sure', 'haanji', 'okay', or starts giving property details)."""
+        heard = (self.state.last_user_text or "").strip()
+        heard_tokens = [w.strip(".,?!;:-_।॥") for w in heard.lower().split() if w.strip(".,?!;:-_।॥")]
+        _bare_greetings = {"hello", "hi", "hey", "namaste", "हेलो", "हैलो", "नमस्ते"}
+        if ("?" in heard) or (heard_tokens and all(tok in _bare_greetings for tok in heard_tokens)):
+            logger.warning(f"🛑 confirm_share_details_now rejected on greeting/question: '{heard}'")
+            share_q = (
+                "Would you like to share your property details with us right now?"
+                if self.state.reply_lang == "en"
+                else "Kya aap abhi apni property ki details share karna chahenge?"
+            )
+            return (
+                f"REJECTED: The caller said '{heard}', which is a greeting or question—they did NOT agree to share details yet. "
+                f"Answer briefly if needed and ask: '{share_q}'"
+            )
+        if heard and explicit_refusal(heard):
+            logger.warning(f"🛑 confirm_share_details_now rejected on refusal: '{heard}'")
+            return (
+                f"REJECTED: The caller said '{heard}' and declined to share details right now. "
+                "Do NOT ask property questions. Politely ask what day and time would be good for a callback (or call schedule_callback / mark_not_interested)."
+            )
         cat = self.state.category or "residential"
         intn = self.state.intent or "sale"
         if cat == "residential" and intn == "sale":
@@ -1232,6 +1279,33 @@ class RealEstateTools:
                     pass
             self.state.expected_monthly_rent = r_str
 
+        # If caller gave monthly rent while branch was mistakenly in SALE (or sale price while in LEASE),
+        # align intent and step so get_missing_fields() does not loop asking for the opposite field.
+        if (
+            self.state.expected_monthly_rent
+            and not self.state.expected_sale_price
+            and self.state.step in (RealEstateStep.RESIDENTIAL_SALE, RealEstateStep.COMMERCIAL_SALE)
+        ):
+            self.state.intent = "lease"
+            target_step = (
+                RealEstateStep.COMMERCIAL_LEASE
+                if self.state.step == RealEstateStep.COMMERCIAL_SALE
+                else RealEstateStep.RESIDENTIAL_LEASE
+            )
+            await self._go(target_step)
+        elif (
+            self.state.expected_sale_price
+            and not self.state.expected_monthly_rent
+            and self.state.step in (RealEstateStep.RESIDENTIAL_LEASE, RealEstateStep.COMMERCIAL_LEASE)
+        ):
+            self.state.intent = "sale"
+            target_step = (
+                RealEstateStep.COMMERCIAL_SALE
+                if self.state.step == RealEstateStep.COMMERCIAL_LEASE
+                else RealEstateStep.RESIDENTIAL_SALE
+            )
+            await self._go(target_step)
+
         if is_currently_leased is not None:
             if isinstance(is_currently_leased, bool):
                 self.state.is_currently_leased = is_currently_leased
@@ -1290,14 +1364,24 @@ class RealEstateTools:
         caller_words: the caller's own words (copied from what they said) that show they don't know."""
         missing = self.state.get_missing_fields()
         heard = (self.state.last_user_text or "").strip()
-        if (
-            heard and missing
-            and not _DONT_KNOW_RE.search(heard.lower()) and not _DONT_KNOW_DEV.search(heard)
-            and not _quote_grounded(caller_words, heard)
-        ):
-            # Caller did NOT say they don't know (e.g. asked us to repeat) -> never skip the field.
+        if (field_id or "").strip().lower() in ("property_details", "all", "details", "all_details"):
+            logger.warning(f"🛑 customer_does_not_know rejected for whole-intake refusal: field_id={field_id}, heard='{heard}'")
+            return (
+                "REJECTED: The caller is declining to share property details right now, not skipping a single field. "
+                "Do NOT ask any more property questions. Ask what day and time suits them for a callback and call schedule_callback "
+                "(or call mark_not_interested if they decline a callback too)."
+            )
+        if heard and missing and not _DONT_KNOW_RE.search(heard.lower()) and not _DONT_KNOW_DEV.search(heard):
             q = missing[0]["question_en"] if self.state.reply_lang == "en" else missing[0]["question_hi"]
-            return self._fast(q, f"Do not skip. Ask again: '{q}'", ack=None)
+            if "?" in heard:
+                # Caller asked a question rather than saying they don't know -> never skip or overwrite with canned TTS.
+                return (
+                    f"The caller asked a question ('{heard}'), NOT that they don't know. "
+                    f"Do NOT skip the field. Answer their question concisely in 1 short sentence, then return to asking: '{q}'"
+                )
+            if not _quote_grounded(caller_words, heard):
+                # Caller did NOT say they don't know (e.g. asked us to repeat) -> never skip the field.
+                return self._fast(q, f"Do not skip. Ask again: '{q}'", ack=None)
         ids = {m["id"] for m in missing}
         target = field_id if field_id in ids else (missing[0]["id"] if missing else None)
         if target:
@@ -1369,13 +1453,18 @@ class RealEstateTools:
         caller_words: the caller's own words (copied from what they said) that show they refuse."""
         heard = (self.state.last_user_text or "").strip()
         grounded = _quote_grounded(caller_words, heard)
-        # If caller already confirmed interest to sell/rent, a bare "nahi" / "no" is an answer to a question, not a refusal of service
+        # If caller already confirmed interest to sell/rent, a bare "nahi" / "no" is an answer to a question, not a refusal of service,
+        # UNLESS it is an explicit refusal phrase or a polite closing refusal (e.g. "No, no, no. Thank you.", "No, bye").
+        _has_closing_cue = bool(
+            re.search(r"\b(thanks?|thank\s*you|shukriya|dhanyawad|bye|goodbye|cut|rakho|kaat)\b", heard.lower())
+        ) if heard else False
+        _is_polite_closing_refusal = bool(heard and explicit_refusal(heard) and _has_closing_cue)
         if self.state.is_interested or (self.state.intent in ("sale", "sell", "rent", "lease")):
-            if not ((_EXPLICIT_REFUSAL_PHRASES.search(heard.lower()) if heard else False) or grounded):
+            if not ((_EXPLICIT_REFUSAL_PHRASES.search(heard.lower()) if heard else False) or _is_polite_closing_refusal or grounded):
                 logger.warning(f"🛑 mark_not_interested rejected: caller already confirmed intent ({self.state.intent}), utterance '{heard}' is not an explicit refusal to sell/rent")
                 return (
                     "REJECTED: The customer previously confirmed interest to sell/rent. A bare 'no' or 'nahi' is an answer to the current property question, not a refusal to sell. "
-                    "Do NOT end the call. Clarify property details or confirm if the property is residential."
+                    "Do NOT end the call and DO NOT say goodbye or 'Thank you for your time'. Clarify the property detail or re-ask the current question."
                 )
         if heard and not (explicit_refusal(heard) or grounded):
             # At INTRODUCTION or CHECK_OTHER_PROPERTY, a negative token is a refusal to sell/rent
@@ -1404,6 +1493,16 @@ class RealEstateTools:
         preferred_day: Optional[str] = None,
     ) -> str:
         """Call when customer asks to call back later or specifies a preferred day/time slot."""
+        heard = (self.state.last_user_text or "").strip()
+        if "?" in heard and not any(
+            w in heard.lower()
+            for w in ("call", "later", "back", "baad", "busy", "tomorrow", "evening", "morning", "afternoon", "today", "kal", "aaj", "baje", "pm", "am")
+        ):
+            logger.warning(f"🛑 schedule_callback rejected on non-callback question: '{heard}'")
+            return (
+                f"REJECTED: The caller asked '{heard}' and did NOT request a callback. "
+                "Do NOT end the call. Answer/clarify briefly and return to the previous question."
+            )
         slot = f"{preferred_day or ''} {time_slot or ''}".strip() or "General"
         self.state.callback_time_slot = slot
         self.state.final_disposition = "Schedule Callback"
