@@ -378,7 +378,18 @@ async def _run_logistics_pipeline(
         )
 
         injector = SpeechInjector()
-        tracker = PlayoutTracker(state, context=context)
+
+        async def _on_intro_completed():
+            if state.closing_spoken or state.hangup_started or state.unloaded != "unknown":
+                return
+            q = f"भैया, माल उतर गया क्या? {state.consignee or 'पार्टी'} पर गाड़ी खाली हो गई?"
+            state.pending_question = q
+            state.last_bot_utterance = q
+            log_dialogue("assistant", q)
+            context.add_message({"role": "assistant", "content": q})
+            await injector.speak(q)
+
+        tracker = PlayoutTracker(state, context=context, on_intro_completed=_on_intro_completed)
         session = LogisticsSession(state, context, injector, tracker)
         user_logger = _UserTranscriptLogger(state, log_dialogue, context=context)
         guard = LLMOutputGuard(state, log_dialogue, context=context)
@@ -441,6 +452,8 @@ async def _run_logistics_pipeline(
         async def _on_started(_task, _frame):
             state.callee_connected = True
             state.opening_speech_active = True
+            state.intro_completed = False
+            state.intro_resumed_awaiting_completion = False
             state.intro_spoken_count = 0
             state.intro_started_at = 0.0
             state.current_step = "opening"

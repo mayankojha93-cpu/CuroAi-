@@ -219,7 +219,10 @@ class PlayoutTracker(FrameProcessor):
             self.state.last_agent_speech_end = time.time()
             if self.state.opening_speech_active and not getattr(self.state, "user_speaking", False):
                 self.state.opening_speech_active = False
+                self.state.opening_speech_interrupted = False
                 self.state.intro_spoken_count = len(self.state.intro_sentences)
+                self.state.intro_completed = True
+                self.state.intro_resumed_awaiting_completion = False
             async with self._cond:
                 self._cond.notify_all()
         await self.push_frame(frame, direction)
@@ -293,9 +296,14 @@ class LLMOutputGuard(FrameProcessor):
             out = await self._finalize(full)
             if out:
                 await self.push_frame(LLMTextFrame(out), FrameDirection.DOWNSTREAM)
-                if self.state.opening_speech_interrupted:
-                    self.state.intro_spoken_count = len(self.state.intro_sentences)
+                if getattr(self.state.step, "value", self.state.step) != "IDENTITY":
+                    self.state.intro_completed = True
                     self.state.opening_speech_interrupted = False
+                    self.state.intro_resumed_awaiting_completion = False
+                elif not self.state.intro_completed:
+                    self.state.opening_speech_active = True
+                    self.state.intro_started_at = 0.0
+                    self.state.intro_resumed_awaiting_completion = True
             self.state.barge_in_pending = False
             self.state.last_interruption_type = ""
             self._end_evt.set()
@@ -375,9 +383,10 @@ class TurnGate(FrameProcessor):
         from pipecat.frames.frames import UserStartedSpeakingFrame
         if isinstance(frame, UserStartedSpeakingFrame):
             step_val = getattr(self.state.step, "value", str(self.state.step))
-            if self.state.opening_speech_active or (self._last_user_msg is None and step_val == "IDENTITY"):
+            if not self.state.intro_completed and (self.state.opening_speech_active or step_val == "IDENTITY"):
                 self.state.opening_speech_active = False
                 self.state.opening_speech_interrupted = True
+                self.state.intro_resumed_awaiting_completion = False
                 elapsed = (
                     max(0.0, time.monotonic() - self.state.intro_started_at)
                     if self.state.intro_started_at > 0.0

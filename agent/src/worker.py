@@ -383,6 +383,8 @@ async def run_airtel_pipeline(
             session.start()
             state.callee_connected = True
             state.opening_speech_active = True
+            state.intro_completed = False
+            state.intro_resumed_awaiting_completion = False
             state.intro_spoken_count = 0
             state.intro_started_at = 0.0
             state.answered_at = time.time()
